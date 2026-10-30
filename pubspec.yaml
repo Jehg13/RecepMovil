@@ -60,6 +60,11 @@ flutter:
   assets:
     - assets/images/reception-welcome-background.png
     - assets/images/onboarding-register-background.png
+    - assets/images/onboarding-control-background.png
+    - assets/images/onboarding-ready-background.png
+    - assets/images/onboarding-benefits-bar.png
+    - assets/images/login-background.png
+    - assets/images/login-card-background.png
     - assets/images/cymez-reception-logo.png
     - assets/images/visitor-feature-card.webp
 
