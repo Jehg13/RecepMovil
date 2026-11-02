@@ -18,6 +18,15 @@ flutter pub get
 flutter run
 ```
 
+Para probar la versión web en Edge con el renderizador WebAssembly de Flutter:
+
+```powershell
+flutter run -d web-server --release --wasm
+```
+
+Abre en Edge la URL que muestra la terminal. Este modo evita el costo adicional
+del modo debug y usa Skwasm cuando el navegador es compatible.
+
 ## Validar
 
 ```powershell
