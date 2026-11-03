@@ -1526,20 +1526,34 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const MaterialApp(home: ReceptionHomePage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: _homeDashboardService(),
+          user: const AuthenticatedUser(
+            login: 'recepcion',
+            name: 'Recepción Principal',
+            email: null,
+            role: 'Administrador',
+            isAdmin: true,
+            sectionAccess: ['administrador'],
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
     expect(find.text('Panel'), findsNothing);
     expect(find.text('Inicio'), findsWidgets);
-    expect(find.text('Historial de movimientos'), findsOneWidget);
-    expect(find.text('Composición de movimientos'), findsOneWidget);
+    expect(find.text('Agenda de hoy'), findsOneWidget);
+    expect(find.text('Actividad reciente'), findsOneWidget);
     expect(find.byIcon(Icons.menu_rounded), findsOneWidget);
     expect(find.byIcon(Icons.person_outline_rounded), findsOneWidget);
     await tester.tap(find.byIcon(Icons.person_outline_rounded));
     await tester.pumpAndSettle();
-    expect(find.text('Recepción Principal'), findsOneWidget);
-    expect(find.text('Administrador'), findsOneWidget);
+    expect(find.text('Recepción Principal'), findsWidgets);
+    expect(find.text('Administrador'), findsWidgets);
     expect(find.text('Modo oscuro'), findsOneWidget);
     expect(find.text('Cerrar sesión'), findsOneWidget);
     await tester.tapAt(const Offset(20, 300));
@@ -1560,8 +1574,8 @@ void main() {
     expect(find.text('Acceso corporativo'), findsOneWidget);
     await tester.tapAt(const Offset(350, 300));
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Tendencia diaria'), 300);
-    expect(find.text('Tendencia diaria'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Ver bitácora'), 300);
+    expect(find.text('Ver bitácora'), findsOneWidget);
   });
 
   testWidgets('Departamentos y accesos de bitácora caben en móvil', (
@@ -1574,6 +1588,8 @@ void main() {
 
     final service = AuthService(
       client: MockClient((request) async {
+        final dashboardResponse = _homeDashboardResponse(request);
+        if (dashboardResponse != null) return dashboardResponse;
         expect(request.url.path, '/api/departments');
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
         return http.Response(
@@ -1656,7 +1672,11 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const MaterialApp(home: ReceptionHomePage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(authService: _homeDashboardService()),
+      ),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.menu_rounded));
     await tester.pumpAndSettle();
@@ -1708,6 +1728,31 @@ void main() {
     expect(find.text('Página 2 de 2'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+}
+
+AuthService _homeDashboardService() => AuthService(
+  client: MockClient((request) async {
+    final response = _homeDashboardResponse(request);
+    return response ?? http.Response('', 404);
+  }),
+  baseUrl: 'https://example.test',
+  isWeb: true,
+);
+
+http.Response? _homeDashboardResponse(http.Request request) {
+  if (request.url.path == '/api/appointments') {
+    return http.Response(jsonEncode({'appointments': []}), 200);
+  }
+  if (request.url.path == '/api/daily-log') {
+    return http.Response(
+      jsonEncode({
+        'summary': {'insideNow': 0, 'pendingArrivals': 0},
+        'recentEntries': [],
+      }),
+      200,
+    );
+  }
+  return null;
 }
 
 class _WidgetTestSessionStorage implements SessionCookieStorage {

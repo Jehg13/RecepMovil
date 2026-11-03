@@ -6848,148 +6848,545 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
         onAppointments: _openAppointments,
         onLogbook: _openLogbook,
       ),
-      body: switch (_activeSection) {
-        'departments' => _DepartmentsPage(
-          authService: widget.authService,
-          isAdmin: widget.user?.isAdmin ?? false,
-        ),
-        'hosts' => const _HostsPage(),
-        'accesses' => _AccessesPage(
-          authService: widget.authService,
-          isAdmin: widget.user?.isAdmin ?? false,
-        ),
-        'external_companies' => const _ExternalCompaniesPage(),
-        'external_staff' => const _ExternalStaffPage(),
-        'equipment' => const _EquipmentPage(),
-        'appointments' => const _AppointmentsPage(),
-        'logbook' => const _DailyLogbookPage(),
-        _ => Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-              stops: [0, 0.48, 1],
-            ),
-          ),
-          child: Stack(
-            children: [
-              Positioned(
-                top: 50,
-                right: -90,
-                child: Container(
-                  width: 230,
-                  height: 230,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [Color(0x300087FF), Colors.transparent],
-                    ),
+      body: _activeSection == 'home'
+          ? _HomeDashboardContent(
+              authService: widget.authService,
+              user: widget.user,
+              onOpenAppointments: _openAppointments,
+              onOpenLogbook: _openLogbook,
+            )
+          : switch (_activeSection) {
+              'departments' => _DepartmentsPage(
+                authService: widget.authService,
+                isAdmin: widget.user?.isAdmin ?? false,
+              ),
+              'hosts' => _HostsPage(
+                authService: widget.authService,
+                isAdmin: widget.user?.isAdmin ?? false,
+              ),
+              'accesses' => _AccessesPage(
+                authService: widget.authService,
+                isAdmin: widget.user?.isAdmin ?? false,
+              ),
+              'external_companies' => const _ExternalCompaniesPage(),
+              'external_staff' => const _ExternalStaffPage(),
+              'equipment' => const _EquipmentPage(),
+              'appointments' => const _AppointmentsPage(),
+              'logbook' => const _DailyLogbookPage(),
+              _ => Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Color(0xFF101936),
+                      Color(0xFF091329),
+                      Color(0xFF050A16),
+                    ],
+                    stops: [0, 0.48, 1],
                   ),
                 ),
-              ),
-              Positioned(
-                top: 480,
-                left: -120,
-                child: Container(
-                  width: 260,
-                  height: 260,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [Color(0x2200D4FF), Colors.transparent],
-                    ),
-                  ),
-                ),
-              ),
-              SafeArea(
-                child: ListView(
-                  padding: EdgeInsets.fromLTRB(
-                    responsivePadding(context),
-                    10,
-                    responsivePadding(context),
-                    responsiveBottomScrollPadding(context),
-                  ),
+                child: Stack(
                   children: [
-                    _DashboardHeader(authService: widget.authService),
-                    const SizedBox(height: 12),
-                    const _DashboardSection(
-                      icon: Icons.home_rounded,
-                      title: 'Inicio',
+                    Positioned(
+                      top: 50,
+                      right: -90,
+                      child: Container(
+                        width: 230,
+                        height: 230,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [Color(0x300087FF), Colors.transparent],
+                          ),
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    const Row(
-                      children: [
-                        Expanded(
-                          child: _DashboardMetricCard(
-                            icon: Icons.calendar_month_rounded,
-                            accent: Color(0xFFFF3155),
-                            title: 'Citas de hoy',
-                            value: '0',
-                            detail: 'Agenda programada',
+                    Positioned(
+                      top: 480,
+                      left: -120,
+                      child: Container(
+                        width: 260,
+                        height: 260,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [Color(0x2200D4FF), Colors.transparent],
                           ),
                         ),
-                        SizedBox(width: 12),
-                        Expanded(
-                          child: _DashboardMetricCard(
-                            icon: Icons.person_rounded,
-                            accent: Color(0xFF087FFF),
-                            title: 'Visitantes dentro',
-                            value: '5',
-                            detail: 'Según el último movimiento',
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    const Row(
-                      children: [
-                        Expanded(
-                          child: _DashboardMetricCard(
-                            icon: Icons.grid_view_rounded,
-                            accent: Color(0xFFFF3155),
-                            title: 'Llegadas pendientes',
-                            value: '0',
-                            detail: 'Citas sin ingreso completado',
-                          ),
+                    SafeArea(
+                      child: ListView(
+                        padding: EdgeInsets.fromLTRB(
+                          responsivePadding(context),
+                          10,
+                          responsivePadding(context),
+                          responsiveBottomScrollPadding(context),
                         ),
-                        SizedBox(width: 12),
-                        Expanded(
-                          child: _DashboardMetricCard(
-                            icon: Icons.business_center_rounded,
-                            accent: Color(0xFF087FFF),
-                            title: 'Declaraciones de equipo',
-                            value: '4',
-                            detail: 'Registros en el módulo de equipo',
+                        children: [
+                          _DashboardHeader(authService: widget.authService),
+                          const SizedBox(height: 12),
+                          const _DashboardSection(
+                            icon: Icons.home_rounded,
+                            title: 'Inicio',
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 12),
+                          const Row(
+                            children: [
+                              Expanded(
+                                child: _DashboardMetricCard(
+                                  icon: Icons.calendar_month_rounded,
+                                  accent: Color(0xFFFF3155),
+                                  title: 'Citas de hoy',
+                                  value: '0',
+                                  detail: 'Agenda programada',
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: _DashboardMetricCard(
+                                  icon: Icons.person_rounded,
+                                  accent: Color(0xFF087FFF),
+                                  title: 'Visitantes dentro',
+                                  value: '5',
+                                  detail: 'Según el último movimiento',
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Row(
+                            children: [
+                              Expanded(
+                                child: _DashboardMetricCard(
+                                  icon: Icons.grid_view_rounded,
+                                  accent: Color(0xFFFF3155),
+                                  title: 'Llegadas pendientes',
+                                  value: '0',
+                                  detail: 'Citas sin ingreso completado',
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: _DashboardMetricCard(
+                                  icon: Icons.business_center_rounded,
+                                  accent: Color(0xFF087FFF),
+                                  title: 'Declaraciones de equipo',
+                                  value: '4',
+                                  detail: 'Registros en el módulo de equipo',
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const _MovementHistoryCard(),
+                          const SizedBox(height: 12),
+                          const _CompositionCard(),
+                          const SizedBox(height: 12),
+                          const _TrendCard(),
+                          const SizedBox(height: 12),
+                          const _AgendaPanel(),
+                          const SizedBox(height: 12),
+                          const _BitacoraPanel(),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    const _MovementHistoryCard(),
-                    const SizedBox(height: 12),
-                    const _CompositionCard(),
-                    const SizedBox(height: 12),
-                    const _TrendCard(),
-                    const SizedBox(height: 12),
-                    const _AgendaPanel(),
-                    const SizedBox(height: 12),
-                    const _BitacoraPanel(),
                   ],
                 ),
               ),
-            ],
+            },
+    );
+  }
+}
+
+class _HomeDashboardContent extends StatefulWidget {
+  const _HomeDashboardContent({
+    required this.authService,
+    required this.user,
+    required this.onOpenAppointments,
+    required this.onOpenLogbook,
+  });
+
+  final AuthService? authService;
+  final AuthenticatedUser? user;
+  final VoidCallback onOpenAppointments;
+  final VoidCallback onOpenLogbook;
+
+  @override
+  State<_HomeDashboardContent> createState() => _HomeDashboardContentState();
+}
+
+class _HomeDashboardContentState extends State<_HomeDashboardContent> {
+  late final AuthService _authService =
+      widget.authService ?? AuthService.shared;
+  late Future<DashboardData> _dashboardFuture = _authService.getDashboardData(
+    DateTime.now(),
+  );
+
+  void _reload() {
+    setState(() {
+      _dashboardFuture = _authService.getDashboardData(DateTime.now());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
+          stops: [0, 0.48, 1],
+        ),
+      ),
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.fromLTRB(
+            responsivePadding(context),
+            10,
+            responsivePadding(context),
+            responsiveBottomScrollPadding(context),
+          ),
+          children: [
+            _DashboardHeader(
+              authService: widget.authService,
+              user: widget.user,
+            ),
+            const SizedBox(height: 12),
+            const _DashboardSection(icon: Icons.home_rounded, title: 'Inicio'),
+            const SizedBox(height: 12),
+            FutureBuilder<DashboardData>(
+              future: _dashboardFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  final error = snapshot.error;
+                  final message = error is AuthApiException
+                      ? error.message
+                      : 'No se pudieron cargar los datos de Inicio.';
+                  return _DashboardPanel(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          message,
+                          style: const TextStyle(
+                            color: Color(0xFFFFA9B6),
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          onPressed: _reload,
+                          icon: const Icon(Icons.refresh_rounded),
+                          label: const Text('Intentar de nuevo'),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const _DashboardPanel(
+                    child: Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(14),
+                        child: CircularProgressIndicator(),
+                      ),
+                    ),
+                  );
+                }
+                return _HomeDashboardData(
+                  data: snapshot.requireData,
+                  onOpenAppointments: widget.onOpenAppointments,
+                  onOpenLogbook: widget.onOpenLogbook,
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeDashboardData extends StatelessWidget {
+  const _HomeDashboardData({
+    required this.data,
+    required this.onOpenAppointments,
+    required this.onOpenLogbook,
+  });
+
+  final DashboardData data;
+  final VoidCallback onOpenAppointments;
+  final VoidCallback onOpenLogbook;
+
+  @override
+  Widget build(BuildContext context) {
+    final equipmentDeclarations = data.appointments
+        .where((appointment) => appointment.equipmentChecklistRequired)
+        .length;
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _DashboardMetricCard(
+                icon: Icons.calendar_month_rounded,
+                accent: const Color(0xFFFF3155),
+                title: 'Citas de hoy',
+                value: '${data.appointments.length}',
+                detail: 'Agenda programada',
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _DashboardMetricCard(
+                icon: Icons.person_rounded,
+                accent: const Color(0xFF087FFF),
+                title: 'Visitantes dentro',
+                value: '${data.insideNow}',
+                detail: 'Según la bitácora actual',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _DashboardMetricCard(
+                icon: Icons.grid_view_rounded,
+                accent: const Color(0xFFFF3155),
+                title: 'Llegadas pendientes',
+                value: '${data.pendingArrivals}',
+                detail: 'Citas sin ingreso completado',
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _DashboardMetricCard(
+                icon: Icons.business_center_rounded,
+                accent: const Color(0xFF087FFF),
+                title: 'Declaraciones de equipo',
+                value: '$equipmentDeclarations',
+                detail: 'Citas de hoy con equipo declarado',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _HomeAppointmentsPanel(
+          appointments: data.appointments,
+          onOpenAppointments: onOpenAppointments,
+        ),
+        const SizedBox(height: 12),
+        _HomeLogbookPanel(
+          entries: data.recentEntries,
+          onOpenLogbook: onOpenLogbook,
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeAppointmentsPanel extends StatelessWidget {
+  const _HomeAppointmentsPanel({
+    required this.appointments,
+    required this.onOpenAppointments,
+  });
+
+  final List<DashboardAppointment> appointments;
+  final VoidCallback onOpenAppointments;
+
+  @override
+  Widget build(BuildContext context) {
+    final todayAppointments = [...appointments]
+      ..sort((a, b) => a.time.compareTo(b.time));
+    return _DashboardPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _HomePanelHeader(
+            title: 'Agenda de hoy',
+            icon: Icons.calendar_month_rounded,
+            onTap: onOpenAppointments,
+          ),
+          const SizedBox(height: 10),
+          if (todayAppointments.isEmpty)
+            const Text(
+              'No hay citas programadas para hoy.',
+              style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 12),
+            )
+          else
+            ...todayAppointments
+                .take(5)
+                .map(
+                  (appointment) => Padding(
+                    padding: const EdgeInsets.only(bottom: 9),
+                    child: Row(
+                      children: [
+                        Text(
+                          appointment.time,
+                          style: const TextStyle(
+                            color: Color(0xFF75BFFF),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            appointment.visitor,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          appointment.status,
+                          style: const TextStyle(
+                            color: Color(0xFFAEB7CC),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: onOpenAppointments,
+              child: const Text('Ver agenda'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomeLogbookPanel extends StatelessWidget {
+  const _HomeLogbookPanel({required this.entries, required this.onOpenLogbook});
+
+  final List<DashboardLogEntry> entries;
+  final VoidCallback onOpenLogbook;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DashboardPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _HomePanelHeader(
+            title: 'Actividad reciente',
+            icon: Icons.history_rounded,
+            onTap: onOpenLogbook,
+          ),
+          const SizedBox(height: 10),
+          if (entries.isEmpty)
+            const Text(
+              'Todavía no hay movimientos registrados hoy.',
+              style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 12),
+            )
+          else
+            ...entries
+                .take(5)
+                .map(
+                  (entry) => Padding(
+                    padding: const EdgeInsets.only(bottom: 9),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 43,
+                          child: Text(
+                            entry.time,
+                            style: const TextStyle(
+                              color: Color(0xFF75BFFF),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            '${entry.event} · ${entry.person}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: onOpenLogbook,
+              child: const Text('Ver bitácora'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HomePanelHeader extends StatelessWidget {
+  const _HomePanelHeader({
+    required this.title,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: const Color(0xFF087FFF), size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
-      },
+        IconButton(
+          tooltip: 'Abrir $title',
+          onPressed: onTap,
+          icon: const Icon(
+            Icons.chevron_right_rounded,
+            color: Color(0xFF087FFF),
+          ),
+        ),
+      ],
     );
   }
 }
 
 class _DashboardHeader extends StatefulWidget {
-  const _DashboardHeader({this.authService});
+  const _DashboardHeader({this.authService, this.user});
 
   final AuthService? authService;
+  final AuthenticatedUser? user;
 
   @override
   State<_DashboardHeader> createState() => _DashboardHeaderState();
@@ -7017,6 +7414,7 @@ class _DashboardHeaderState extends State<_DashboardHeader> {
         top: menuTop,
         onClose: _closeProfileMenu,
         authService: widget.authService ?? AuthService.shared,
+        user: widget.user,
       ),
     );
     Overlay.of(context).insert(_profileEntry!);
@@ -7030,6 +7428,16 @@ class _DashboardHeaderState extends State<_DashboardHeader> {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 440;
+    final userName = widget.user?.name?.trim();
+    final displayName = userName != null && userName.isNotEmpty
+        ? userName
+        : widget.user?.login ?? 'Cuenta';
+    final displayRole = widget.user?.role?.trim().isNotEmpty == true
+        ? widget.user!.role!.trim()
+        : widget.user?.isAdmin == true
+        ? 'Administrador'
+        : 'Recepción';
     return SizedBox(
       height: 68,
       child: Container(
@@ -7052,7 +7460,7 @@ class _DashboardHeaderState extends State<_DashboardHeader> {
                   Image.asset(
                     'assets/images/cymez-reception-logo.webp',
                     cacheWidth: 480,
-                    width: 82,
+                    width: compact ? 58 : 82,
                     height: 52,
                     fit: BoxFit.contain,
                   ),
@@ -7067,27 +7475,34 @@ class _DashboardHeaderState extends State<_DashboardHeader> {
                     'RECEP',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
+                      fontSize: 13,
                       height: 1.05,
-                      letterSpacing: 1.8,
+                      letterSpacing: 1.3,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const SizedBox(width: 5),
-                  const Text(
-                    'CONTROL DE\nVISITANTES',
-                    style: TextStyle(
-                      color: Color(0xFF9CB5D1),
-                      fontSize: 7,
-                      height: 1.25,
-                      letterSpacing: .55,
-                      fontWeight: FontWeight.w800,
+                  if (!compact) ...[
+                    const SizedBox(width: 5),
+                    const Text(
+                      'CONTROL DE\nVISITANTES',
+                      style: TextStyle(
+                        color: Color(0xFF9CB5D1),
+                        fontSize: 7,
+                        height: 1.25,
+                        letterSpacing: .55,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
-            _ProfileButton(onTap: _toggleProfileMenu),
+            _ProfileButton(
+              name: displayName,
+              role: displayRole,
+              compact: compact,
+              onTap: _toggleProfileMenu,
+            ),
           ],
         ),
       ),
@@ -7124,8 +7539,16 @@ class _MenuButton extends StatelessWidget {
 }
 
 class _ProfileButton extends StatelessWidget {
-  const _ProfileButton({required this.onTap});
+  const _ProfileButton({
+    required this.name,
+    required this.role,
+    required this.compact,
+    required this.onTap,
+  });
 
+  final String name;
+  final String role;
+  final bool compact;
   final VoidCallback onTap;
 
   @override
@@ -7133,20 +7556,58 @@ class _ProfileButton extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(22),
-      child: Container(
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-            colors: [Color(0xFF111D32), Color(0xFF09101D)],
-          ),
-          border: Border.all(color: const Color(0xFF263B58)),
-        ),
-        child: const Icon(
-          Icons.person_outline_rounded,
-          color: Color(0xFFB7C7DA),
-          size: 25,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: compact ? 100 : 140),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 7),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      role,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF75BFFF),
+                        fontSize: 9,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Container(
+              width: compact ? 36 : 42,
+              height: compact ? 36 : 42,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF111D32), Color(0xFF09101D)],
+                ),
+                border: Border.all(color: const Color(0xFF263B58)),
+              ),
+              child: Icon(
+                Icons.person_outline_rounded,
+                color: Color(0xFFB7C7DA),
+                size: compact ? 21 : 25,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -7158,11 +7619,13 @@ class _ProfileMenuOverlay extends StatefulWidget {
     required this.top,
     required this.onClose,
     required this.authService,
+    required this.user,
   });
 
   final double top;
   final VoidCallback onClose;
   final AuthService authService;
+  final AuthenticatedUser? user;
 
   @override
   State<_ProfileMenuOverlay> createState() => _ProfileMenuOverlayState();
@@ -7194,6 +7657,15 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    final userName = widget.user?.name?.trim();
+    final displayName = userName != null && userName.isNotEmpty
+        ? userName
+        : widget.user?.login ?? 'Cuenta';
+    final displayRole = widget.user?.role?.trim().isNotEmpty == true
+        ? widget.user!.role!.trim()
+        : widget.user?.isAdmin == true
+        ? 'Administrador'
+        : 'Recepción';
     return Material(
       color: Colors.transparent,
       child: Stack(
@@ -7236,7 +7708,7 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(color: const Color(0x260087FF)),
                     ),
-                    child: const Row(
+                    child: Row(
                       children: [
                         CircleAvatar(
                           radius: 22,
@@ -7253,7 +7725,7 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Recepción Principal',
+                                displayName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -7264,7 +7736,7 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                               ),
                               SizedBox(height: 3),
                               Text(
-                                'Administrador',
+                                displayRole,
                                 style: TextStyle(
                                   color: Color(0xFF75BFFF),
                                   fontSize: 11,
@@ -14012,11 +14484,239 @@ class _EquipmentChecklist extends StatelessWidget {
   }
 }
 
-class _HostsPage extends StatelessWidget {
-  const _HostsPage();
+class _HostsPage extends StatefulWidget {
+  const _HostsPage({this.authService, required this.isAdmin});
+
+  final AuthService? authService;
+  final bool isAdmin;
+
+  @override
+  State<_HostsPage> createState() => _HostsPageState();
+}
+
+class _HostsPageState extends State<_HostsPage> {
+  final _searchController = TextEditingController();
+  late final AuthService _authService =
+      widget.authService ?? AuthService.shared;
+  List<DepartmentHost> _hosts = const [];
+  List<Department> _departments = const [];
+  List<HostAccountOption> _accounts = const [];
+  String _query = '';
+  String? _errorMessage;
+  bool _isLoading = true;
+  bool _isSaving = false;
+
+  List<DepartmentHost> get _filteredHosts {
+    final query = _query.trim().toLowerCase();
+    if (query.isEmpty) return _hosts;
+    return _hosts.where((host) {
+      final department = _departmentName(host.departmentId);
+      return [
+        host.login,
+        host.name,
+        host.email,
+        host.role,
+        host.phone,
+        department,
+      ].any((value) => value.toLowerCase().contains(query));
+    }).toList();
+  }
+
+  String _departmentName(int id) {
+    for (final department in _departments) {
+      if (department.id == id) return department.name;
+    }
+    return 'Departamento no disponible';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadHosts());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadHosts() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final results = await Future.wait([
+        _authService.getDepartmentHosts(),
+        _authService.getDepartments(),
+        if (widget.isAdmin) _authService.getHostAccounts(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _hosts = results[0] as List<DepartmentHost>;
+        _departments = results[1] as List<Department>;
+        _accounts = widget.isAdmin
+            ? results[2] as List<HostAccountOption>
+            : const [];
+        _isLoading = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudieron cargar los anfitriones. Inténtalo de nuevo.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _editHost({DepartmentHost? host}) async {
+    if (!widget.isAdmin || _isSaving) return;
+    if (_departments.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Registra primero un departamento para asignar anfitriones.',
+          ),
+        ),
+      );
+      return;
+    }
+    final draft = await showDialog<_DepartmentHostDraft>(
+      context: context,
+      barrierColor: const Color(0xE0000000),
+      builder: (_) => _HostFormDialog(
+        host: host,
+        departments: _departments,
+        accounts: _accounts,
+      ),
+    );
+    if (draft == null || !mounted) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      if (draft.fromAccessAccount) {
+        await _authService.grantHostAccess(draft.login);
+      }
+      final hosts = host == null
+          ? await _authService.createDepartmentHost(
+              login: draft.login,
+              name: draft.name,
+              departmentId: draft.departmentId,
+              role: draft.role,
+              email: draft.email,
+              phone: draft.phone,
+            )
+          : await _authService.updateDepartmentHost(
+              id: host.id,
+              login: draft.login,
+              name: draft.name,
+              departmentId: draft.departmentId,
+              role: draft.role,
+              email: draft.email,
+              phone: draft.phone,
+            );
+      if (!mounted) return;
+      setState(() {
+        _hosts = hosts;
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            host == null
+                ? 'Anfitrión registrado correctamente.'
+                : 'Anfitrión actualizado correctamente.',
+          ),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'No se pudo guardar el anfitrión. Inténtalo de nuevo.';
+        _isSaving = false;
+      });
+    }
+  }
+
+  Future<void> _deleteHost(DepartmentHost host) async {
+    if (!widget.isAdmin || _isSaving) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF111D32),
+        title: const Text(
+          'Eliminar anfitrión',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Text(
+          '¿Quieres eliminar a "${host.name}" del departamento ${_departmentName(host.departmentId)}?',
+          style: const TextStyle(color: Color(0xFFD4DDF0)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFF3155),
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final hosts = await _authService.deleteDepartmentHost(host.id);
+      if (!mounted) return;
+      setState(() {
+        _hosts = hosts;
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Anfitrión eliminado.')));
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'No se pudo eliminar el anfitrión. Inténtalo de nuevo.';
+        _isSaving = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final hosts = _filteredHosts;
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -14034,12 +14734,12 @@ class _HostsPage extends StatelessWidget {
                 child: _DashboardHeader(),
               ),
             ),
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.fromLTRB(14, 8, 14, 12),
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                  children: const [
                     Text(
                       'Anfitriones',
                       style: TextStyle(
@@ -14090,69 +14790,46 @@ class _HostsPage extends StatelessWidget {
                               ),
                             ),
                           ),
-                          const Text(
-                            '0 cuentas',
-                            style: TextStyle(
-                              color: Color(0xFF087FFF),
-                              fontSize: 10,
+                          Text(
+                            '${hosts.length} ${hosts.length == 1 ? 'cuenta' : 'cuentas'}',
+                            style: const TextStyle(
+                              color: Color(0xFF63C5FF),
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            height: 38,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(19),
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFF087FFF),
-                                    Color(0xFF3D8FFF),
-                                    Color(0xFF00C8FF),
-                                  ],
-                                ),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Color(0x660087FF),
-                                    blurRadius: 12,
-                                    offset: Offset(0, 4),
-                                  ),
-                                ],
+                          if (widget.isAdmin) ...[
+                            const SizedBox(width: 8),
+                            IconButton.filled(
+                              tooltip: 'Registrar anfitrión',
+                              onPressed: _isSaving ? null : () => _editHost(),
+                              style: IconButton.styleFrom(
+                                backgroundColor: const Color(0xFF087FFF),
+                                foregroundColor: Colors.white,
                               ),
-                              child: FilledButton.icon(
-                                onPressed: () => showDialog<void>(
-                                  context: context,
-                                  barrierColor: const Color(0xE0000000),
-                                  builder: (_) => const _HostFormDialog(),
-                                ),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: Colors.transparent,
-                                  foregroundColor: Colors.white,
-                                  minimumSize: const Size(44, 38),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                  ),
-                                ),
-                                icon: const Icon(Icons.add, size: 17),
-                                label: const Text(
-                                  'Registrar',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ),
+                              icon: const Icon(Icons.person_add_alt_1_rounded),
+                            ),
+                          ],
+                          IconButton(
+                            tooltip: 'Actualizar anfitriones',
+                            onPressed: _isLoading ? null : _loadHosts,
+                            icon: const Icon(
+                              Icons.refresh_rounded,
+                              color: Color(0xFF8FBFFF),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 10),
                       TextField(
+                        controller: _searchController,
+                        onChanged: (value) => setState(() => _query = value),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 13,
                         ),
                         decoration: InputDecoration(
-                          hintText: 'Buscar por usuario, departamento, puesto o correo...',
+                          hintText: 'Buscar anfitrión o departamento...',
                           hintStyle: const TextStyle(
                             color: Color(0xFF73809A),
                             fontSize: 11,
@@ -14161,6 +14838,19 @@ class _HostsPage extends StatelessWidget {
                             Icons.search_rounded,
                             color: Color(0xFF087FFF),
                           ),
+                          suffixIcon: _query.isEmpty
+                              ? null
+                              : IconButton(
+                                  tooltip: 'Limpiar búsqueda',
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    setState(() => _query = '');
+                                  },
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    color: Color(0xFF9BAAC2),
+                                  ),
+                                ),
                           filled: true,
                           fillColor: const Color(0xFF091325),
                           border: OutlineInputBorder(
@@ -14171,27 +14861,72 @@ class _HostsPage extends StatelessWidget {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Container(
-                        height: 210,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0B1425),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0x330087FF)),
-                        ),
-                        child: const Text(
-                          'Todavía no hay anfitriones registrados.',
-                          style: TextStyle(
-                            color: Color(0xFFB5C1D6),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
                     ],
                   ),
                 ),
               ),
+            ),
+            if (_isSaving)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
+                  child: LinearProgressIndicator(
+                    color: Color(0xFF087FFF),
+                    backgroundColor: Color(0xFF17243D),
+                  ),
+                ),
+              ),
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                14,
+                12,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
+              sliver: _isLoading
+                  ? const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 36),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: Color(0xFF087FFF),
+                          ),
+                        ),
+                      ),
+                    )
+                  : _errorMessage != null
+                  ? SliverToBoxAdapter(
+                      child: _HostMessageCard(
+                        message: _errorMessage!,
+                        isError: true,
+                        onRetry: _loadHosts,
+                      ),
+                    )
+                  : hosts.isEmpty
+                  ? SliverToBoxAdapter(
+                      child: _HostMessageCard(
+                        message: _query.isEmpty
+                            ? 'Todavía no hay anfitriones registrados.'
+                            : 'No hay anfitriones que coincidan con la búsqueda.',
+                      ),
+                    )
+                  : SliverList.builder(
+                      itemCount: hosts.length,
+                      itemBuilder: (context, index) {
+                        final host = hosts[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _DepartmentHostCard(
+                            host: host,
+                            departmentName: _departmentName(host.departmentId),
+                            isAdmin: widget.isAdmin,
+                            isSaving: _isSaving,
+                            onEdit: () => _editHost(host: host),
+                            onDelete: () => _deleteHost(host),
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -14200,11 +14935,339 @@ class _HostsPage extends StatelessWidget {
   }
 }
 
-class _HostFormDialog extends StatelessWidget {
-  const _HostFormDialog();
+class _HostMessageCard extends StatelessWidget {
+  const _HostMessageCard({
+    required this.message,
+    this.isError = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool isError;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111D32),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isError
+              ? const Color(0xFFFF3155).withValues(alpha: .55)
+              : const Color(0xFF28405E),
+        ),
+      ),
+      child: Column(
+        children: [
+          Icon(
+            isError ? Icons.cloud_off_rounded : Icons.people_outline_rounded,
+            size: 30,
+            color: isError ? const Color(0xFFFF7185) : const Color(0xFF63C5FF),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFFB5C1D6), fontSize: 12),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DepartmentHostCard extends StatelessWidget {
+  const _DepartmentHostCard({
+    required this.host,
+    required this.departmentName,
+    required this.isAdmin,
+    required this.isSaving,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final DepartmentHost host;
+  final String departmentName;
+  final bool isAdmin;
+  final bool isSaving;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: ValueKey('host-card-${host.id}'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF17243D), Color(0xFF0B1427)],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF284D75)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x220087FF),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF087FFF), Color(0xFF00C8FF)],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.person_rounded, color: Colors.white),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      host.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      host.login,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF9BCBFF),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (isAdmin) ...[
+                IconButton(
+                  tooltip: 'Editar anfitrión',
+                  onPressed: isSaving ? null : onEdit,
+                  icon: const Icon(
+                    Icons.edit_rounded,
+                    color: Color(0xFF63C5FF),
+                    size: 19,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Eliminar anfitrión',
+                  onPressed: isSaving ? null : onDelete,
+                  icon: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: Color(0xFFFF7185),
+                    size: 20,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 11),
+          Wrap(
+            spacing: 8,
+            runSpacing: 7,
+            children: [
+              _HostInfoChip(
+                icon: Icons.apartment_rounded,
+                label: departmentName,
+              ),
+              if (host.role.isNotEmpty)
+                _HostInfoChip(
+                  icon: Icons.work_outline_rounded,
+                  label: host.role,
+                ),
+              if (host.email.isNotEmpty)
+                _HostInfoChip(icon: Icons.email_outlined, label: host.email),
+              if (host.phone.isNotEmpty)
+                _HostInfoChip(icon: Icons.phone_outlined, label: host.phone),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HostInfoChip extends StatelessWidget {
+  const _HostInfoChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 250),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0C1A2E),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0x332D8FFF)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: const Color(0xFF63C5FF)),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFFCBD9EB), fontSize: 10),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DepartmentHostDraft {
+  const _DepartmentHostDraft({
+    required this.login,
+    required this.name,
+    required this.departmentId,
+    required this.role,
+    required this.email,
+    required this.phone,
+    required this.fromAccessAccount,
+  });
+
+  final String login;
+  final String name;
+  final int departmentId;
+  final String role;
+  final String email;
+  final String phone;
+  final bool fromAccessAccount;
+}
+
+class _HostFormDialog extends StatefulWidget {
+  const _HostFormDialog({
+    required this.departments,
+    required this.accounts,
+    this.host,
+  });
+
+  final DepartmentHost? host;
+  final List<Department> departments;
+  final List<HostAccountOption> accounts;
+
+  @override
+  State<_HostFormDialog> createState() => _HostFormDialogState();
+}
+
+class _HostFormDialogState extends State<_HostFormDialog> {
+  static const _otherAccount = '__otro__';
+  final _formKey = GlobalKey<FormState>();
+  late final _loginController = TextEditingController(
+    text: widget.host?.login ?? '',
+  );
+  late final _nameController = TextEditingController(
+    text: widget.host?.name ?? '',
+  );
+  late final _roleController = TextEditingController(
+    text: widget.host?.role ?? '',
+  );
+  late final _emailController = TextEditingController(
+    text: widget.host?.email ?? '',
+  );
+  late final _phoneController = TextEditingController(
+    text: widget.host?.phone ?? '',
+  );
+  late int? _departmentId =
+      widget.host?.departmentId ?? widget.departments.first.id;
+  late String _accountSelection =
+      widget.accounts.any(
+        (account) =>
+            account.login.toLowerCase() == widget.host?.login.toLowerCase(),
+      )
+      ? widget.host!.login
+      : _otherAccount;
+
+  bool get _manualEntry => _accountSelection == _otherAccount;
+
+  @override
+  void dispose() {
+    _loginController.dispose();
+    _nameController.dispose();
+    _roleController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  void _selectAccount(String? login) {
+    if (login == null) return;
+    setState(() => _accountSelection = login);
+    if (login == _otherAccount) return;
+    HostAccountOption? account;
+    for (final candidate in widget.accounts) {
+      if (candidate.login == login) {
+        account = candidate;
+        break;
+      }
+    }
+    if (account == null) return;
+    _loginController.text = account.login;
+    _nameController.text = account.name?.trim().isNotEmpty == true
+        ? account.name!.trim()
+        : account.login;
+    _roleController.text = account.role ?? '';
+    _emailController.text = account.email ?? '';
+    _phoneController.text = account.phone ?? '';
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    final departmentId = _departmentId;
+    if (departmentId == null) return;
+    Navigator.of(context).pop(
+      _DepartmentHostDraft(
+        login: _loginController.text.trim(),
+        name: _nameController.text.trim(),
+        departmentId: departmentId,
+        role: _roleController.text.trim(),
+        email: _emailController.text.trim(),
+        phone: _phoneController.text.trim(),
+        fromAccessAccount: !_manualEntry,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editing = widget.host != null;
     return Dialog(
       backgroundColor: const Color(0xFF111D32),
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
@@ -14214,92 +15277,224 @@ class _HostFormDialog extends StatelessWidget {
       ),
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(18),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF087FFF),
-                    borderRadius: BorderRadius.circular(12),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF087FFF),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.person_add_alt_1_rounded),
                   ),
-                  child: const Icon(Icons.person_add_alt_1_rounded),
-                ),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close_rounded),
-                  style: IconButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    backgroundColor: const Color(0xFF172747),
+                  const Spacer(),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                    style: IconButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: const Color(0xFF172747),
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Registrar anfitrión',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
+                ],
               ),
-            ),
-            const SizedBox(height: 5),
-            const Text(
-              'Selecciona una cuenta de Accesos para copiar sus datos.',
-              style: TextStyle(color: Color(0xFFAAB5C7), fontSize: 12),
-            ),
-            const SizedBox(height: 18),
-            const _HostFormField('Nombre completo'),
-            const SizedBox(height: 12),
-            const _HostFormField('Login (usuario)'),
-            const SizedBox(height: 12),
-            const _HostFormField('Correo electrónico'),
-            const SizedBox(height: 12),
-            const _HostFormField('Departamento'),
-            const SizedBox(height: 12),
-            const _HostFormField('Puesto'),
-            const SizedBox(height: 12),
-            const _HostFormField('Teléfono', keyboardType: TextInputType.phone),
-            const SizedBox(height: 18),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  gradient: const LinearGradient(
-                    colors: [
-                      Color(0xFF087FFF),
-                      Color(0xFF3D8FFF),
-                      Color(0xFF00C8FF),
-                    ],
-                  ),
+              const SizedBox(height: 16),
+              Text(
+                editing ? 'Editar anfitrión' : 'Registrar anfitrión',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
                 ),
-                child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    foregroundColor: Colors.white,
+              ),
+              const SizedBox(height: 5),
+              Text(
+                editing ? 'Actualiza los datos y el departamento asignado.' : 'Selecciona una cuenta de Accesos o captura los datos manualmente.',
+                style: const TextStyle(color: Color(0xFFAAB5C7), fontSize: 12),
+              ),
+              const SizedBox(height: 18),
+              _DepartmentHostFormField(
+                label: 'Cuenta de Accesos',
+                child: DropdownButtonFormField<String>(
+                  initialValue: _accountSelection,
+                  dropdownColor: const Color(0xFF17243D),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: _hostInputDecoration(),
+                  items: [
+                    ...widget.accounts.map(
+                      (account) => DropdownMenuItem(
+                        value: account.login,
+                        child: Text(
+                          '${account.name?.trim().isNotEmpty == true ? account.name : account.login} · ${account.login}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                    const DropdownMenuItem(
+                      value: _otherAccount,
+                      child: Text('Otro (capturar manualmente)'),
+                    ),
+                  ],
+                  onChanged: editing ? null : _selectAccount,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Nombre completo',
+                child: TextFormField(
+                  controller: _nameController,
+                  readOnly: !_manualEntry,
+                  maxLength: 180,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _hostInputDecoration(),
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Escribe el nombre completo.'
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Login (usuario)',
+                child: TextFormField(
+                  controller: _loginController,
+                  readOnly: !_manualEntry,
+                  maxLength: 255,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _hostInputDecoration(),
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Escribe el login.'
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Departamento',
+                child: DropdownButtonFormField<int>(
+                  initialValue:
+                      widget.departments.any(
+                        (department) => department.id == _departmentId,
+                      )
+                      ? _departmentId
+                      : null,
+                  dropdownColor: const Color(0xFF17243D),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: _hostInputDecoration(),
+                  items: widget.departments
+                      .map(
+                        (department) => DropdownMenuItem(
+                          value: department.id,
+                          child: Text(department.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setState(() => _departmentId = value),
+                  validator: (value) =>
+                      value == null ? 'Selecciona un departamento.' : null,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Correo electrónico',
+                child: TextFormField(
+                  controller: _emailController,
+                  readOnly: !_manualEntry,
+                  maxLength: 254,
+                  keyboardType: TextInputType.emailAddress,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _hostInputDecoration(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Puesto',
+                child: TextFormField(
+                  controller: _roleController,
+                  readOnly: !_manualEntry,
+                  maxLength: 120,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _hostInputDecoration(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _DepartmentHostFormField(
+                label: 'Teléfono',
+                child: TextFormField(
+                  controller: _phoneController,
+                  readOnly: !_manualEntry,
+                  maxLength: 30,
+                  keyboardType: TextInputType.phone,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _hostInputDecoration(),
+                ),
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    gradient: const LinearGradient(
+                      colors: [
+                        Color(0xFF087FFF),
+                        Color(0xFF3D8FFF),
+                        Color(0xFF00C8FF),
+                      ],
+                    ),
                   ),
-                  child: const Text(
-                    'Registrar anfitrión',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                  child: FilledButton(
+                    onPressed: _save,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text(
+                      editing ? 'Guardar cambios' : 'Registrar anfitrión',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _DepartmentHostFormField extends StatelessWidget {
+  const _DepartmentHostFormField({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFFD8E3F4),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 7),
+        child,
+      ],
     );
   }
 }
@@ -14344,6 +15539,21 @@ class _HostFormField extends StatelessWidget {
     );
   }
 }
+
+InputDecoration _hostInputDecoration() => InputDecoration(
+  filled: true,
+  fillColor: const Color(0xFF091325),
+  counterText: '',
+  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+  enabledBorder: OutlineInputBorder(
+    borderRadius: BorderRadius.circular(10),
+    borderSide: const BorderSide(color: Color(0xFF27476A)),
+  ),
+  focusedBorder: OutlineInputBorder(
+    borderRadius: BorderRadius.circular(10),
+    borderSide: const BorderSide(color: Color(0xFF087FFF), width: 2),
+  ),
+);
 
 class _DepartmentsPage extends StatefulWidget {
   const _DepartmentsPage({required this.authService, required this.isAdmin});

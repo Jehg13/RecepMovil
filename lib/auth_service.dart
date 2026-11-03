@@ -145,6 +145,176 @@ class Department {
   }
 }
 
+class DepartmentHost {
+  const DepartmentHost({
+    required this.id,
+    required this.login,
+    required this.name,
+    required this.departmentId,
+    required this.role,
+    required this.email,
+    required this.phone,
+    this.accessRoles = const [],
+  });
+
+  final int id;
+  final String login;
+  final String name;
+  final int departmentId;
+  final String role;
+  final String email;
+  final String phone;
+  final List<String> accessRoles;
+
+  factory DepartmentHost.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['id'] is! num ||
+        value['login'] is! String ||
+        value['name'] is! String ||
+        value['departmentId'] is! num ||
+        value['role'] is! String ||
+        value['email'] is! String ||
+        value['phone'] is! String ||
+        (value['accessRoles'] != null && value['accessRoles'] is! List)) {
+      throw const AuthApiException('La respuesta de anfitriones no es válida.');
+    }
+
+    final accessRoles = value['accessRoles'] as List? ?? const [];
+    if (accessRoles.any(
+      (role) =>
+          role is! String ||
+          !const {'Administrador', 'Recepción', 'Anfitriones'}.contains(role),
+    )) {
+      throw const AuthApiException('La respuesta de anfitriones no es válida.');
+    }
+
+    return DepartmentHost(
+      id: (value['id'] as num).toInt(),
+      login: value['login'] as String,
+      name: value['name'] as String,
+      departmentId: (value['departmentId'] as num).toInt(),
+      role: value['role'] as String,
+      email: value['email'] as String,
+      phone: value['phone'] as String,
+      accessRoles: List<String>.unmodifiable(accessRoles.cast<String>()),
+    );
+  }
+}
+
+class HostAccountOption {
+  const HostAccountOption({
+    required this.login,
+    required this.name,
+    required this.email,
+    required this.role,
+    required this.phone,
+  });
+
+  final String login;
+  final String? name;
+  final String? email;
+  final String? role;
+  final String? phone;
+
+  factory HostAccountOption.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['login'] is! String ||
+        (value['name'] != null && value['name'] is! String) ||
+        (value['email'] != null && value['email'] is! String) ||
+        (value['role'] != null && value['role'] is! String) ||
+        (value['phone'] != null && value['phone'] is! String)) {
+      throw const AuthApiException(
+        'La respuesta de cuentas disponibles no es válida.',
+      );
+    }
+    return HostAccountOption(
+      login: value['login'] as String,
+      name: value['name'] as String?,
+      email: value['email'] as String?,
+      role: value['role'] as String?,
+      phone: value['phone'] as String?,
+    );
+  }
+}
+
+class DashboardAppointment {
+  const DashboardAppointment({
+    required this.date,
+    required this.time,
+    required this.visitor,
+    required this.status,
+    required this.equipmentChecklistRequired,
+  });
+
+  final String date;
+  final String time;
+  final String visitor;
+  final String status;
+  final bool equipmentChecklistRequired;
+
+  factory DashboardAppointment.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['date'] is! String ||
+        value['time'] is! String ||
+        value['visitor'] is! String ||
+        value['status'] is! String ||
+        value['equipmentChecklistRequired'] is! bool) {
+      throw const AuthApiException('La respuesta de citas no es válida.');
+    }
+    return DashboardAppointment(
+      date: value['date'] as String,
+      time: value['time'] as String,
+      visitor: value['visitor'] as String,
+      status: value['status'] as String,
+      equipmentChecklistRequired: value['equipmentChecklistRequired'] as bool,
+    );
+  }
+}
+
+class DashboardLogEntry {
+  const DashboardLogEntry({
+    required this.date,
+    required this.time,
+    required this.event,
+    required this.person,
+  });
+
+  final String date;
+  final String time;
+  final String event;
+  final String person;
+
+  factory DashboardLogEntry.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['date'] is! String ||
+        value['time'] is! String ||
+        value['event'] is! String ||
+        value['person'] is! String) {
+      throw const AuthApiException('La respuesta de bitácora no es válida.');
+    }
+    return DashboardLogEntry(
+      date: value['date'] as String,
+      time: value['time'] as String,
+      event: value['event'] as String,
+      person: value['person'] as String,
+    );
+  }
+}
+
+class DashboardData {
+  const DashboardData({
+    required this.appointments,
+    required this.insideNow,
+    required this.pendingArrivals,
+    required this.recentEntries,
+  });
+
+  final List<DashboardAppointment> appointments;
+  final int insideNow;
+  final int pendingArrivals;
+  final List<DashboardLogEntry> recentEntries;
+}
+
 class AuthApiException implements Exception {
   const AuthApiException(this.message);
 
@@ -279,6 +449,53 @@ class AuthService {
       throw _responseError(response);
     }
     if (!_isWeb) await _clearCookie();
+  }
+
+  Future<DashboardData> getDashboardData(DateTime date) async {
+    final dateString =
+        '${date.year.toString().padLeft(4, '0')}-'
+        '${date.month.toString().padLeft(2, '0')}-'
+        '${date.day.toString().padLeft(2, '0')}';
+    final headers = await _sessionHeaders();
+    final responses = await Future.wait([
+      _send(() => _client.get(_uri('/api/appointments'), headers: headers)),
+      _send(
+        () => _client.get(
+          _uri(
+            '/api/daily-log?from=$dateString&to=$dateString&page=1&pageSize=8',
+          ),
+          headers: headers,
+        ),
+      ),
+    ]);
+    for (final response in responses) {
+      if (response.statusCode != 200) throw _responseError(response);
+    }
+
+    final appointmentValues = _decodeObject(responses[0].body)['appointments'];
+    final logData = _decodeObject(responses[1].body);
+    final summary = logData['summary'];
+    final recentValues = logData['recentEntries'];
+    if (appointmentValues is! List ||
+        summary is! Map<String, dynamic> ||
+        summary['insideNow'] is! num ||
+        summary['pendingArrivals'] is! num ||
+        recentValues is! List) {
+      throw const AuthApiException(
+        'La respuesta de datos del inicio no es válida.',
+      );
+    }
+    final appointments = appointmentValues
+        .map(DashboardAppointment.fromJson)
+        .where((appointment) => appointment.date == dateString)
+        .toList();
+    final recentEntries = recentValues.map(DashboardLogEntry.fromJson).toList();
+    return DashboardData(
+      appointments: List.unmodifiable(appointments),
+      insideNow: (summary['insideNow'] as num).toInt(),
+      pendingArrivals: (summary['pendingArrivals'] as num).toInt(),
+      recentEntries: List.unmodifiable(recentEntries),
+    );
   }
 
   Future<List<AccessAccount>> getAccessAccounts() async {
@@ -419,6 +636,169 @@ class AuthService {
       throw _responseError(response);
     }
     return _parseDepartments(response.body);
+  }
+
+  Future<List<DepartmentHost>> getDepartmentHosts() async {
+    final headers = await _sessionHeaders();
+    final response = await _send(
+      () => _client.get(_uri('/api/department-hosts'), headers: headers),
+    );
+    if (response.statusCode != 200) {
+      throw _responseError(response);
+    }
+    return _parseDepartmentHosts(response.body);
+  }
+
+  Future<List<HostAccountOption>> getHostAccounts() async {
+    final headers = await _sessionHeaders();
+    final response = await _send(
+      () => _client.get(_uri('/api/host-accounts'), headers: headers),
+    );
+    if (response.statusCode != 200) {
+      throw _responseError(response);
+    }
+    final accounts = _decodeObject(response.body)['accounts'];
+    if (accounts is! List) {
+      throw const AuthApiException(
+        'La respuesta de cuentas disponibles no es válida.',
+      );
+    }
+    return List<HostAccountOption>.unmodifiable(
+      accounts.map(HostAccountOption.fromJson),
+    );
+  }
+
+  Future<void> grantHostAccess(String login) async {
+    final normalizedLogin = login.trim();
+    if (normalizedLogin.isEmpty || normalizedLogin.length > 255) {
+      throw const AuthApiException('La cuenta de anfitrión no es válida.');
+    }
+    final headers = await _sessionHeaders();
+    final response = await _send(
+      () => _client.post(
+        _uri('/api/host-access/${Uri.encodeComponent(normalizedLogin)}'),
+        headers: headers,
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw _responseError(response);
+    }
+  }
+
+  Future<List<DepartmentHost>> createDepartmentHost({
+    required String login,
+    required String name,
+    required int departmentId,
+    String role = '',
+    String email = '',
+    String phone = '',
+  }) => _saveDepartmentHost(
+    login: login,
+    name: name,
+    departmentId: departmentId,
+    role: role,
+    email: email,
+    phone: phone,
+  );
+
+  Future<List<DepartmentHost>> updateDepartmentHost({
+    required int id,
+    required String login,
+    required String name,
+    required int departmentId,
+    String role = '',
+    String email = '',
+    String phone = '',
+  }) {
+    if (id <= 0) {
+      throw const AuthApiException('El anfitrión seleccionado no es válido.');
+    }
+    return _saveDepartmentHost(
+      id: id,
+      login: login,
+      name: name,
+      departmentId: departmentId,
+      role: role,
+      email: email,
+      phone: phone,
+    );
+  }
+
+  Future<List<DepartmentHost>> _saveDepartmentHost({
+    int? id,
+    required String login,
+    required String name,
+    required int departmentId,
+    required String role,
+    required String email,
+    required String phone,
+  }) async {
+    final normalizedLogin = login.trim();
+    final normalizedName = name.trim();
+    final normalizedRole = role.trim();
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedPhone = phone.trim();
+    if (normalizedLogin.isEmpty ||
+        normalizedLogin.length > 255 ||
+        normalizedName.isEmpty ||
+        normalizedName.length > 180 ||
+        departmentId <= 0 ||
+        normalizedRole.length > 120 ||
+        normalizedEmail.length > 254 ||
+        normalizedPhone.length > 30) {
+      throw const AuthApiException(
+        'Revisa los datos del anfitrión y su departamento.',
+      );
+    }
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...await _sessionHeaders(),
+    };
+    final path = id == null
+        ? '/api/department-hosts'
+        : '/api/department-hosts/$id';
+    final body = jsonEncode({
+      'login': normalizedLogin,
+      'name': normalizedName,
+      'departmentId': departmentId,
+      'role': normalizedRole,
+      'email': normalizedEmail,
+      'phone': normalizedPhone,
+    });
+    final response = await _send(
+      () => id == null
+          ? _client.post(_uri(path), headers: headers, body: body)
+          : _client.patch(_uri(path), headers: headers, body: body),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw _responseError(response);
+    }
+    return _parseDepartmentHosts(response.body);
+  }
+
+  Future<List<DepartmentHost>> deleteDepartmentHost(int id) async {
+    if (id <= 0) {
+      throw const AuthApiException('El anfitrión seleccionado no es válido.');
+    }
+    final headers = await _sessionHeaders();
+    final response = await _send(
+      () => _client.delete(_uri('/api/department-hosts/$id'), headers: headers),
+    );
+    if (response.statusCode != 200) {
+      throw _responseError(response);
+    }
+    return _parseDepartmentHosts(response.body);
+  }
+
+  List<DepartmentHost> _parseDepartmentHosts(String body) {
+    final hosts = _decodeObject(body)['hosts'];
+    if (hosts is! List) {
+      throw const AuthApiException('La respuesta de anfitriones no es válida.');
+    }
+    return List<DepartmentHost>.unmodifiable(
+      hosts.map(DepartmentHost.fromJson),
+    );
   }
 
   List<Department> _parseDepartments(String body) {

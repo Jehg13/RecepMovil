@@ -7,6 +7,70 @@ import 'package:visitas_recep_mobile/auth_service.dart';
 
 void main() {
   test(
+    'consulta datos reales de Inicio para la fecha local indicada',
+    () async {
+      final client = MockClient((request) async {
+        expect(request.headers['cookie'], 'visitas_session=opaque-token');
+        if (request.url.path == '/api/appointments') {
+          return http.Response(
+            jsonEncode({
+              'appointments': [
+                {
+                  'date': '2026-11-03',
+                  'time': '09:30',
+                  'visitor': 'Visitante de hoy',
+                  'status': 'Pendiente',
+                  'equipmentChecklistRequired': true,
+                },
+                {
+                  'date': '2026-11-04',
+                  'time': '10:00',
+                  'visitor': 'Visitante de mañana',
+                  'status': 'Pendiente',
+                  'equipmentChecklistRequired': false,
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        expect(request.url.path, '/api/daily-log');
+        expect(request.url.queryParameters['from'], '2026-11-03');
+        expect(request.url.queryParameters['to'], '2026-11-03');
+        return http.Response(
+          jsonEncode({
+            'summary': {'insideNow': 2, 'pendingArrivals': 1},
+            'recentEntries': [
+              {
+                'date': '2026-11-03',
+                'time': '09:00',
+                'event': 'Llegada',
+                'person': 'Visitante de bitácora',
+              },
+            ],
+          }),
+          200,
+        );
+      });
+      final service = AuthService(
+        client: client,
+        cookieStorage: _MemorySessionCookieStorage()
+          ..value = 'visitas_session=opaque-token',
+        baseUrl: 'https://example.test',
+        isWeb: false,
+      );
+
+      final data = await service.getDashboardData(DateTime(2026, 11, 3));
+
+      expect(data.appointments, hasLength(1));
+      expect(data.appointments.single.visitor, 'Visitante de hoy');
+      expect(data.insideNow, 2);
+      expect(data.pendingArrivals, 1);
+      expect(data.recentEntries.single.person, 'Visitante de bitácora');
+    },
+  );
+
+  test(
     'inicia sesión, restaura y cierra la sesión con la cookie segura',
     () async {
       final cookieStorage = _MemorySessionCookieStorage();
@@ -230,6 +294,99 @@ void main() {
     expect(remaining, hasLength(1));
     expect(remaining.single.id, 2);
   });
+
+  test('consulta y administra anfitriones con sesión', () async {
+    final cookieStorage = _MemorySessionCookieStorage()
+      ..value = 'visitas_session=opaque-token';
+    final hosts = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      expect(request.headers['cookie'], 'visitas_session=opaque-token');
+      if (request.method == 'GET' &&
+          request.url.path == '/api/department-hosts') {
+        return http.Response(jsonEncode({'hosts': hosts}), 200);
+      }
+      if (request.method == 'GET' && request.url.path == '/api/host-accounts') {
+        return http.Response(
+          jsonEncode({
+            'accounts': [
+              {
+                'login': 'host-1',
+                'name': 'Host One',
+                'email': 'host@example.test',
+                'role': 'Gerente',
+                'phone': '5551234567',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/host-access/host-1') {
+        return http.Response(
+          jsonEncode({
+            'sectionAccess': ['anfitriones'],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/department-hosts') {
+        expect(jsonDecode(request.body), {
+          'login': 'host-1',
+          'name': 'Host One',
+          'departmentId': 4,
+          'role': 'Gerente',
+          'email': 'host@example.test',
+          'phone': '5551234567',
+        });
+        hosts.add(_departmentHostJson);
+        return http.Response(jsonEncode({'hosts': hosts}), 201);
+      }
+      if (request.method == 'PATCH' &&
+          request.url.path == '/api/department-hosts/1') {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        hosts[0] = {..._departmentHostJson, ...body};
+        return http.Response(jsonEncode({'hosts': hosts}), 200);
+      }
+      if (request.method == 'DELETE' &&
+          request.url.path == '/api/department-hosts/1') {
+        hosts.clear();
+        return http.Response(jsonEncode({'hosts': hosts}), 200);
+      }
+      return http.Response('', 404);
+    });
+    final authService = AuthService(
+      client: client,
+      cookieStorage: cookieStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final accounts = await authService.getHostAccounts();
+    expect(accounts.single.login, 'host-1');
+    await authService.grantHostAccess(accounts.single.login);
+    final created = await authService.createDepartmentHost(
+      login: accounts.single.login,
+      name: accounts.single.name!,
+      departmentId: 4,
+      role: accounts.single.role!,
+      email: accounts.single.email!,
+      phone: accounts.single.phone!,
+    );
+    expect(created.single.name, 'Host One');
+    expect((await authService.getDepartmentHosts()).single.departmentId, 4);
+
+    final updated = await authService.updateDepartmentHost(
+      id: 1,
+      login: 'host-1',
+      name: 'Host Updated',
+      departmentId: 4,
+    );
+    expect(updated.single.name, 'Host Updated');
+
+    expect(await authService.deleteDepartmentHost(1), isEmpty);
+  });
 }
 
 const _userJson = {
@@ -250,6 +407,17 @@ const _accessAccountJson = {
   'phone': '5550000000',
   'picture': '',
   'sectionAccess': ['recepcion'],
+};
+
+const _departmentHostJson = {
+  'id': 1,
+  'login': 'host-1',
+  'name': 'Host One',
+  'departmentId': 4,
+  'role': 'Gerente',
+  'email': 'host@example.test',
+  'phone': '5551234567',
+  'accessRoles': ['Anfitriones'],
 };
 
 class _MemorySessionCookieStorage implements SessionCookieStorage {
