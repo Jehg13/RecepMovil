@@ -37,10 +37,13 @@ dependencies:
   qr_flutter: ^4.1.0
   gal: ^2.3.1
   mobile_scanner: ^7.5.0
+  http: ^1.6.0
+  flutter_secure_storage: ^11.2.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_native_splash: ^2.4.8
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -61,6 +64,8 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/images/reception-mobile-splash.png
+    - assets/images/reception-tablet-splash.png
     - assets/images/walk-in-access-shield.webp
     - assets/images/walk-in-tablet.webp
     - assets/images/walk-in-panel-frame.webp
@@ -74,13 +79,26 @@ flutter:
     - assets/images/login-background.webp
     - assets/images/login-card-background.webp
     - assets/images/cymez-reception-logo.webp
+    - assets/images/cymez-visitor-logo.webp
     - assets/images/visitor-feature-card.webp
     - assets/images/tablet-welcome-login.png
     - assets/images/tablet-onboarding-1.png
     - assets/images/tablet-onboarding-2.png
     - assets/images/tablet-onboarding-3.png
     - assets/images/tablet-kiosk-welcome.png
-    - assets/images/tablet-welcome-reference.png
+
+flutter_native_splash:
+  android: true
+  ios: true
+  web: false
+  fullscreen: false
+  background_image: assets/images/reception-mobile-splash.png
+  ios_content_mode: scaleAspectFill
+  android_gravity: fill
+  android_12:
+    color: "#020817"
+    image: assets/images/reception-splash-logo.png
+    icon_background_color: "#020817"
 
   # To add assets to your application, add an assets section, like this:
   # assets:

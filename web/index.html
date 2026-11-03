@@ -31,8 +31,160 @@
 
   <title>visitas_recep_mobile</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #020817;
+    }
+
+    #startup-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #020817;
+      opacity: 1;
+      transition: opacity 180ms ease-out;
+    }
+
+    #startup-splash img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .startup-splash__artwork,
+    .startup-splash__artwork picture {
+      width: 100%;
+      height: 100%;
+    }
+
+    .startup-splash__loading {
+      position: absolute;
+      right: 29%;
+      bottom: 2.7%;
+      left: 29%;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .startup-splash__bar {
+      height: 6px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(31, 57, 91, 0.9);
+      box-shadow: 0 0 12px rgba(8, 127, 255, 0.3);
+    }
+
+    .startup-splash__bar-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #ff1538, #f4f7ff 55%, #087fff);
+      box-shadow: 0 0 10px rgba(8, 127, 255, 0.75);
+      transition: width 80ms linear;
+    }
+
+    .startup-splash__percentage {
+      color: #f4f7ff;
+      font: 800 16px/1.2 Roboto, Arial, sans-serif;
+      letter-spacing: 1.2px;
+      text-align: center;
+      text-shadow: 0 1px 10px rgba(2, 8, 23, 0.9);
+    }
+
+    @media (min-width: 600px) and (orientation: landscape) {
+      .startup-splash__loading {
+        right: 32%;
+        left: 32%;
+      }
+    }
+
+    @media (min-width: 600px) and (orientation: portrait) {
+      #startup-splash img {
+        object-fit: contain;
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="startup-splash" aria-label="CYMEZ Recepción está iniciando">
+    <div class="startup-splash__artwork" style="position:absolute;inset:0;">
+      <picture>
+        <source
+          media="(min-width: 600px)"
+          srcset="assets/assets/images/reception-tablet-splash.png"
+        >
+        <img
+          src="assets/assets/images/reception-mobile-splash.png"
+          alt="CYMEZ Recepción — Control de acceso"
+          style="display:block;width:100%;height:100%;object-fit:cover;"
+        >
+      </picture>
+    </div>
+    <div
+      class="startup-splash__loading"
+      role="progressbar"
+      aria-label="Cargando CYMEZ Recepción"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="0"
+    >
+      <div class="startup-splash__bar" aria-hidden="true">
+        <div class="startup-splash__bar-fill" id="startup-splash__bar-fill"></div>
+      </div>
+      <div id="startup-splash__percentage" class="startup-splash__percentage">0%</div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var percentage = document.getElementById('startup-splash__percentage');
+      var progressBar = document.querySelector('.startup-splash__loading');
+      var progressFill = document.getElementById('startup-splash__bar-fill');
+      var splash = document.getElementById('startup-splash');
+      var startedAt = performance.now();
+      var firstFrameReceived = false;
+
+      function updatePercentage(now) {
+        if (firstFrameReceived || !percentage) return;
+
+        var elapsed = now - startedAt;
+        var value = elapsed < 2800
+          ? Math.floor((elapsed / 2800) * 90)
+          : Math.min(99, 90 + Math.floor(((elapsed - 2800) / 6500) * 9));
+
+        percentage.textContent = value + '%';
+        if (progressFill) progressFill.style.width = value + '%';
+        if (progressBar) progressBar.setAttribute('aria-valuenow', String(value));
+        window.requestAnimationFrame(updatePercentage);
+      }
+
+      window.requestAnimationFrame(updatePercentage);
+
+      window.addEventListener('flutter-first-frame', function () {
+        firstFrameReceived = true;
+        if (percentage) {
+          percentage.textContent = '100%';
+        }
+        if (progressFill) progressFill.style.width = '100%';
+        if (progressBar) progressBar.setAttribute('aria-valuenow', '100');
+        if (!splash) return;
+
+        window.setTimeout(function () {
+          splash.style.opacity = '0';
+          window.setTimeout(function () {
+            splash.remove();
+          }, 200);
+        }, 250);
+      });
+    })();
+  </script>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader

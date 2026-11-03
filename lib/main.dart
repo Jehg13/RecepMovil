@@ -1,15 +1,20 @@
 // ignore_for_file: unused_element, unused_element_parameter
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:gal/gal.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+
+import 'auth_service.dart';
 
 const _red = Color(0xFFFF1538);
 const _blue = Color(0xFF087FFF);
@@ -142,6 +147,9 @@ double responsivePadding(BuildContext context) {
   return 14;
 }
 
+double responsiveBottomScrollPadding(BuildContext context) =>
+    MediaQuery.sizeOf(context).shortestSide < 600 ? 88 : 32;
+
 double responsiveContentWidth(BuildContext context) {
   final width = MediaQuery.sizeOf(context).width;
   if (width >= 900) return 900;
@@ -159,7 +167,7 @@ double responsiveScale(BuildContext context) {
 TextStyle _descriptionTextStyle(bool compact, {bool tablet = false}) =>
     TextStyle(
       color: _mutedWhite,
-      fontSize: tablet ? 30 : (compact ? 13 : 15),
+      fontSize: tablet ? 30 : (compact ? 15 : 17),
       height: 1.45,
       fontWeight: FontWeight.w400,
       fontFamily: 'Roboto',
@@ -206,7 +214,15 @@ double _headlineFontSize(double targetWidth, TextDirection direction) {
   return low;
 }
 
-void main() {
+Future<ui.Image> _loadSplashImage(String assetPath) async {
+  final data = await rootBundle.load(assetPath);
+  final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+  final frame = await codec.getNextFrame();
+  codec.dispose();
+  return frame.image;
+}
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(
@@ -217,11 +233,34 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const ReceptionApp());
+  final mobileSplashImage = await _loadSplashImage(
+    'assets/images/reception-mobile-splash.png',
+  );
+  final tabletSplashImage = await _loadSplashImage(
+    'assets/images/reception-tablet-splash.png',
+  );
+  runApp(
+    ReceptionApp(
+      authService: AuthService.shared,
+      mobileSplashImage: mobileSplashImage,
+      tabletSplashImage: tabletSplashImage,
+    ),
+  );
 }
 
 class ReceptionApp extends StatelessWidget {
-  const ReceptionApp({super.key});
+  const ReceptionApp({
+    super.key,
+    this.showSplash = true,
+    this.authService,
+    this.mobileSplashImage,
+    this.tabletSplashImage,
+  });
+
+  final bool showSplash;
+  final AuthService? authService;
+  final ui.Image? mobileSplashImage;
+  final ui.Image? tabletSplashImage;
 
   @override
   Widget build(BuildContext context) {
@@ -269,7 +308,274 @@ class ReceptionApp extends StatelessWidget {
           },
         );
       },
-      home: const ReceptionWelcomePage(),
+      home: showSplash && !kIsWeb
+          ? _ReceptionStartupPage(
+              authService: authService,
+              mobileSplashImage: mobileSplashImage,
+              tabletSplashImage: tabletSplashImage,
+            )
+          : authService == null
+          ? const ReceptionWelcomePage()
+          : _ReceptionSessionGate(authService: authService!),
+    );
+  }
+}
+
+class _ReceptionStartupPage extends StatefulWidget {
+  const _ReceptionStartupPage({
+    this.authService,
+    this.mobileSplashImage,
+    this.tabletSplashImage,
+  });
+
+  final AuthService? authService;
+  final ui.Image? mobileSplashImage;
+  final ui.Image? tabletSplashImage;
+
+  @override
+  State<_ReceptionStartupPage> createState() => _ReceptionStartupPageState();
+}
+
+class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
+    with SingleTickerProviderStateMixin {
+  static const _splashDuration = Duration(milliseconds: 2400);
+  static const _progressDuration = Duration(milliseconds: 2000);
+  late final Future<void> _splashDelay;
+  late final AnimationController _loadingAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _splashDelay = Future<void>.delayed(_splashDuration);
+    _loadingAnimation = AnimationController(
+      vsync: this,
+      duration: _progressDuration,
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _loadingAnimation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: _splashDelay,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done) {
+          return widget.authService == null
+              ? const ReceptionWelcomePage()
+              : _ReceptionSessionGate(authService: widget.authService!);
+        }
+
+        return Scaffold(
+          backgroundColor: const Color(0xFF020817),
+          body: LayoutBuilder(
+            builder: (context, constraints) {
+              final tablet = constraints.biggest.shortestSide >= 600;
+              final splashAsset = tablet
+                  ? 'assets/images/reception-tablet-splash.png'
+                  : 'assets/images/reception-mobile-splash.png';
+              final splashImage = tablet
+                  ? widget.tabletSplashImage
+                  : widget.mobileSplashImage;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (splashImage == null)
+                    Image.asset(
+                      splashAsset,
+                      fit:
+                          tablet && constraints.maxHeight > constraints.maxWidth
+                          ? BoxFit.contain
+                          : BoxFit.cover,
+                      filterQuality: FilterQuality.high,
+                      semanticLabel: 'CYMEZ Recepción, control de acceso',
+                    )
+                  else
+                    Semantics(
+                      label: 'CYMEZ Recepción, control de acceso',
+                      child: RawImage(
+                        image: splashImage,
+                        fit:
+                            tablet &&
+                                constraints.maxHeight > constraints.maxWidth
+                            ? BoxFit.contain
+                            : BoxFit.cover,
+                        filterQuality: FilterQuality.high,
+                      ),
+                    ),
+                  Positioned(
+                    left: constraints.maxWidth * 0.29,
+                    right: constraints.maxWidth * 0.29,
+                    bottom: constraints.maxHeight * 0.027,
+                    child: AnimatedBuilder(
+                      animation: _loadingAnimation,
+                      builder: (context, child) {
+                        final percentage = (_loadingAnimation.value * 100)
+                            .round()
+                            .clamp(0, 100);
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(999),
+                              child: SizedBox(
+                                key: const ValueKey(
+                                  'startup-splash-loading-bar',
+                                ),
+                                height: 6,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    const ColoredBox(color: Color(0xE61F395B)),
+                                    FractionallySizedBox(
+                                      alignment: Alignment.centerLeft,
+                                      widthFactor: _loadingAnimation.value,
+                                      child: const DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          gradient: LinearGradient(
+                                            colors: [_red, _white, _blue],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '$percentage%',
+                              key: const ValueKey('startup-splash-progress'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: _white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.2,
+                                shadows: [
+                                  Shadow(
+                                    color: Color(0xCC020817),
+                                    blurRadius: 10,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ReceptionSessionGate extends StatefulWidget {
+  const _ReceptionSessionGate({required this.authService});
+
+  final AuthService authService;
+
+  @override
+  State<_ReceptionSessionGate> createState() => _ReceptionSessionGateState();
+}
+
+class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
+  late Future<AuthenticatedUser?> _session;
+  bool _continueWithoutSession = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _session = widget.authService.restoreSession();
+  }
+
+  void _retry() {
+    setState(() {
+      _continueWithoutSession = false;
+      _session = widget.authService.restoreSession();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_continueWithoutSession) return const ReceptionWelcomePage();
+
+    return FutureBuilder<AuthenticatedUser?>(
+      future: _session,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF03091A),
+            body: Center(child: CircularProgressIndicator(color: _blue)),
+          );
+        }
+
+        if (snapshot.hasError) {
+          final message = snapshot.error is AuthApiException
+              ? (snapshot.error as AuthApiException).message
+              : 'No se pudo comprobar la sesión. Inténtalo de nuevo.';
+          return Scaffold(
+            backgroundColor: const Color(0xFF03091A),
+            body: SafeArea(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.cloud_off_rounded,
+                        color: Color(0xFFFF5A72),
+                        size: 44,
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'No se pudo validar la sesión',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        message,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: _mutedWhite),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton(
+                        onPressed: _retry,
+                        child: const Text('Reintentar'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() => _continueWithoutSession = true);
+                        },
+                        child: const Text('Continuar sin sesión'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+
+        final user = snapshot.data;
+        if (user == null) return const ReceptionWelcomePage();
+        return ReceptionHomePage(authService: widget.authService, user: user);
+      },
     );
   }
 }
@@ -302,6 +608,7 @@ class ReceptionWelcomePage extends StatelessWidget {
                       !tablet &&
                       (constraints.maxHeight < 700 ||
                           constraints.maxWidth < 500);
+                  final veryCompact = !tablet && constraints.maxHeight < 600;
                   final horizontalPadding = constraints.maxWidth < 360
                       ? 20.0
                       : 28.0;
@@ -312,7 +619,11 @@ class ReceptionWelcomePage extends StatelessWidget {
                       );
                   final textDirection = Directionality.of(context);
                   final topPadding = compact ? 12.0 : 20.0;
-                  final bottomPadding = compact ? 8.0 : 12.0;
+                  final bottomPadding = veryCompact
+                      ? 20.0
+                      : compact
+                      ? 30.0
+                      : 20.0;
                   final availableHeight =
                       constraints.maxHeight - topPadding - bottomPadding;
                   final heightBasedDescriptionLimit =
@@ -335,7 +646,13 @@ class ReceptionWelcomePage extends StatelessWidget {
                             : constraints.maxWidth >= 1200
                             ? 92.0
                             : 78.0)
-                      : _headlineFontSize(descriptionWidth, textDirection);
+                      : math.max(
+                          _headlineFontSize(
+                            math.min(contentWidth, descriptionWidth * 1.4),
+                            textDirection,
+                          ),
+                          contentWidth * 0.15,
+                        );
                   final logoWidth = [
                     contentWidth,
                     tablet
@@ -343,8 +660,10 @@ class ReceptionWelcomePage extends StatelessWidget {
                         : descriptionWidth / _logoArtworkWidthRatio,
                   ].reduce((left, right) => left < right ? left : right);
                   final logoScale =
-                      (descriptionWidth / (logoWidth * _logoArtworkWidthRatio))
-                          .clamp(1.0, tablet ? 1.9 : 1.6);
+                      ((descriptionWidth /
+                                  (logoWidth * _logoArtworkWidthRatio)) *
+                              (tablet || veryCompact ? 1 : 1.12))
+                          .clamp(1.0, tablet ? 1.9 : 1.75);
                   final logoHeight = tablet
                       ? ((logoWidth / 1.65).clamp(
                           constraints.maxHeight < 700 ? 120.0 : 180.0,
@@ -354,13 +673,21 @@ class ReceptionWelcomePage extends StatelessWidget {
                               ? 390.0
                               : 300.0,
                         )).clamp(120.0, 390.0)
-                      : logoWidth / 1.5 * logoScale;
+                      : math
+                            .min(
+                              logoWidth / 1.5 * logoScale,
+                              constraints.maxHeight * 0.36,
+                            )
+                            .toDouble();
                   final benefitCardHeight = tablet
                       ? (contentWidth * 0.31).clamp(
                           constraints.maxHeight < 700 ? 82.0 : 150.0,
                           constraints.maxHeight < 700 ? 115.0 : 215.0,
                         )
-                      : (contentWidth / 2.8).clamp(112.0, 148.0);
+                      : (contentWidth / 2.5).clamp(
+                          122.0,
+                          compact ? 140.0 : 160.0,
+                        );
                   final contentHeight = availableHeight < 0
                       ? 0.0
                       : availableHeight;
@@ -417,6 +744,7 @@ class ReceptionWelcomePage extends StatelessWidget {
                                     width: 300,
                                     child: _StartButton(
                                       compact: compact,
+                                      veryCompact: veryCompact,
                                       onStart: () {
                                         Navigator.of(context).push(
                                           MaterialPageRoute<void>(
@@ -434,6 +762,7 @@ class ReceptionWelcomePage extends StatelessWidget {
                                 width: double.infinity,
                                 child: _StartButton(
                                   compact: compact,
+                                  veryCompact: veryCompact,
                                   onStart: () {
                                     Navigator.of(context).push(
                                       MaterialPageRoute<void>(
@@ -467,175 +796,195 @@ class ReceptionOnboardingPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final tablet = MediaQuery.sizeOf(context).width >= 600;
     return Scaffold(
-      body: _TabletLandscapeGuard(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (tablet)
-              Row(
-                children: [
-                  Expanded(
-                    child: Image.asset(
-                      'assets/images/onboarding-register-background.webp',
-                      key: const ValueKey('tablet-onboarding-left-background'),
-                      cacheWidth: 768,
-                      fit: BoxFit.cover,
-                      alignment: Alignment.center,
+      body: _OnboardingSwipeDetector(
+        activeIndex: 0,
+        child: _TabletLandscapeGuard(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (tablet)
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Image.asset(
+                        'assets/images/onboarding-register-background.webp',
+                        key: const ValueKey(
+                          'tablet-onboarding-left-background',
+                        ),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
                     ),
-                  ),
-                  Expanded(
-                    child: Image.asset(
-                      'assets/images/login-background.webp',
-                      key: const ValueKey('tablet-onboarding-right-background'),
-                      cacheWidth: 768,
-                      fit: BoxFit.cover,
-                      alignment: Alignment.center,
+                    Expanded(
+                      flex: 2,
+                      child: Image.asset(
+                        'assets/images/login-background.webp',
+                        key: const ValueKey(
+                          'tablet-onboarding-right-background',
+                        ),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
                     ),
-                  ),
-                ],
-              )
-            else
-              Image.asset(
-                'assets/images/onboarding-register-background.webp',
-                cacheWidth: 768,
-                fit: BoxFit.cover,
-                alignment: Alignment.center,
-              ),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    const Color(0xFF03091A).withValues(alpha: 0.04),
-                    Colors.transparent,
-                    const Color(0xFF03091A).withValues(alpha: 0.3),
-                    const Color(0xFF03091A).withValues(alpha: 0.62),
                   ],
-                  stops: const [0, 0.4, 0.62, 1],
+                )
+              else
+                Image.asset(
+                  'assets/images/onboarding-register-background.webp',
+                  cacheWidth: 768,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.center,
+                ),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      const Color(0xFF03091A).withValues(alpha: 0.04),
+                      Colors.transparent,
+                      const Color(0xFF03091A).withValues(alpha: 0.3),
+                      const Color(0xFF03091A).withValues(alpha: 0.62),
+                    ],
+                    stops: const [0, 0.4, 0.62, 1],
+                  ),
                 ),
               ),
-            ),
-            SafeArea(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxHeight < 700;
-                  final veryCompact = constraints.maxHeight < 600;
-                  final tablet = constraints.maxWidth >= 600;
-                  final horizontalPadding = constraints.maxWidth < 360
-                      ? 18.0
-                      : 38.0;
-                  final contentWidth =
-                      (constraints.maxWidth - horizontalPadding * 2).clamp(
-                        0.0,
-                        tablet ? constraints.maxWidth : 440.0,
-                      );
-                  final logoWidth = tablet
-                      ? constraints.maxWidth * 0.16
-                      : (contentWidth * 0.55).clamp(130.0, 175.0);
-                  final logoHeight = veryCompact
-                      ? 104.0
-                      : compact
-                      ? 132.0
-                      : 148.0;
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxHeight < 700;
+                    final veryCompact = constraints.maxHeight < 600;
+                    final tablet = constraints.maxWidth >= 600;
+                    final horizontalPadding = constraints.maxWidth < 360
+                        ? 18.0
+                        : 38.0;
+                    final contentWidth =
+                        (constraints.maxWidth - horizontalPadding * 2).clamp(
+                          0.0,
+                          tablet ? constraints.maxWidth : 440.0,
+                        );
+                    final logoWidth = tablet
+                        ? constraints.maxWidth * 0.16
+                        : (contentWidth * 0.62).clamp(150.0, 205.0);
+                    final logoHeight = veryCompact
+                        ? 104.0
+                        : compact
+                        ? 132.0
+                        : 148.0;
 
-                  return Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPadding,
-                      veryCompact
-                          ? 14
-                          : compact
-                          ? 22
-                          : 30,
-                      horizontalPadding,
-                      veryCompact
-                          ? 4
-                          : compact
-                          ? 8
-                          : 12,
-                    ),
-                    child: tablet
-                        ? _TabletRegistrationOnboardingLayout(
-                            logoWidth: (constraints.maxWidth * 0.26)
-                                .clamp(200.0, 340.0)
-                                .toDouble(),
-                            onContinue: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) =>
-                                      const ReceptionControlOnboardingPage(),
-                                ),
-                              );
-                            },
-                          )
-                        : Column(
-                            key: const ValueKey(
-                              'mobile-registration-onboarding-layout',
-                            ),
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              SizedBox(
-                                height: logoHeight,
-                                child: Align(
-                                  alignment: Alignment.topLeft,
-                                  child: Image.asset(
-                                    'assets/images/cymez-reception-logo.webp',
-                                    cacheWidth: 480,
-                                    width: logoWidth,
-                                    height: logoWidth / 1.5,
-                                    fit: BoxFit.contain,
-                                    filterQuality: FilterQuality.high,
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        veryCompact
+                            ? 14
+                            : compact
+                            ? 22
+                            : 30,
+                        horizontalPadding,
+                        veryCompact
+                            ? 18
+                            : compact
+                            ? 22
+                            : 24,
+                      ),
+                      child: tablet
+                          ? _TabletRegistrationOnboardingLayout(
+                              logoWidth: (constraints.maxWidth * 0.17)
+                                  .clamp(140.0, 220.0)
+                                  .toDouble(),
+                              onContinue: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) =>
+                                        const ReceptionControlOnboardingPage(),
                                   ),
-                                ),
+                                );
+                              },
+                            )
+                          : Column(
+                              key: const ValueKey(
+                                'mobile-registration-onboarding-layout',
                               ),
-                              const Spacer(flex: 5),
-                              _RegistrationOnboardingCopy(
-                                compact: compact,
-                                veryCompact: veryCompact,
-                              ),
-                              const Spacer(flex: 1),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: TextButton(
-                                        onPressed: () {},
-                                        style: TextButton.styleFrom(
-                                          foregroundColor: _mutedWhite,
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 4,
-                                            vertical: 12,
-                                          ),
-                                        ),
-                                        child: const Text('Omitir'),
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  height: logoHeight,
+                                  child: Align(
+                                    alignment: Alignment.topLeft,
+                                    child: Image.asset(
+                                      'assets/images/cymez-reception-logo.webp',
+                                      key: const ValueKey(
+                                        'mobile-registration-onboarding-logo',
                                       ),
+                                      cacheWidth: 480,
+                                      width: logoWidth,
+                                      height: logoWidth / 1.5,
+                                      fit: BoxFit.contain,
+                                      filterQuality: FilterQuality.high,
                                     ),
                                   ),
-                                  _OnboardingContinueButton(
-                                    compact: compact,
-                                    onPressed: () {
-                                      Navigator.of(context).push(
-                                        MaterialPageRoute<void>(
-                                          builder: (_) =>
-                                              const ReceptionControlOnboardingPage(),
+                                ),
+                                const Spacer(flex: 5),
+                                _RegistrationOnboardingCopy(
+                                  compact: compact,
+                                  veryCompact: veryCompact,
+                                ),
+                                const Spacer(flex: 1),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: TextButton(
+                                          onPressed: () {},
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: _mutedWhite,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 4,
+                                              vertical: 12,
+                                            ),
+                                          ),
+                                          child: const Text('Omitir'),
                                         ),
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: compact ? 8 : 14),
-                              const _PageIndicator(activeIndex: 0),
-                              if (kIsWeb) const _WebHomeIndicator(),
-                            ],
-                          ),
-                  );
-                },
+                                      ),
+                                    ),
+                                    _OnboardingContinueButton(
+                                      compact: compact,
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute<void>(
+                                            builder: (_) =>
+                                                const ReceptionControlOnboardingPage(),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: compact ? 8 : 14),
+                                _PageIndicator(
+                                  activeIndex: 0,
+                                  onSelected: (index) =>
+                                      _navigateToOnboardingPage(
+                                        context,
+                                        0,
+                                        index,
+                                      ),
+                                ),
+                                if (kIsWeb) const _WebHomeIndicator(),
+                              ],
+                            ),
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -653,13 +1002,16 @@ class _TabletRegistrationOnboardingLayout extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.sizeOf(context).height < 700;
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.height < 700 || size.width < 1100;
 
     return Row(
       children: [
         Expanded(
+          key: const ValueKey('tablet-registration-left-panel'),
+          flex: 3,
           child: Padding(
-            padding: const EdgeInsets.all(32),
+            padding: const EdgeInsets.all(8),
             child: Align(
               alignment: Alignment.topLeft,
               child: Image.asset(
@@ -675,58 +1027,85 @@ class _TabletRegistrationOnboardingLayout extends StatelessWidget {
           ),
         ),
         Expanded(
+          key: const ValueKey('tablet-registration-right-panel'),
+          flex: 2,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(44, 36, 32, 12),
+            padding: EdgeInsets.fromLTRB(
+              compact ? 20 : 44,
+              36,
+              compact ? 20 : 32,
+              12,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, copyConstraints) {
-                      return Center(
-                        key: const ValueKey('tablet-registration-copy-center'),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: SizedBox(
-                            width: copyConstraints.maxWidth,
-                            child: _RegistrationOnboardingCopy(
-                              compact: compact,
-                              veryCompact: compact,
-                              tablet: true,
+                  child: Padding(
+                    padding: EdgeInsets.only(left: compact ? 12 : 0),
+                    child: LayoutBuilder(
+                      builder: (context, copyConstraints) {
+                        return Align(
+                          alignment: Alignment.centerLeft,
+                          key: const ValueKey(
+                            'tablet-registration-copy-center',
+                          ),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: SizedBox(
+                              width: copyConstraints.maxWidth,
+                              child: _RegistrationOnboardingCopy(
+                                compact: compact,
+                                veryCompact: compact,
+                                tablet: true,
+                              ),
                             ),
                           ),
-                        ),
-                      );
-                    },
+                        );
+                      },
+                    ),
                   ),
                 ),
                 SizedBox(
                   height: 70,
-                  child: Stack(
-                    alignment: Alignment.center,
+                  child: Row(
                     children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton(
-                          onPressed: () {},
-                          style: TextButton.styleFrom(
-                            foregroundColor: _mutedWhite,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 18,
+                      SizedBox(
+                        width: 72,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: () {},
+                            style: TextButton.styleFrom(
+                              foregroundColor: _mutedWhite,
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
-                          ),
-                          child: const Text(
-                            'Omitir',
-                            style: TextStyle(fontSize: 18),
+                            child: const Text(
+                              'Omitir',
+                              style: TextStyle(fontSize: 18),
+                            ),
                           ),
                         ),
                       ),
-                      const _PageIndicator(activeIndex: 0),
-                      Align(
-                        alignment: Alignment.centerRight,
+                      Expanded(
+                        child: Center(
+                          child: _PageIndicator(
+                            key: ValueKey('tablet-registration-page-indicator'),
+                            activeIndex: 0,
+                            onSelected: (index) =>
+                                _navigateToOnboardingPage(context, 0, index),
+                          ),
+                        ),
+                      ),
+                      SizedBox(
+                        key: const ValueKey(
+                          'tablet-registration-continue-button',
+                        ),
                         child: _OnboardingContinueButton(
                           compact: false,
+                          width: compact ? 112 : 148,
                           onPressed: onContinue,
                         ),
                       ),
@@ -739,6 +1118,181 @@ class _TabletRegistrationOnboardingLayout extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _TabletOnboardingSplitLayout extends StatelessWidget {
+  const _TabletOnboardingSplitLayout({
+    required this.step,
+    required this.activeIndex,
+    required this.content,
+    required this.action,
+    required this.logoWidth,
+  });
+
+  final String step;
+  final int activeIndex;
+  final Widget content;
+  final Widget action;
+  final double logoWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          flex: 3,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Image.asset(
+                'assets/images/cymez-reception-logo.webp',
+                key: ValueKey('tablet-onboarding-$step-logo'),
+                cacheWidth: 480,
+                width: logoWidth,
+                height: logoWidth / 1.5,
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.high,
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          flex: 2,
+          child: LayoutBuilder(
+            builder: (context, panelConstraints) {
+              final leftInset = (panelConstraints.maxWidth * 0.1)
+                  .clamp(28.0, 44.0)
+                  .toDouble();
+              final rightInset = (panelConstraints.maxWidth * 0.075)
+                  .clamp(20.0, 40.0)
+                  .toDouble();
+              final compact = panelConstraints.maxWidth < 360;
+              return Padding(
+                padding: EdgeInsets.fromLTRB(leftInset, 16, rightInset, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, contentConstraints) {
+                          return Center(
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: SizedBox(
+                                width: contentConstraints.maxWidth,
+                                child: Column(
+                                  key: ValueKey(
+                                    'tablet-onboarding-$step-content',
+                                  ),
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _OnboardingStepBadge(step: step),
+                                    const SizedBox(height: 16),
+                                    content,
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      height: 70,
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 72,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton(
+                                onPressed: () {},
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _mutedWhite,
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: Size.zero,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                child: const Text(
+                                  'Omitir',
+                                  style: TextStyle(fontSize: 18),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Center(
+                              child: _PageIndicator(
+                                activeIndex: activeIndex,
+                                onSelected: (index) =>
+                                    _navigateToOnboardingPage(
+                                      context,
+                                      activeIndex,
+                                      index,
+                                    ),
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: compact ? 112 : 148,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: action,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (kIsWeb) const _WebHomeIndicator(),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _OnboardingStepBadge extends StatelessWidget {
+  const _OnboardingStepBadge({required this.step});
+
+  final String step;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: ValueKey('tablet-onboarding-step-$step'),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(colors: [_red, _blue]),
+        border: Border.all(color: const Color(0x99FFFFFF)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x884A72FF),
+            blurRadius: 20,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Text(
+        step,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 24,
+          height: 1,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 2,
+        ),
+      ),
     );
   }
 }
@@ -756,135 +1310,147 @@ class _RegistrationOnboardingCopy extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final titleStyle = TextStyle(
-      color: _white,
-      fontSize: tablet
-          ? compact
-                ? 62
-                : 78
-          : veryCompact
-          ? 32
-          : compact
-          ? 35
-          : 40,
-      height: 1.08,
-      fontWeight: FontWeight.w800,
-      letterSpacing: -0.8,
-      shadows: const [Shadow(color: Colors.black87, blurRadius: 12)],
-    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tabletScale = tablet
+            ? (constraints.maxWidth / 480).clamp(0.52, 1.0).toDouble()
+            : 1.0;
+        final titleStyle = TextStyle(
+          color: _white,
+          fontSize: tablet
+              ? (compact ? 62 : 78) * tabletScale
+              : veryCompact
+              ? 32
+              : compact
+              ? 37
+              : 40,
+          height: 1.08,
+          fontWeight: FontWeight.w800,
+          letterSpacing: -0.8,
+          shadows: const [Shadow(color: Colors.black87, blurRadius: 12)],
+        );
 
-    return Column(
-      key: tablet ? const ValueKey('tablet-registration-copy') : null,
-      mainAxisSize: tablet ? MainAxisSize.min : MainAxisSize.max,
-      crossAxisAlignment: tablet
-          ? CrossAxisAlignment.center
-          : CrossAxisAlignment.start,
-      children: [
-        if (tablet) ...[
-          Container(
-            key: const ValueKey('tablet-onboarding-step-number'),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
-              gradient: const LinearGradient(colors: [_red, _blue]),
-              border: Border.all(color: const Color(0x99FFFFFF)),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x884A72FF),
-                  blurRadius: 20,
-                  offset: Offset(0, 5),
+        return Column(
+          key: tablet ? const ValueKey('tablet-registration-copy') : null,
+          mainAxisSize: tablet ? MainAxisSize.min : MainAxisSize.max,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (tablet) ...[
+              Container(
+                key: const ValueKey('tablet-onboarding-step-number'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 10,
                 ),
-              ],
-            ),
-            child: const Text(
-              '01',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 28,
-                height: 1,
-                fontWeight: FontWeight.w900,
-                letterSpacing: 2,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  gradient: const LinearGradient(colors: [_red, _blue]),
+                  border: Border.all(color: const Color(0x99FFFFFF)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x884A72FF),
+                      blurRadius: 20,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  '01',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28 * tabletScale,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 2,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+            ],
+            Text('Registra tus', textAlign: TextAlign.start, style: titleStyle),
+            ShaderMask(
+              key: const ValueKey('registration-onboarding-gradient-word'),
+              blendMode: BlendMode.srcIn,
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [
+                  Color(0xFFFF5575),
+                  Color(0xFFFF4EA8),
+                  Color(0xFF55B8FF),
+                ],
+                stops: [0, 0.52, 1],
+              ).createShader(bounds),
+              child: Text(
+                'visitas',
+                textAlign: TextAlign.start,
+                style: titleStyle.copyWith(
+                  fontSize: tablet
+                      ? (compact ? 70 : 86) * tabletScale
+                      : veryCompact
+                      ? 36
+                      : compact
+                      ? 45
+                      : 48,
+                  shadows: const [
+                    Shadow(
+                      color: Color(0xFF020817),
+                      offset: Offset(0, 2),
+                      blurRadius: 3,
+                    ),
+                    Shadow(color: Color(0xCCFF245F), blurRadius: 14),
+                    Shadow(color: Color(0xAA287FFF), blurRadius: 18),
+                  ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 18),
-        ],
-        Text(
-          'Registra tus',
-          textAlign: tablet ? TextAlign.center : TextAlign.start,
-          style: titleStyle,
-        ),
-        ShaderMask(
-          blendMode: BlendMode.srcIn,
-          shaderCallback: (bounds) =>
-              const LinearGradient(colors: [_blue, _red]).createShader(bounds),
-          child: Text(
-            'visitas',
-            textAlign: tablet ? TextAlign.center : TextAlign.start,
-            style: titleStyle.copyWith(
-              fontSize: tablet
-                  ? compact
-                        ? 70
-                        : 86
-                  : veryCompact
-                  ? 36
+            SizedBox(
+              height: veryCompact
+                  ? 6
                   : compact
-                  ? 42
-                  : 48,
+                  ? 8
+                  : 10,
             ),
-          ),
-        ),
-        SizedBox(
-          height: veryCompact
-              ? 6
-              : compact
-              ? 8
-              : 10,
-        ),
-        Text(
-          'Entrada de visitantes',
-          textAlign: tablet ? TextAlign.center : TextAlign.start,
-          style: TextStyle(
-            color: const Color(0xFF36BFFF),
-            fontSize: tablet
-                ? compact
-                      ? 28
-                      : 34
-                : veryCompact
-                ? 15
-                : compact
-                ? 16
-                : 18,
-            fontWeight: FontWeight.w600,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 10)],
-          ),
-        ),
-        SizedBox(
-          height: veryCompact
-              ? 8
-              : compact
-              ? 10
-              : 14,
-        ),
-        Text(
-          'Registra cada ingreso fácilmente y mantén la información de tus visitantes organizada.',
-          textAlign: tablet ? TextAlign.center : TextAlign.start,
-          style: TextStyle(
-            color: _white,
-            fontSize: tablet
-                ? compact
-                      ? 24
-                      : 28
-                : veryCompact
-                ? 14
-                : compact
-                ? 15
-                : 17,
-            height: 1.45,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 10)],
-          ),
-        ),
-      ],
+            Text(
+              'Entrada de visitantes',
+              textAlign: TextAlign.start,
+              style: TextStyle(
+                color: const Color(0xFF36BFFF),
+                fontSize: tablet
+                    ? (compact ? 28 : 34) * tabletScale
+                    : veryCompact
+                    ? 15
+                    : compact
+                    ? 17
+                    : 18,
+                fontWeight: FontWeight.w600,
+                shadows: const [Shadow(color: Colors.black, blurRadius: 10)],
+              ),
+            ),
+            SizedBox(
+              height: veryCompact
+                  ? 8
+                  : compact
+                  ? 10
+                  : 14,
+            ),
+            Text(
+              'Registra cada ingreso fácilmente y mantén la información de tus visitantes organizada.',
+              textAlign: TextAlign.start,
+              style: TextStyle(
+                color: _white,
+                fontSize: tablet
+                    ? (compact ? 24 : 28) * tabletScale
+                    : veryCompact
+                    ? 14
+                    : compact
+                    ? 16
+                    : 17,
+                height: 1.45,
+                shadows: const [Shadow(color: Colors.black, blurRadius: 10)],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -894,118 +1460,175 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tablet = MediaQuery.sizeOf(context).shortestSide >= 600;
     return Scaffold(
-      body: _TabletLandscapeGuard(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.asset(
-              _tabletBackground(
-                context,
-                'assets/images/onboarding-control-background.webp',
-                'assets/images/tablet-onboarding-2.png',
-              ),
-              cacheWidth: 768,
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
-            ),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.transparent,
-                    const Color(0xFF03091A).withValues(alpha: 0.24),
-                    const Color(0xFF03091A).withValues(alpha: 0.72),
+      body: _OnboardingSwipeDetector(
+        activeIndex: 1,
+        child: _TabletLandscapeGuard(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (tablet)
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Image.asset(
+                        'assets/images/onboarding-control-background.webp',
+                        key: const ValueKey('tablet-control-left-background'),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Image.asset(
+                        'assets/images/login-background.webp',
+                        key: const ValueKey('tablet-control-right-background'),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
+                    ),
                   ],
-                  stops: const [0, 0.46, 0.64, 1],
+                )
+              else
+                Image.asset(
+                  'assets/images/onboarding-control-background.webp',
+                  cacheWidth: 768,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.center,
+                ),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.transparent,
+                      const Color(0xFF03091A).withValues(alpha: 0.24),
+                      const Color(0xFF03091A).withValues(alpha: 0.72),
+                    ],
+                    stops: const [0, 0.46, 0.64, 1],
+                  ),
                 ),
               ),
-            ),
-            SafeArea(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact =
-                      constraints.maxHeight < 700 || constraints.maxWidth < 500;
-                  final veryCompact = constraints.maxHeight < 600;
-                  final horizontalPadding = constraints.maxWidth < 360
-                      ? 18.0
-                      : 24.0;
-                  return Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPadding,
-                      veryCompact
-                          ? 14
-                          : compact
-                          ? 22
-                          : 30,
-                      horizontalPadding,
-                      veryCompact
-                          ? 4
-                          : compact
-                          ? 8
-                          : 12,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Align(
-                          alignment: Alignment.topLeft,
-                          child: Image.asset(
-                            'assets/images/cymez-reception-logo.webp',
-                            cacheWidth: 480,
-                            width: compact ? 170 : 190,
-                            height: compact ? 40 : 127,
-                            fit: BoxFit.contain,
-                            filterQuality: FilterQuality.high,
-                          ),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact =
+                        constraints.maxHeight < 700 ||
+                        constraints.maxWidth < 500;
+                    final compactLogo = constraints.maxHeight < 700;
+                    final veryCompact = constraints.maxHeight < 600;
+                    final horizontalPadding = constraints.maxWidth < 360
+                        ? 18.0
+                        : 24.0;
+                    if (tablet) {
+                      return _TabletOnboardingSplitLayout(
+                        step: '02',
+                        activeIndex: 1,
+                        content: const _ControlOnboardingCopy(tablet: true),
+                        action: _OnboardingContinueButton(
+                          compact: compact,
+                          width: compact ? 112 : 148,
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) =>
+                                    const ReceptionReadyOnboardingPage(),
+                              ),
+                            );
+                          },
                         ),
-                        const Spacer(flex: 5),
-                        const _ControlOnboardingCopy(),
-                        const Spacer(flex: 1),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: TextButton(
-                                  onPressed: () {},
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: _mutedWhite,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                      vertical: 12,
+                        logoWidth: (constraints.maxWidth * 0.17)
+                            .clamp(140.0, 220.0)
+                            .toDouble(),
+                      );
+                    }
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        veryCompact
+                            ? 14
+                            : compact
+                            ? 22
+                            : 30,
+                        horizontalPadding,
+                        veryCompact
+                            ? 18
+                            : compact
+                            ? 22
+                            : 24,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Align(
+                            alignment: Alignment.topLeft,
+                            child: Image.asset(
+                              'assets/images/cymez-reception-logo.webp',
+                              key: const ValueKey(
+                                'mobile-control-onboarding-logo',
+                              ),
+                              cacheWidth: 480,
+                              width: compactLogo ? 195 : 220,
+                              height: compactLogo ? 128 : 148,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
+                            ),
+                          ),
+                          const Spacer(flex: 5),
+                          const _ControlOnboardingCopy(),
+                          const Spacer(flex: 1),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: TextButton(
+                                    onPressed: () {},
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: _mutedWhite,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                        vertical: 12,
+                                      ),
                                     ),
+                                    child: const Text('Omitir'),
                                   ),
-                                  child: const Text('Omitir'),
                                 ),
                               ),
-                            ),
-                            _OnboardingContinueButton(
-                              compact: compact,
-                              onPressed: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                    builder: (_) =>
-                                        const ReceptionReadyOnboardingPage(),
-                                  ),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: compact ? 8 : 14),
-                        const _PageIndicator(activeIndex: 1),
-                        if (kIsWeb) const _WebHomeIndicator(),
-                      ],
-                    ),
-                  );
-                },
+                              _OnboardingContinueButton(
+                                compact: compact,
+                                onPressed: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) =>
+                                          const ReceptionReadyOnboardingPage(),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: compact ? 8 : 14),
+                          _PageIndicator(
+                            activeIndex: 1,
+                            onSelected: (index) =>
+                                _navigateToOnboardingPage(context, 1, index),
+                          ),
+                          if (kIsWeb) const _WebHomeIndicator(),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1017,130 +1640,163 @@ class ReceptionReadyOnboardingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tablet = MediaQuery.sizeOf(context).shortestSide >= 600;
     return Scaffold(
-      body: _TabletLandscapeGuard(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.asset(
-              _tabletBackground(
-                context,
-                'assets/images/onboarding-ready-background.webp',
-                'assets/images/tablet-onboarding-3.png',
-              ),
-              cacheWidth: 768,
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
-            ),
-            SafeArea(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxHeight < 700;
-                  final veryCompact = constraints.maxHeight < 600;
-                  final horizontalPadding = constraints.maxWidth < 360
-                      ? 18.0
-                      : 24.0;
-
-                  return Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPadding,
-                      veryCompact
-                          ? 12
-                          : compact
-                          ? 18
-                          : 24,
-                      horizontalPadding,
-                      veryCompact
-                          ? 4
-                          : compact
-                          ? 8
-                          : 12,
+      body: _OnboardingSwipeDetector(
+        activeIndex: 2,
+        child: _TabletLandscapeGuard(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (tablet)
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Image.asset(
+                        'assets/images/onboarding-ready-background.webp',
+                        key: const ValueKey('tablet-ready-left-background'),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Align(
-                          alignment: Alignment.topLeft,
-                          child: Image.asset(
-                            'assets/images/cymez-reception-logo.webp',
-                            cacheWidth: 480,
-                            width: compact ? 170 : 190,
-                            height: compact ? 113 : 127,
-                            fit: BoxFit.contain,
-                            filterQuality: FilterQuality.high,
+                    Expanded(
+                      flex: 2,
+                      child: Image.asset(
+                        'assets/images/login-background.webp',
+                        key: const ValueKey('tablet-ready-right-background'),
+                        cacheWidth: 768,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                      ),
+                    ),
+                  ],
+                )
+              else
+                Image.asset(
+                  'assets/images/onboarding-ready-background.webp',
+                  cacheWidth: 768,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.center,
+                ),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxHeight < 700;
+                    final veryCompact = constraints.maxHeight < 600;
+                    final horizontalPadding = constraints.maxWidth < 360
+                        ? 18.0
+                        : 24.0;
+                    if (tablet) {
+                      return _TabletOnboardingSplitLayout(
+                        step: '03',
+                        activeIndex: 2,
+                        content: const _ReadyOnboardingCopy(tablet: true),
+                        action: const _LoginButton(),
+                        logoWidth: (constraints.maxWidth * 0.17)
+                            .clamp(140.0, 220.0)
+                            .toDouble(),
+                      );
+                    }
+
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        veryCompact
+                            ? 12
+                            : compact
+                            ? 18
+                            : 24,
+                        horizontalPadding,
+                        veryCompact
+                            ? 18
+                            : compact
+                            ? 22
+                            : 24,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Align(
+                            alignment: Alignment.topLeft,
+                            child: Image.asset(
+                              'assets/images/cymez-reception-logo.webp',
+                              key: const ValueKey(
+                                'mobile-ready-onboarding-logo',
+                              ),
+                              cacheWidth: 480,
+                              width: compact ? 195 : 220,
+                              height: compact ? 128 : 148,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
+                            ),
                           ),
-                        ),
-                        const Spacer(flex: 6),
-                        const _ReadyBenefits(),
-                        SizedBox(height: compact ? 10 : 28),
-                        const _ReadyOnboardingCopy(),
-                        const Spacer(flex: 2),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: TextButton(
-                                  onPressed: () {},
-                                  style: TextButton.styleFrom(
-                                    foregroundColor: _mutedWhite,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                      vertical: 12,
+                          const Spacer(flex: 6),
+                          const _ReadyOnboardingCopy(),
+                          const Spacer(flex: 2),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: TextButton(
+                                    onPressed: () {},
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: _mutedWhite,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                        vertical: 12,
+                                      ),
                                     ),
+                                    child: const Text('Omitir'),
                                   ),
-                                  child: const Text('Omitir'),
                                 ),
                               ),
-                            ),
-                            const _LoginButton(),
-                          ],
-                        ),
-                        SizedBox(height: compact ? 4 : 14),
-                        const _PageIndicator(activeIndex: 2),
-                        if (kIsWeb && !compact) const _WebHomeIndicator(),
-                      ],
-                    ),
-                  );
-                },
+                              const _LoginButton(),
+                            ],
+                          ),
+                          SizedBox(height: compact ? 4 : 14),
+                          _PageIndicator(
+                            activeIndex: 2,
+                            onSelected: (index) =>
+                                _navigateToOnboardingPage(context, 2, index),
+                          ),
+                          if (kIsWeb && !compact) const _WebHomeIndicator(),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _ReadyBenefits extends StatelessWidget {
-  const _ReadyBenefits();
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 360;
-        return SizedBox(
-          height: compact ? 105 : 118,
-          child: Image.asset(
-            'assets/images/onboarding-benefits-bar.webp',
-            fit: BoxFit.contain,
-            filterQuality: FilterQuality.high,
-          ),
-        );
-      },
-    );
-  }
-}
-
 class _ReadyOnboardingCopy extends StatelessWidget {
-  const _ReadyOnboardingCopy();
+  const _ReadyOnboardingCopy({this.tablet = false});
+
+  final bool tablet;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final fontSize = constraints.maxWidth < 360 ? 32.0 : 36.0;
+        final scale = tablet
+            ? (constraints.maxWidth / 300).clamp(0.72, 1.45).toDouble()
+            : 1.0;
+        final titleScale = tablet
+            ? (constraints.maxWidth / 260).clamp(0.72, 1.7).toDouble()
+            : 1.0;
+        final fontSize =
+            (tablet
+                ? (constraints.maxWidth < 360 ? 38.0 : 44.0)
+                : (constraints.maxWidth < 360 ? 42.0 : 48.0)) *
+            titleScale;
         final titleStyle = TextStyle(
           color: Colors.white,
           fontSize: fontSize,
@@ -1149,9 +1805,38 @@ class _ReadyOnboardingCopy extends StatelessWidget {
           letterSpacing: -0.8,
           shadows: const [Shadow(color: Colors.black87, blurRadius: 12)],
         );
+        const description =
+            'Tu acceso está listo. Ingresa con tu cuenta\n'
+            'y comienza a gestionar las visitas.';
+        final descriptionFontSize = (tablet ? 14 : 17) * scale;
+        var fittedDescriptionFontSize = descriptionFontSize;
+        if (tablet) {
+          final descriptionPainter = TextPainter(
+            text: TextSpan(
+              text: description,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: descriptionFontSize,
+                height: 1.45,
+              ),
+            ),
+            textDirection: Directionality.of(context),
+          )..layout();
+          final longestLineWidth = descriptionPainter
+              .computeLineMetrics()
+              .fold<double>(
+                0,
+                (width, line) => width > line.width ? width : line.width,
+              );
+          if (longestLineWidth > constraints.maxWidth) {
+            fittedDescriptionFontSize *=
+                constraints.maxWidth / longestLineWidth;
+          }
+        }
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             FittedBox(
               fit: BoxFit.scaleDown,
@@ -1159,25 +1844,52 @@ class _ReadyOnboardingCopy extends StatelessWidget {
               child: Text('Todo listo para', style: titleStyle),
             ),
             ShaderMask(
+              key: const ValueKey('ready-onboarding-gradient-word'),
               blendMode: BlendMode.srcIn,
               shaderCallback: (bounds) => const LinearGradient(
-                colors: [Color(0xFF287FFF), Color(0xFFFF2D54)],
+                colors: [
+                  Color(0xFFFF5575),
+                  Color(0xFFFF4EA8),
+                  Color(0xFF55B8FF),
+                ],
+                stops: [0, 0.52, 1],
               ).createShader(bounds),
-              child: Text('comenzar', style: titleStyle),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'comenzar',
+                  style: titleStyle.copyWith(
+                    shadows: const [
+                      Shadow(
+                        color: Color(0xFF020817),
+                        offset: Offset(0, 2),
+                        blurRadius: 3,
+                      ),
+                      Shadow(color: Color(0xCCFF245F), blurRadius: 14),
+                      Shadow(color: Color(0xAA287FFF), blurRadius: 18),
+                    ],
+                  ),
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: 12 * scale),
             Text(
               'Acceso a tu cuenta',
               style: TextStyle(
                 color: Color(0xFF36BFFF),
-                fontSize: 16,
+                fontSize: (tablet ? 18 : 18) * scale,
                 fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Tu acceso está listo. Ingresa con tu cuenta\ny comienza a gestionar las visitas.',
-              style: TextStyle(color: Colors.white, fontSize: 15, height: 1.45),
+            SizedBox(height: 8 * scale),
+            Text(
+              description,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: fittedDescriptionFontSize,
+                height: 1.45,
+              ),
             ),
           ],
         );
@@ -1250,14 +1962,61 @@ class _LoginButton extends StatelessWidget {
 }
 
 class ReceptionLoginPage extends StatefulWidget {
-  const ReceptionLoginPage({super.key});
+  const ReceptionLoginPage({super.key, this.authService});
+
+  final AuthService? authService;
 
   @override
   State<ReceptionLoginPage> createState() => _ReceptionLoginPageState();
 }
 
 class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
+  final _identifierController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  bool _isSubmitting = false;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _identifierController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitLogin() async {
+    if (_isSubmitting) return;
+    if (_identifierController.text.trim().isEmpty ||
+        _passwordController.text.isEmpty) {
+      setState(() {
+        _errorMessage = 'Ingresa tu usuario o correo y tu contraseña.';
+      });
+      return;
+    }
+
+    final service = widget.authService ?? AuthService.shared;
+    setState(() {
+      _isSubmitting = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final user = await service.login(
+        _identifierController.text,
+        _passwordController.text,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => ReceptionHomePage(authService: service, user: user),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _errorMessage = error.message);
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1283,20 +2042,35 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                   final veryCompact = constraints.maxHeight < 600;
                   final tablet = constraints.maxWidth >= 600;
                   final horizontalPadding = tablet
-                      ? 40.0
+                      ? (constraints.maxWidth * 0.035).clamp(16.0, 40.0)
                       : constraints.maxWidth < 360
-                      ? 18.0
+                      ? 16.0
+                      : constraints.maxWidth < 400
+                      ? 20.0
                       : 24.0;
-                  final logoHeight = veryCompact
-                      ? 40.0
+                  final logoHeight = tablet
+                      ? veryCompact
+                            ? 40.0
+                            : compact
+                            ? 84.0
+                            : 180.0
+                      : veryCompact
+                      ? 70.0
                       : compact
-                      ? 84.0
-                      : 180.0;
-                  final formHeight = veryCompact
-                      ? 402.0
-                      : compact
-                      ? 402.0
-                      : 330.0;
+                      ? 92.0
+                      : 112.0;
+                  final formHeight = tablet
+                      ? veryCompact
+                            ? 402.0
+                            : compact
+                            ? 402.0
+                            : 330.0
+                      : (constraints.maxHeight * 0.59).clamp(385.0, 400.0);
+                  final mobileTitleSize = constraints.maxWidth < 360
+                      ? 18.0
+                      : constraints.maxWidth < 400
+                      ? 21.0
+                      : 26.0;
                   final visitorHeight = constraints.maxWidth < 500 || compact
                       ? 60.0
                       : 104.0;
@@ -1306,31 +2080,16 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                       ? 10.0
                       : 18.0;
                   final bottomPadding = tablet
-                      ? 80.0
+                      ? 16.0
                       : veryCompact
                       ? 6.0
                       : 12.0;
-                  final naturalContentHeight =
-                      topPadding +
-                      logoHeight +
-                      (compact ? 8.0 : 18.0) +
-                      (compact ? 20.0 : 39.9) +
-                      (veryCompact ? 2.0 : 5.0) +
-                      18.0 +
-                      (compact ? 8.0 : 18.0) +
-                      formHeight +
-                      (compact ? 6.0 : 14.0) +
-                      visitorHeight +
-                      bottomPadding +
-                      (compact ? 54.0 : 65.0);
                   return FittedBox(
                     fit: BoxFit.scaleDown,
-                    alignment: Alignment.topCenter,
+                    alignment: tablet ? Alignment.topCenter : Alignment.center,
                     child: SizedBox(
                       width: constraints.maxWidth - horizontalPadding * 2,
-                      height: tablet
-                          ? constraints.maxHeight
-                          : naturalContentHeight,
+                      height: tablet ? constraints.maxHeight : null,
                       child: Padding(
                         padding: EdgeInsets.only(
                           top: topPadding,
@@ -1339,13 +2098,11 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                         child: tablet
                             ? _TabletLoginLayout(
                                 obscurePassword: _obscurePassword,
-                                onLogin: () {
-                                  Navigator.of(context).pushReplacement(
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => const ReceptionHomePage(),
-                                    ),
-                                  );
-                                },
+                                identifierController: _identifierController,
+                                passwordController: _passwordController,
+                                isSubmitting: _isSubmitting,
+                                errorMessage: _errorMessage,
+                                onLogin: _submitLogin,
                                 onTogglePassword: () {
                                   setState(() {
                                     _obscurePassword = !_obscurePassword;
@@ -1353,13 +2110,19 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                 },
                               )
                             : Column(
+                                mainAxisSize: MainAxisSize.min,
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   Image.asset(
                                     'assets/images/cymez-reception-logo.webp',
+                                    key: const ValueKey('mobile-login-logo'),
                                     cacheWidth: 480,
                                     alignment: Alignment.topCenter,
-                                    width: compact ? 210 : 240,
+                                    width: veryCompact
+                                        ? 235
+                                        : compact
+                                        ? 260
+                                        : 290,
                                     height: logoHeight,
                                     fit: BoxFit.contain,
                                     filterQuality: FilterQuality.high,
@@ -1367,10 +2130,13 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                   SizedBox(height: compact ? 8 : 18),
                                   Text(
                                     'Bienvenido de nuevo',
+                                    key: const ValueKey(
+                                      'mobile-login-welcome-title',
+                                    ),
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       color: Colors.white,
-                                      fontSize: compact ? 19 : 38,
+                                      fontSize: mobileTitleSize,
                                       height: 1.05,
                                       fontWeight: FontWeight.w800,
                                     ),
@@ -1386,23 +2152,24 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                   ),
                                   SizedBox(height: compact ? 8 : 18),
                                   SizedBox(
+                                    key: const ValueKey(
+                                      'mobile-login-form-card',
+                                    ),
                                     height: formHeight,
                                     child: _LoginFormCard(
                                       obscurePassword: _obscurePassword,
-                                      onLogin: () {
-                                        Navigator.of(context).pushReplacement(
-                                          MaterialPageRoute<void>(
-                                            builder: (_) =>
-                                                const ReceptionHomePage(),
-                                          ),
-                                        );
-                                      },
+                                      identifierController:
+                                          _identifierController,
+                                      passwordController: _passwordController,
+                                      isSubmitting: _isSubmitting,
+                                      errorMessage: _errorMessage,
+                                      onLogin: _submitLogin,
                                       onTogglePassword: () {
                                         setState(() {
                                           _obscurePassword = !_obscurePassword;
                                         });
                                       },
-                                      compact: compact,
+                                      compact: false,
                                       veryCompact: veryCompact,
                                     ),
                                   ),
@@ -1451,152 +2218,183 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
 class _TabletLoginLayout extends StatelessWidget {
   const _TabletLoginLayout({
     required this.obscurePassword,
+    required this.identifierController,
+    required this.passwordController,
+    required this.isSubmitting,
+    required this.errorMessage,
     required this.onLogin,
     required this.onTogglePassword,
   });
 
   final bool obscurePassword;
+  final TextEditingController identifierController;
+  final TextEditingController passwordController;
+  final bool isSubmitting;
+  final String? errorMessage;
   final VoidCallback onLogin;
   final VoidCallback onTogglePassword;
 
   @override
   Widget build(BuildContext context) {
-    final narrowTablet = MediaQuery.sizeOf(context).width < 1000;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: narrowTablet ? 34 : 43,
-                child: Transform.translate(
-                  offset: const Offset(0, 42),
-                  child: Center(
-                    child: Image.asset(
-                      'assets/images/cymez-reception-logo.webp',
-                      cacheWidth: 720,
-                      width: 620,
-                      height: 380,
-                      fit: BoxFit.contain,
-                      filterQuality: FilterQuality.high,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 32),
-              Expanded(
-                flex: narrowTablet ? 66 : 57,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const SizedBox(height: 108),
-                      const Text(
-                        'Bienvenido de nuevo',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 48,
-                          height: 1.05,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      const Text(
-                        'Inicia sesión para continuar',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Color(0xFFD0D7E8),
-                          fontSize: 26,
-                        ),
-                      ),
-                      const SizedBox(height: 30),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 32),
-                        child: SizedBox(
-                          key: const ValueKey('tablet-login-form-card'),
-                          height: 460,
-                          child: _LoginFormCard(
-                            obscurePassword: obscurePassword,
-                            onTogglePassword: onTogglePassword,
-                            onLogin: onLogin,
-                            compact: false,
-                            veryCompact: false,
-                            tablet: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        const Row(
-          key: ValueKey('tablet-visitor-divider'),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+        final narrowTablet = width < 1000;
+        final compact = width < 900 || height < 700;
+        final formHeight = (height * 0.5).clamp(270.0, 460.0).toDouble();
+        final visitorHeight = (height * 0.15).clamp(88.0, 124.0).toDouble();
+        final sectionGap = height < 700 ? 12.0 : 20.0;
+        final columnGap = (width * 0.025).clamp(12.0, 32.0).toDouble();
+        final leftFlex = narrowTablet ? 35 : 43;
+        final rightFlex = 100 - leftFlex;
+        final rightWidth =
+            (width - columnGap) * rightFlex / (leftFlex + rightFlex);
+        final titleFontSize = (rightWidth * 0.085).clamp(26.0, 48.0).toDouble();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: _VisitorDividerLine(
-                colors: [Color(0x008DC8FF), Color(0xFF8DC8FF)],
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    flex: leftFlex,
+                    child: Center(
+                      child: Image.asset(
+                        'assets/images/cymez-reception-logo.webp',
+                        cacheWidth: 720,
+                        width: width * leftFlex / 100,
+                        height: height * 0.78,
+                        fit: BoxFit.contain,
+                        filterQuality: FilterQuality.high,
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: columnGap),
+                  Expanded(
+                    flex: rightFlex,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(height: compact ? 8 : 32),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'Bienvenido de nuevo',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: titleFontSize,
+                                height: 1.05,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                          SizedBox(height: compact ? 4 : 10),
+                          Text(
+                            'Inicia sesión para continuar',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: const Color(0xFFD0D7E8),
+                              fontSize: (titleFontSize * 0.52)
+                                  .clamp(15.0, 26.0)
+                                  .toDouble(),
+                            ),
+                          ),
+                          SizedBox(height: compact ? 10 : 24),
+                          Padding(
+                            padding: EdgeInsets.only(right: compact ? 8 : 20),
+                            child: SizedBox(
+                              key: const ValueKey('tablet-login-form-card'),
+                              height: formHeight,
+                              child: _LoginFormCard(
+                                obscurePassword: obscurePassword,
+                                identifierController: identifierController,
+                                passwordController: passwordController,
+                                isSubmitting: isSubmitting,
+                                errorMessage: errorMessage,
+                                onTogglePassword: onTogglePassword,
+                                onLogin: onLogin,
+                                compact: compact,
+                                veryCompact: compact,
+                                tablet: true,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 24),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Color(0x33101834),
-                  borderRadius: BorderRadius.all(Radius.circular(20)),
-                  border: Border.fromBorderSide(
-                    BorderSide(color: Color(0x338DC8FF)),
+            SizedBox(height: sectionGap),
+            Row(
+              key: const ValueKey('tablet-visitor-divider'),
+              children: [
+                const Expanded(
+                  child: _VisitorDividerLine(
+                    colors: [Color(0x008DC8FF), Color(0xFF8DC8FF)],
                   ),
                 ),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                  child: Text(
-                    'Registro de visitantes',
-                    style: TextStyle(
-                      color: Color(0xFFE5EAF5),
-                      fontSize: 21,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.2,
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 24),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0x33101834),
+                      borderRadius: const BorderRadius.all(Radius.circular(20)),
+                      border: Border.all(color: const Color(0x338DC8FF)),
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 10 : 16,
+                        vertical: 6,
+                      ),
+                      child: Text(
+                        'Registro de visitantes',
+                        style: TextStyle(
+                          color: const Color(0xFFE5EAF5),
+                          fontSize: compact ? 16 : 21,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
+                const Expanded(
+                  child: _VisitorDividerLine(
+                    colors: [Color(0xFF8DC8FF), Color(0x00FF3155)],
+                  ),
+                ),
+              ],
             ),
-            Expanded(
-              child: _VisitorDividerLine(
-                colors: [Color(0xFF8DC8FF), Color(0x00FF3155)],
+            SizedBox(height: sectionGap),
+            Center(
+              child: FractionallySizedBox(
+                widthFactor: compact ? 0.96 : 0.92,
+                child: SizedBox(
+                  key: const ValueKey('tablet-walk-in-card'),
+                  height: visitorHeight,
+                  child: _VisitorRegistrationCard(
+                    compact: compact,
+                    tablet: true,
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const WalkInVisitorPage(),
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ],
-        ),
-        const SizedBox(height: 20),
-        Center(
-          child: FractionallySizedBox(
-            widthFactor: 0.92,
-            child: SizedBox(
-              key: const ValueKey('tablet-walk-in-card'),
-              height: 124,
-              child: _VisitorRegistrationCard(
-                compact: false,
-                tablet: true,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const WalkInVisitorPage(),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 }
@@ -1618,6 +2416,10 @@ class _VisitorDividerLine extends StatelessWidget {
 class _LoginFormCard extends StatelessWidget {
   const _LoginFormCard({
     required this.obscurePassword,
+    required this.identifierController,
+    required this.passwordController,
+    required this.isSubmitting,
+    required this.errorMessage,
     required this.onTogglePassword,
     required this.onLogin,
     required this.compact,
@@ -1626,6 +2428,10 @@ class _LoginFormCard extends StatelessWidget {
   });
 
   final bool obscurePassword;
+  final TextEditingController identifierController;
+  final TextEditingController passwordController;
+  final bool isSubmitting;
+  final String? errorMessage;
   final VoidCallback onTogglePassword;
   final VoidCallback onLogin;
   final bool compact;
@@ -1682,82 +2488,82 @@ class _LoginFormCard extends StatelessWidget {
           ),
           child: LayoutBuilder(
             builder: (context, contentConstraints) {
-              return FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.topCenter,
-                child: SizedBox(
-                  width: contentConstraints.maxWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: Alignment.centerLeft,
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.person_outline,
-                              color: Colors.white,
-                              size: tablet ? 30 : 21,
-                            ),
-                            SizedBox(width: 12),
-                            Text(
-                              'Iniciar sesión',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: tablet ? 24 : 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      SizedBox(
-                        height: compact
-                            ? 2
-                            : tablet
-                            ? 22
-                            : 16,
-                      ),
-                      Text(
-                        'Usuario o correo electrónico',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: tablet ? 19 : null,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      SizedBox(
-                        height: compact
-                            ? 2
-                            : tablet
-                            ? 12
-                            : 9,
-                      ),
-                      _LoginInput(
-                        icon: Icons.person_outline,
-                        hint: 'Escribe tu usuario o correo',
-                        compact: compact,
-                        tablet: tablet,
-                      ),
-                      SizedBox(
-                        height: compact
-                            ? 2
-                            : tablet
-                            ? 22
-                            : 16,
-                      ),
-                      Row(
+              final content = SizedBox(
+                width: contentConstraints.maxWidth,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
                         children: [
+                          Icon(
+                            Icons.person_outline,
+                            color: Colors.white,
+                            size: tablet ? 30 : 21,
+                          ),
+                          SizedBox(width: 12),
                           Text(
-                            'Contraseña',
+                            'Iniciar sesión',
                             style: TextStyle(
                               color: Colors.white,
-                              fontSize: tablet ? 19 : null,
-                              fontWeight: FontWeight.w600,
+                              fontSize: tablet ? 24 : 18,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      height: compact
+                          ? 2
+                          : tablet
+                          ? 22
+                          : 12,
+                    ),
+                    Text(
+                      'Usuario o correo electrónico',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: tablet ? 19 : null,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(
+                      height: compact
+                          ? 2
+                          : tablet
+                          ? 12
+                          : 9,
+                    ),
+                    _LoginInput(
+                      controller: identifierController,
+                      icon: Icons.person_outline,
+                      hint: 'Escribe tu usuario o correo',
+                      compact: compact,
+                      tablet: tablet,
+                      textInputAction: TextInputAction.next,
+                    ),
+                    SizedBox(
+                      height: compact
+                          ? 2
+                          : tablet
+                          ? 22
+                          : 16,
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          'Contraseña',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: tablet ? 19 : null,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (tablet) ...[
                           Spacer(),
                           Flexible(
                             child: FittedBox(
@@ -1768,94 +2574,158 @@ class _LoginFormCard extends StatelessWidget {
                                 textAlign: TextAlign.right,
                                 style: TextStyle(
                                   color: Color(0xFFFF4A68),
-                                  fontSize: tablet ? 15 : 10,
+                                  fontSize: 15,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
                           ),
                         ],
+                      ],
+                    ),
+                    SizedBox(
+                      height: compact
+                          ? 2
+                          : tablet
+                          ? 12
+                          : 9,
+                    ),
+                    _LoginInput(
+                      controller: passwordController,
+                      icon: Icons.lock_outline_rounded,
+                      hint: 'Escribe tu contraseña',
+                      obscure: obscurePassword,
+                      compact: compact,
+                      tablet: tablet,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => onLogin(),
+                      trailing: IconButton(
+                        onPressed: onTogglePassword,
+                        icon: Icon(
+                          obscurePassword
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          color: Colors.white70,
+                          size: tablet
+                              ? 28
+                              : compact
+                              ? 18
+                              : 22,
+                        ),
+                        constraints: compact
+                            ? const BoxConstraints.tightFor(
+                                width: 32,
+                                height: 32,
+                              )
+                            : null,
+                        padding: EdgeInsets.zero,
                       ),
-                      SizedBox(
-                        height: compact
-                            ? 2
-                            : tablet
-                            ? 12
-                            : 9,
-                      ),
-                      _LoginInput(
-                        icon: Icons.lock_outline_rounded,
-                        hint: 'Escribe tu contraseña',
-                        obscure: obscurePassword,
-                        compact: compact,
-                        tablet: tablet,
-                        trailing: IconButton(
-                          onPressed: onTogglePassword,
-                          icon: Icon(
-                            obscurePassword
-                                ? Icons.visibility_outlined
-                                : Icons.visibility_off_outlined,
-                            color: Colors.white70,
-                            size: tablet
-                                ? 28
-                                : compact
-                                ? 18
-                                : 22,
+                    ),
+                    if (!tablet) ...[
+                      SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          '¿Olvidaste tu contraseña?',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                            color: Color(0xFFFF4A68),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
                           ),
-                          constraints: compact
-                              ? const BoxConstraints.tightFor(
-                                  width: 32,
-                                  height: 32,
-                                )
-                              : null,
-                          padding: EdgeInsets.zero,
                         ),
                       ),
-                      SizedBox(
-                        height: compact
-                            ? 3
-                            : tablet
-                            ? 26
-                            : 20,
+                    ],
+                    SizedBox(
+                      height: compact
+                          ? 3
+                          : tablet
+                          ? 26
+                          : 12,
+                    ),
+                    if (errorMessage != null) ...[
+                      Container(
+                        key: const ValueKey('login-error-message'),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0x33FF3155),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0x88FF5A72)),
+                        ),
+                        child: Text(
+                          errorMessage!,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: const Color(0xFFFFB8C2),
+                            fontSize: tablet ? 14 : 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
-                      SizedBox(
-                        height: compact
-                            ? 38
-                            : tablet
-                            ? 68
-                            : 54,
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: onLogin,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Color(0x99FF3155),
-                                    blurRadius: 10,
-                                    offset: Offset(-2, 0),
-                                  ),
-                                  BoxShadow(
-                                    color: Color(0x992F63FF),
-                                    blurRadius: 10,
-                                    offset: Offset(2, 0),
-                                  ),
-                                ],
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFFFF3155),
-                                    Color(0xFFB80035),
-                                    Color(0xFFFF1744),
-                                  ],
+                      SizedBox(height: compact ? 3 : 8),
+                    ],
+                    SizedBox(
+                      height: compact
+                          ? 38
+                          : tablet
+                          ? 68
+                          : 54,
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: isSubmitting ? null : onLogin,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x99FF3155),
+                                  blurRadius: 10,
+                                  offset: Offset(-2, 0),
                                 ),
+                                BoxShadow(
+                                  color: Color(0x992F63FF),
+                                  blurRadius: 10,
+                                  offset: Offset(2, 0),
+                                ),
+                              ],
+                              gradient: const LinearGradient(
+                                colors: [
+                                  Color(0xFFFF3155),
+                                  Color(0xFFB80035),
+                                  Color(0xFFFF1744),
+                                ],
                               ),
-                              child: Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
+                            ),
+                            child: Center(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (isSubmitting) ...[
+                                    SizedBox(
+                                      width: tablet ? 21 : 18,
+                                      height: tablet ? 21 : 18,
+                                      child: const CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      'Validando...',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: tablet ? 20 : 14,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ] else ...[
                                     Text(
                                       'Iniciar sesión',
                                       style: TextStyle(
@@ -1864,23 +2734,30 @@ class _LoginFormCard extends StatelessWidget {
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                                    SizedBox(width: 10),
+                                    const SizedBox(width: 10),
                                     Icon(
                                       Icons.arrow_forward_rounded,
                                       color: Colors.white,
                                       size: tablet ? 24 : 24,
                                     ),
                                   ],
-                                ),
+                                ],
                               ),
                             ),
                           ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               );
+              return tablet
+                  ? FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.topCenter,
+                      child: content,
+                    )
+                  : content;
             },
           ),
         ),
@@ -1891,19 +2768,25 @@ class _LoginFormCard extends StatelessWidget {
 
 class _LoginInput extends StatelessWidget {
   const _LoginInput({
+    required this.controller,
     required this.icon,
     required this.hint,
     required this.compact,
     this.tablet = false,
     this.obscure = false,
+    this.textInputAction,
+    this.onSubmitted,
     this.trailing,
   });
 
+  final TextEditingController controller;
   final IconData icon;
   final String hint;
   final bool compact;
   final bool tablet;
   final bool obscure;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
   final Widget? trailing;
 
   @override
@@ -1936,7 +2819,15 @@ class _LoginInput extends StatelessWidget {
           child: ColoredBox(
             color: const Color(0xF0171B37),
             child: TextField(
+              controller: controller,
               obscureText: obscure,
+              autocorrect: false,
+              enableSuggestions: !obscure,
+              keyboardType: obscure
+                  ? TextInputType.visiblePassword
+                  : TextInputType.emailAddress,
+              textInputAction: textInputAction,
+              onSubmitted: onSubmitted,
               style: TextStyle(
                 color: Colors.white,
                 fontSize: tablet ? 20 : null,
@@ -2166,16 +3057,27 @@ class _WalkInRegistrationButton extends StatelessWidget {
 }
 
 class _ControlOnboardingCopy extends StatelessWidget {
-  const _ControlOnboardingCopy();
+  const _ControlOnboardingCopy({this.tablet = false});
+
+  final bool tablet;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final compact = constraints.maxWidth < 360;
+        final compact =
+            constraints.maxWidth < 400 ||
+            (tablet && constraints.maxHeight < 500);
+        final scale = tablet
+            ? (constraints.maxWidth / 300).clamp(0.72, 1.45).toDouble()
+            : 1.0;
+        final titleScale = tablet
+            ? (constraints.maxWidth / 260).clamp(0.72, 1.7).toDouble()
+            : 1.0;
         final titleStyle = TextStyle(
           color: _white,
-          fontSize: compact ? 32 : 38,
+          fontSize:
+              (tablet ? (compact ? 34 : 42) : (compact ? 38 : 46)) * titleScale,
           height: 1.08,
           fontWeight: FontWeight.w800,
           letterSpacing: -0.8,
@@ -2184,54 +3086,80 @@ class _ControlOnboardingCopy extends StatelessWidget {
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'Controla entradas',
-              style: titleStyle.copyWith(color: Colors.white),
-              maxLines: 1,
-              softWrap: false,
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Controla entradas',
+                style: titleStyle.copyWith(color: Colors.white),
+                maxLines: 1,
+                softWrap: false,
+              ),
             ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'y ',
-                  style: titleStyle.copyWith(color: Colors.white),
-                  maxLines: 1,
-                  softWrap: false,
-                ),
-                ShaderMask(
-                  blendMode: BlendMode.srcIn,
-                  shaderCallback: (bounds) => const LinearGradient(
-                    colors: [Color(0xFFFF2D54), Color(0xFF287FFF)],
-                  ).createShader(bounds),
-                  child: Text(
-                    'salidas',
-                    style: titleStyle.copyWith(color: _white),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'y ',
+                    style: titleStyle.copyWith(color: Colors.white),
                     maxLines: 1,
                     softWrap: false,
                   ),
-                ),
-              ],
+                  ShaderMask(
+                    key: const ValueKey('control-onboarding-gradient-word'),
+                    blendMode: BlendMode.srcIn,
+                    shaderCallback: (bounds) => const LinearGradient(
+                      colors: [
+                        Color(0xFFFF5575),
+                        Color(0xFFFF4EA8),
+                        Color(0xFF55B8FF),
+                      ],
+                      stops: [0, 0.52, 1],
+                    ).createShader(bounds),
+                    child: Text(
+                      'salidas',
+                      style: titleStyle.copyWith(
+                        color: _white,
+                        shadows: const [
+                          Shadow(
+                            color: Color(0xFF020817),
+                            offset: Offset(0, 2),
+                            blurRadius: 3,
+                          ),
+                          Shadow(color: Color(0xCCFF245F), blurRadius: 14),
+                          Shadow(color: Color(0xAA287FFF), blurRadius: 18),
+                        ],
+                      ),
+                      maxLines: 1,
+                      softWrap: false,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 12),
-            const Text(
+            SizedBox(height: tablet ? 12 * scale : 12),
+            Text(
               'Seguimiento y seguridad',
               style: TextStyle(
                 color: Color(0xFF36BFFF),
-                fontSize: 16,
+                fontSize: (tablet ? 18 : 16) * scale,
                 fontWeight: FontWeight.w600,
                 shadows: [Shadow(color: Colors.black, blurRadius: 10)],
               ),
             ),
-            const SizedBox(height: 14),
-            const Text(
+            SizedBox(height: tablet ? 14 * scale : 14),
+            Text(
               'Consulta quién se encuentra dentro\n'
               'de las instalaciones y registra sus salidas\n'
               'para mantener un mejor control.',
               style: TextStyle(
                 color: _white,
-                fontSize: 15,
+                fontSize: (tablet ? 16 : (compact ? 16 : 17)) * scale,
                 height: 1.45,
                 shadows: [Shadow(color: Colors.black, blurRadius: 10)],
               ),
@@ -2249,17 +3177,19 @@ class _OnboardingContinueButton extends StatelessWidget {
   const _OnboardingContinueButton({
     required this.compact,
     required this.onPressed,
+    this.width,
   });
 
   final bool compact;
   final VoidCallback onPressed;
+  final double? width;
 
   @override
   Widget build(BuildContext context) {
     final tablet = MediaQuery.sizeOf(context).shortestSide >= 600;
     return Container(
-      width: tablet ? 220 : (compact ? 148 : 164),
-      height: tablet ? 68 : (compact ? 50 : 54),
+      width: width ?? (tablet ? 220 : (compact ? 160 : 176)),
+      height: tablet ? 68 : (compact ? 56 : 60),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         gradient: const LinearGradient(
@@ -2300,7 +3230,7 @@ class _OnboardingContinueButton extends StatelessWidget {
                       'Continuar',
                       style: TextStyle(
                         color: _white,
-                        fontSize: tablet ? 18 : (compact ? 14 : 15),
+                        fontSize: tablet ? 18 : (compact ? 15 : 17),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -2308,7 +3238,7 @@ class _OnboardingContinueButton extends StatelessWidget {
                     Icon(
                       Icons.arrow_forward_rounded,
                       color: _white,
-                      size: tablet ? 24 : 20,
+                      size: tablet ? 24 : (compact ? 22 : 24),
                     ),
                   ],
                 ),
@@ -2429,17 +3359,22 @@ class _WelcomeBenefits extends StatelessWidget {
 }
 
 class _StartButton extends StatelessWidget {
-  const _StartButton({required this.compact, required this.onStart});
+  const _StartButton({
+    required this.compact,
+    required this.onStart,
+    this.veryCompact = false,
+  });
 
   final bool compact;
   final VoidCallback onStart;
+  final bool veryCompact;
 
   @override
   Widget build(BuildContext context) {
     final tablet = MediaQuery.sizeOf(context).shortestSide >= 600;
     return Container(
       width: double.infinity,
-      height: tablet ? 82 : (compact ? 60 : 68),
+      height: tablet ? 82 : (veryCompact ? 58 : (compact ? 70 : 76)),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         gradient: const LinearGradient(
@@ -2478,7 +3413,9 @@ class _StartButton extends StatelessWidget {
                   'Comenzar',
                   style: TextStyle(
                     color: _white,
-                    fontSize: tablet ? 24 : (compact ? 18 : 20),
+                    fontSize: tablet
+                        ? 24
+                        : (veryCompact ? 18 : (compact ? 20 : 22)),
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -2486,7 +3423,7 @@ class _StartButton extends StatelessWidget {
                 Icon(
                   Icons.arrow_forward_rounded,
                   color: _white,
-                  size: tablet ? 32 : 25,
+                  size: tablet ? 32 : (veryCompact ? 23 : (compact ? 27 : 29)),
                 ),
               ],
             ),
@@ -2498,37 +3435,124 @@ class _StartButton extends StatelessWidget {
 }
 
 class _PageIndicator extends StatelessWidget {
-  const _PageIndicator({this.activeIndex = 0});
+  const _PageIndicator({super.key, this.activeIndex = 0, this.onSelected});
 
   final int activeIndex;
+  final ValueChanged<int>? onSelected;
 
   @override
   Widget build(BuildContext context) {
     return Semantics(
+      container: true,
       label: 'Página ${activeIndex + 1} de 3',
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: List.generate(
           3,
-          (index) => Container(
-            width: 9,
-            height: 9,
-            margin: const EdgeInsets.symmetric(horizontal: 6),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: index == activeIndex ? _red : const Color(0xFF486187),
-              boxShadow: index == activeIndex
-                  ? [
-                      BoxShadow(
-                        color: _red.withValues(alpha: 0.55),
-                        blurRadius: 9,
-                      ),
-                    ]
-                  : null,
+          (index) => Semantics(
+            button: onSelected != null,
+            selected: index == activeIndex,
+            label: 'Ir a la página ${index + 1}',
+            child: GestureDetector(
+              key: ValueKey('onboarding-page-indicator-dot-$index'),
+              behavior: HitTestBehavior.opaque,
+              onTap: onSelected == null ? null : () => onSelected!(index),
+              child: SizedBox(
+                width: 21,
+                height: 44,
+                child: Center(
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: index == activeIndex
+                          ? _red
+                          : const Color(0xFF486187),
+                      boxShadow: index == activeIndex
+                          ? [
+                              BoxShadow(
+                                color: _red.withValues(alpha: 0.55),
+                                blurRadius: 9,
+                              ),
+                            ]
+                          : null,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+void _navigateToOnboardingPage(
+  BuildContext context,
+  int currentIndex,
+  int targetIndex,
+) {
+  if (targetIndex == currentIndex || targetIndex < 0 || targetIndex > 2) {
+    return;
+  }
+
+  final page = switch (targetIndex) {
+    0 => const ReceptionOnboardingPage(),
+    1 => const ReceptionControlOnboardingPage(),
+    _ => const ReceptionReadyOnboardingPage(),
+  };
+  final route = MaterialPageRoute<void>(builder: (_) => page);
+  final navigator = Navigator.of(context);
+  if (targetIndex > currentIndex) {
+    navigator.push(route);
+  } else if (currentIndex - targetIndex == 1 && navigator.canPop()) {
+    navigator.pop();
+  } else {
+    navigator.pushReplacement(route);
+  }
+}
+
+class _OnboardingSwipeDetector extends StatefulWidget {
+  const _OnboardingSwipeDetector({
+    required this.activeIndex,
+    required this.child,
+  });
+
+  final int activeIndex;
+  final Widget child;
+
+  @override
+  State<_OnboardingSwipeDetector> createState() =>
+      _OnboardingSwipeDetectorState();
+}
+
+class _OnboardingSwipeDetectorState extends State<_OnboardingSwipeDetector> {
+  double _dragDistance = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragStart: (_) => _dragDistance = 0,
+      onHorizontalDragUpdate: (details) => _dragDistance += details.delta.dx,
+      onHorizontalDragEnd: (_) {
+        if (_dragDistance > 72 && widget.activeIndex < 2) {
+          _navigateToOnboardingPage(
+            context,
+            widget.activeIndex,
+            widget.activeIndex + 1,
+          );
+        } else if (_dragDistance < -72 && widget.activeIndex > 0) {
+          _navigateToOnboardingPage(
+            context,
+            widget.activeIndex,
+            widget.activeIndex - 1,
+          );
+        }
+      },
+      child: widget.child,
     );
   }
 }
@@ -2562,32 +3586,40 @@ class WalkInVisitorPage extends StatefulWidget {
 }
 
 class _WalkInVisitorPageState extends State<WalkInVisitorPage> {
-  @override
-  void initState() {
-    super.initState();
-  }
+  bool? _tabletOrientationConfigured;
+  bool _walkInAssetsPrecached = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final size = MediaQuery.sizeOf(context);
-    SystemChrome.setPreferredOrientations(
-      size.shortestSide >= 600
-          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-          : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
-    );
-    precacheImage(
-      const AssetImage('assets/images/walk-in-registration-background.webp'),
-      context,
-    );
-    precacheImage(
-      const AssetImage('assets/images/walk-in-panel-frame.webp'),
-      context,
-    );
-    precacheImage(
-      const AssetImage('assets/images/walk-in-tablet.webp'),
-      context,
-    );
+    final isTablet = size.shortestSide >= 600;
+    if (_tabletOrientationConfigured != isTablet) {
+      _tabletOrientationConfigured = isTablet;
+      SystemChrome.setPreferredOrientations(
+        isTablet
+            ? [
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ]
+            : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
+      );
+    }
+    if (!_walkInAssetsPrecached) {
+      _walkInAssetsPrecached = true;
+      precacheImage(
+        const AssetImage('assets/images/walk-in-registration-background.webp'),
+        context,
+      );
+      precacheImage(
+        const AssetImage('assets/images/walk-in-panel-frame.webp'),
+        context,
+      );
+      precacheImage(
+        const AssetImage('assets/images/walk-in-tablet.webp'),
+        context,
+      );
+    }
   }
 
   @override
@@ -2602,17 +3634,21 @@ class _WalkInVisitorPageState extends State<WalkInVisitorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
     return Scaffold(
       backgroundColor: const Color(0xFF020817),
-      body: const _WalkInLandscapeKiosk(),
+      body: size.shortestSide >= 600 && size.height > size.width
+          ? _WalkInRotatePrompt(onExit: _back, tablet: true)
+          : const _WalkInLandscapeKiosk(),
     );
   }
 }
 
 class _WalkInRotatePrompt extends StatelessWidget {
-  const _WalkInRotatePrompt({required this.onExit});
+  const _WalkInRotatePrompt({required this.onExit, this.tablet = false});
 
   final VoidCallback onExit;
+  final bool tablet;
 
   @override
   Widget build(BuildContext context) {
@@ -2656,8 +3692,8 @@ class _WalkInRotatePrompt extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  const Text(
-                    'Gira tu celular',
+                  Text(
+                    'Gira tu ${tablet ? 'tablet' : 'celular'}',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Colors.white,
@@ -2698,23 +3734,170 @@ class _WalkInLandscapeKiosk extends StatefulWidget {
   State<_WalkInLandscapeKiosk> createState() => _WalkInLandscapeKioskState();
 }
 
+class _TabletKioskWelcomeCopy extends StatelessWidget {
+  const _TabletKioskWelcomeCopy({required this.scale, required this.onStart});
+
+  final double scale;
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    final titleStyle = TextStyle(
+      color: Colors.white,
+      fontSize: 44 * scale,
+      height: 1,
+      fontWeight: FontWeight.w900,
+    );
+
+    return Column(
+      key: const ValueKey('tablet-kiosk-welcome-copy'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Image.asset(
+              'assets/images/walk-in-access-shield.webp',
+              width: 42 * scale,
+              height: 42 * scale,
+              fit: BoxFit.contain,
+            ),
+            SizedBox(width: 14 * scale),
+            Expanded(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'CONTROL DE ACCESO',
+                  style: TextStyle(
+                    color: const Color(0xFFD9E2F3),
+                    fontSize: 22 * scale,
+                    letterSpacing: 1.4 * scale,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 18 * scale),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('Bienvenido a nuestras', style: titleStyle),
+        ),
+        ShaderMask(
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (bounds) => const LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: [
+              Color(0xFFF8FAFF),
+              Color(0xFFF8FAFF),
+              Color(0xFF087FFF),
+              Color(0xFFE53E4B),
+            ],
+            stops: [0, .43, .68, 1],
+          ).createShader(bounds),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text('instalaciones', style: titleStyle),
+          ),
+        ),
+        SizedBox(height: 18 * scale),
+        Text(
+          'Para ingresar, completa tu registro de\nvisitante.',
+          style: TextStyle(
+            color: const Color(0xFFC7D0E3),
+            fontSize: 16 * scale,
+            height: 1.45,
+          ),
+        ),
+        SizedBox(height: 18 * scale),
+        Container(
+          width: 205 * scale,
+          height: 40 * scale,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10 * scale),
+            gradient: const LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [Color(0xFFE53E4B), Color(0xFF087FFF)],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0x66E53E4B),
+                blurRadius: 18 * scale,
+                offset: Offset(0, 8 * scale),
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const ValueKey('tablet-kiosk-welcome-start-button'),
+              onTap: onStart,
+              borderRadius: BorderRadius.circular(10 * scale),
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14 * scale),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.person_add_alt_1_rounded,
+                        color: Colors.white,
+                        size: 18 * scale,
+                      ),
+                      SizedBox(width: 7 * scale),
+                      Text(
+                        'Comenzar registro',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16 * scale,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(width: 8 * scale),
+                      Icon(
+                        Icons.arrow_forward_rounded,
+                        color: Colors.white,
+                        size: 18 * scale,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
   bool _started = false;
+  int _tabletStep = 1;
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    if (size.width < 240 || size.height < 160) {
+      return const SizedBox.expand();
+    }
     final compact = size.height < 430;
     final portrait = size.height > size.width;
+    final tabletForm = size.shortestSide >= 600 && _started;
     final tabletWelcome = size.shortestSide >= 600 && !_started;
     return Stack(
       fit: StackFit.expand,
       children: [
         Image.asset(
-          tabletWelcome
-              ? 'assets/images/tablet-kiosk-welcome.png'
-              : 'assets/images/walk-in-registration-background.webp',
-          fit: tabletWelcome ? BoxFit.contain : BoxFit.cover,
+          'assets/images/walk-in-registration-background.webp',
+          fit: BoxFit.cover,
           cacheWidth: 1400,
           filterQuality: FilterQuality.high,
         ),
@@ -2733,237 +3916,294 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
             ),
           ),
         if (tabletWelcome)
-          Positioned(
-            left: size.width * 0.045,
-            top: size.height * 0.72,
-            width: size.width * 0.245,
-            height: size.height * 0.085,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => setState(() => _started = true),
-              ),
-            ),
-          ),
-        if (tabletWelcome)
-          const Opacity(opacity: 0, child: Text('Comenzar registro')),
-        SafeArea(
-          child: Column(
-            children: [
-              if (!tabletWelcome)
-                Padding(
-                  padding: EdgeInsets.fromLTRB(
-                    compact ? 18 : 28,
-                    compact ? 8 : 16,
-                    compact ? 18 : 28,
-                    4,
-                  ),
-                  child: Row(
-                    children: [
-                      Image.asset(
-                        'assets/images/cymez-reception-logo.webp',
-                        height: compact ? 34 : 46,
-                        width: portrait ? 84 : null,
-                        fit: BoxFit.contain,
-                      ),
-                      const Spacer(),
-                      Container(
-                        constraints: BoxConstraints(
-                          maxWidth: portrait
-                              ? size.width * 0.48
-                              : double.infinity,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xCC07101F),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0x661FA4FF)),
-                        ),
-                        child: const FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.person_add_alt_1_rounded,
-                                color: Color(0xFF087FFF),
-                                size: 17,
-                              ),
-                              SizedBox(width: 7),
-                              Text(
-                                'Registro de visitantes',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+          SafeArea(
+            child: Column(
+              children: [
+                _WalkInTabletHeader(width: size.width),
+                Expanded(
+                  child: _TabletKioskWelcomePanel(
+                    onStart: () => setState(() => _started = true),
                   ),
                 ),
-              if (!tabletWelcome)
+              ],
+            ),
+          ),
+        if (tabletForm)
+          SafeArea(
+            child: Column(
+              children: [
+                _WalkInTabletHeader(width: size.width),
                 Expanded(
-                  child: Container(
-                    margin: EdgeInsets.fromLTRB(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final cardWidth = math.min(
+                        constraints.maxWidth * .92,
+                        math.min(constraints.maxHeight * 1.52, 1180.0),
+                      );
+                      final cardHeight = cardWidth / (1191 / 719);
+                      final formContent = _tabletStep == 1
+                          ? _TabletWalkInForm(
+                              onPrevious: () =>
+                                  setState(() => _started = false),
+                              onContinue: () => setState(() => _tabletStep = 2),
+                            )
+                          : _tabletStep == 2
+                          ? _TabletWalkInEquipmentStep(
+                              onPrevious: () => setState(() => _tabletStep = 1),
+                              onContinue: () => setState(() => _tabletStep = 3),
+                            )
+                          : _tabletStep == 3
+                          ? _TabletWalkInIdentificationStep(
+                              onPrevious: () => setState(() => _tabletStep = 2),
+                              onContinue: () => setState(() => _tabletStep = 4),
+                            )
+                          : _TabletWalkInReviewStep(
+                              onPrevious: () => setState(() => _tabletStep = 3),
+                              onSubmit: () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'El envío del registro aún no está conectado.',
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                      final card = Container(
+                        key: const ValueKey('tablet-walk-in-form-card'),
+                        constraints: BoxConstraints(
+                          maxHeight: constraints.maxHeight,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(26),
+                          image: const DecorationImage(
+                            image: AssetImage(
+                              'assets/images/visitor-feature-card.webp',
+                            ),
+                            fit: BoxFit.fill,
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x66087FFF),
+                              blurRadius: 28,
+                              spreadRadius: -10,
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(26),
+                          child: formContent,
+                        ),
+                      );
+                      return Center(
+                        child: AnimatedSize(
+                          duration: const Duration(milliseconds: 220),
+                          curve: Curves.easeInOut,
+                          alignment: Alignment.center,
+                          child: _tabletStep == 1
+                              ? SizedBox(
+                                  width: cardWidth,
+                                  height: cardHeight,
+                                  child: card,
+                                )
+                              : ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxWidth: cardWidth,
+                                    maxHeight: constraints.maxHeight,
+                                  ),
+                                  child: SizedBox(
+                                    width: cardWidth,
+                                    child: card,
+                                  ),
+                                ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (!tabletForm)
+          SafeArea(
+            child: Column(
+              children: [
+                if (!tabletWelcome)
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
                       compact ? 18 : 28,
-                      8,
+                      compact ? 8 : 16,
                       compact ? 18 : 28,
-                      compact ? 14 : 20,
+                      4,
                     ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(22),
-                      border: Border.all(
-                        color: const Color(0xB53D8FFF),
-                        width: 1.2,
-                      ),
-                      gradient: const LinearGradient(
-                        colors: [Color(0xE5121D38), Color(0xE5081024)],
-                      ),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0xA8084BB0),
-                          blurRadius: 28,
-                          spreadRadius: -12,
+                    child: Row(
+                      children: [
+                        Image.asset(
+                          'assets/images/cymez-reception-logo.webp',
+                          height: compact ? 34 : 46,
+                          width: portrait ? 84 : null,
+                          fit: BoxFit.contain,
+                        ),
+                        const Spacer(),
+                        Container(
+                          constraints: BoxConstraints(
+                            maxWidth: portrait
+                                ? size.width * 0.48
+                                : double.infinity,
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xCC07101F),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0x661FA4FF)),
+                          ),
+                          child: const FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.person_add_alt_1_rounded,
+                                  color: Color(0xFF087FFF),
+                                  size: 17,
+                                ),
+                                SizedBox(width: 7),
+                                Text(
+                                  'Registro de visitantes',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ],
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(21),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.asset(
-                            'assets/images/walk-in-panel-frame.webp',
-                            fit: BoxFit.cover,
-                            filterQuality: FilterQuality.high,
+                  ),
+                if (!tabletWelcome)
+                  Expanded(
+                    child: Container(
+                      margin: EdgeInsets.fromLTRB(
+                        compact ? 18 : 28,
+                        8,
+                        compact ? 18 : 28,
+                        compact ? 14 : 20,
+                      ),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: const Color(0xB53D8FFF),
+                          width: 1.2,
+                        ),
+                        gradient: const LinearGradient(
+                          colors: [Color(0xE5121D38), Color(0xE5081024)],
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0xA8084BB0),
+                            blurRadius: 28,
+                            spreadRadius: -12,
                           ),
-                          Container(color: const Color(0x2607101F)),
-                          Row(
-                            children: [
-                              Expanded(
-                                flex: _started || portrait ? 100 : 48,
-                                child: Padding(
-                                  padding: EdgeInsets.fromLTRB(
-                                    portrait ? 14 : (compact ? 22 : 38),
-                                    _started
-                                        ? (compact ? 18 : 28)
-                                        : portrait
-                                        ? (compact ? 28 : 44)
-                                        : (compact ? 150 : 170),
-                                    portrait ? 14 : (compact ? 12 : 24),
-                                    compact ? 16 : 28,
-                                  ),
-                                  child: _started
-                                      ? const _WalkInForm(compact: false)
-                                      : SingleChildScrollView(
-                                          child: Column(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.start,
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment.start,
-                                                children: [
-                                                  Image.asset(
-                                                    'assets/images/walk-in-access-shield.webp',
-                                                    width: size.width < 700
-                                                        ? 52
-                                                        : size.width < 900
-                                                        ? 68
-                                                        : 82,
-                                                    height: size.width < 700
-                                                        ? 52
-                                                        : size.width < 900
-                                                        ? 68
-                                                        : 82,
-                                                    fit: BoxFit.contain,
-                                                  ),
-                                                  SizedBox(
-                                                    width: compact ? 8 : 14,
-                                                  ),
-                                                  Flexible(
-                                                    child: Text(
-                                                      'CONTROL DE ACCESO',
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: TextStyle(
-                                                        color: const Color(
-                                                          0xFFD9E2F3,
-                                                        ),
-                                                        fontSize: portrait
-                                                            ? 16
-                                                            : (size.width < 700
-                                                                  ? 18
-                                                                  : size.width <
-                                                                        900
-                                                                  ? 22
-                                                                  : 26),
-                                                        letterSpacing: 1.6,
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              SizedBox(
-                                                height: compact ? 8 : 14,
-                                              ),
-                                              Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    'Bienvenido a nuestras',
-                                                    style: TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: size.width < 700
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(21),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.asset(
+                              'assets/images/walk-in-panel-frame.webp',
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.high,
+                            ),
+                            Container(color: const Color(0x2607101F)),
+                            Row(
+                              children: [
+                                Expanded(
+                                  flex: _started || portrait ? 100 : 48,
+                                  child: Padding(
+                                    padding: EdgeInsets.fromLTRB(
+                                      portrait ? 14 : (compact ? 22 : 38),
+                                      _started
+                                          ? (compact ? 18 : 28)
+                                          : portrait
+                                          ? (compact ? 28 : 44)
+                                          : (compact ? 150 : 170),
+                                      portrait ? 14 : (compact ? 12 : 24),
+                                      compact ? 16 : 28,
+                                    ),
+                                    child: _started
+                                        ? const _WalkInForm(compact: false)
+                                        : SingleChildScrollView(
+                                            child: Column(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.start,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Row(
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment.start,
+                                                  children: [
+                                                    Image.asset(
+                                                      'assets/images/walk-in-access-shield.webp',
+                                                      width: size.width < 700
                                                           ? 52
                                                           : size.width < 900
-                                                          ? 64
-                                                          : 62,
-                                                      height: 1.18,
-                                                      fontWeight:
-                                                          FontWeight.w900,
+                                                          ? 68
+                                                          : 82,
+                                                      height: size.width < 700
+                                                          ? 52
+                                                          : size.width < 900
+                                                          ? 68
+                                                          : 82,
+                                                      fit: BoxFit.contain,
                                                     ),
-                                                    softWrap: false,
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.visible,
-                                                  ),
-                                                  ShaderMask(
-                                                    shaderCallback: (bounds) =>
-                                                        const LinearGradient(
-                                                          begin: Alignment
-                                                              .centerLeft,
-                                                          end: Alignment
-                                                              .centerRight,
-                                                          colors: [
-                                                            Color(0xFFF8FAFF),
-                                                            Color(0xFFF8FAFF),
-                                                            Color(0xFF087FFF),
-                                                            Color(0xFFE53E4B),
-                                                          ],
-                                                          stops: [
-                                                            0,
-                                                            .43,
-                                                            .68,
-                                                            1,
-                                                          ],
-                                                        ).createShader(bounds),
-                                                    child: Text(
-                                                      'instalaciones',
+                                                    SizedBox(
+                                                      width: compact ? 8 : 14,
+                                                    ),
+                                                    Flexible(
+                                                      child: Text(
+                                                        'CONTROL DE ACCESO',
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: TextStyle(
+                                                          color: const Color(
+                                                            0xFFD9E2F3,
+                                                          ),
+                                                          fontSize: portrait
+                                                              ? 16
+                                                              : (size.width <
+                                                                        700
+                                                                    ? 18
+                                                                    : size.width <
+                                                                          900
+                                                                    ? 22
+                                                                    : 26),
+                                                          letterSpacing: 1.6,
+                                                          fontWeight:
+                                                              FontWeight.w800,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                                SizedBox(
+                                                  height: compact ? 8 : 14,
+                                                ),
+                                                Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      'Bienvenido a nuestras',
                                                       style: TextStyle(
                                                         color: Colors.white,
                                                         fontSize:
@@ -2981,191 +4221,504 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
                                                       overflow:
                                                           TextOverflow.visible,
                                                     ),
-                                                  ),
-                                                ],
-                                              ),
-                                              SizedBox(
-                                                height: compact ? 8 : 14,
-                                              ),
-                                              Text(
-                                                'Para ingresar, completa tu registro de visitante.',
-                                                style: TextStyle(
-                                                  color: Color(0xFFC7D0E3),
-                                                  fontSize: size.width < 700
-                                                      ? 16
-                                                      : size.width < 900
-                                                      ? 22
-                                                      : 26,
-                                                ),
-                                              ),
-                                              SizedBox(
-                                                height: compact ? 12 : 20,
-                                              ),
-                                              Container(
-                                                decoration: BoxDecoration(
-                                                  gradient:
-                                                      const LinearGradient(
-                                                        begin: Alignment
-                                                            .centerLeft,
-                                                        end: Alignment
-                                                            .centerRight,
-                                                        colors: [
-                                                          Color(0xFFE53E4B),
-                                                          Color(0xFF087FFF),
-                                                        ],
+                                                    ShaderMask(
+                                                      shaderCallback: (bounds) =>
+                                                          const LinearGradient(
+                                                            begin: Alignment
+                                                                .centerLeft,
+                                                            end: Alignment
+                                                                .centerRight,
+                                                            colors: [
+                                                              Color(0xFFF8FAFF),
+                                                              Color(0xFFF8FAFF),
+                                                              Color(0xFF087FFF),
+                                                              Color(0xFFE53E4B),
+                                                            ],
+                                                            stops: [
+                                                              0,
+                                                              .43,
+                                                              .68,
+                                                              1,
+                                                            ],
+                                                          ).createShader(
+                                                            bounds,
+                                                          ),
+                                                      child: Text(
+                                                        'instalaciones',
+                                                        style: TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize:
+                                                              size.width < 700
+                                                              ? 52
+                                                              : size.width < 900
+                                                              ? 64
+                                                              : 62,
+                                                          height: 1.18,
+                                                          fontWeight:
+                                                              FontWeight.w900,
+                                                        ),
+                                                        softWrap: false,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .visible,
                                                       ),
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                  boxShadow: const [
-                                                    BoxShadow(
-                                                      color: Color(0x66E53E4B),
-                                                      blurRadius: 18,
-                                                      offset: Offset(0, 8),
                                                     ),
                                                   ],
                                                 ),
-                                                child: ElevatedButton.icon(
-                                                  style: ElevatedButton.styleFrom(
-                                                    foregroundColor:
-                                                        Colors.white,
-                                                    backgroundColor:
-                                                        Colors.transparent,
-                                                    shadowColor:
-                                                        Colors.transparent,
-                                                    elevation: 0,
-                                                    padding:
-                                                        EdgeInsets.symmetric(
-                                                          horizontal:
-                                                              size.width < 700
-                                                              ? 22
-                                                              : 26,
-                                                          vertical:
-                                                              size.height < 430
-                                                              ? 15
-                                                              : 22,
+                                                SizedBox(
+                                                  height: compact ? 8 : 14,
+                                                ),
+                                                Text(
+                                                  'Para ingresar, completa tu registro de visitante.',
+                                                  style: TextStyle(
+                                                    color: Color(0xFFC7D0E3),
+                                                    fontSize: size.width < 700
+                                                        ? 16
+                                                        : size.width < 900
+                                                        ? 22
+                                                        : 26,
+                                                  ),
+                                                ),
+                                                SizedBox(
+                                                  height: compact ? 12 : 20,
+                                                ),
+                                                Container(
+                                                  decoration: BoxDecoration(
+                                                    gradient:
+                                                        const LinearGradient(
+                                                          begin: Alignment
+                                                              .centerLeft,
+                                                          end: Alignment
+                                                              .centerRight,
+                                                          colors: [
+                                                            Color(0xFFE53E4B),
+                                                            Color(0xFF087FFF),
+                                                          ],
                                                         ),
-                                                    shape: RoundedRectangleBorder(
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            12,
-                                                          ),
-                                                    ),
-                                                  ),
-                                                  onPressed: () => setState(
-                                                    () => _started = true,
-                                                  ),
-                                                  icon: const Icon(
-                                                    Icons
-                                                        .person_add_alt_1_rounded,
-                                                    size: 24,
-                                                  ),
-                                                  label: Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Flexible(
-                                                        child: Text(
-                                                          'Comenzar registro',
-                                                          maxLines: 1,
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          style: TextStyle(
-                                                            fontWeight:
-                                                                FontWeight.w900,
-                                                            fontSize: portrait
-                                                                ? 14
-                                                                : (size.width <
-                                                                          700
-                                                                      ? 18
-                                                                      : 22),
-                                                          ),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          12,
                                                         ),
-                                                      ),
-                                                      const SizedBox(width: 14),
-                                                      const Icon(
-                                                        Icons
-                                                            .arrow_forward_rounded,
-                                                        size: 24,
+                                                    boxShadow: const [
+                                                      BoxShadow(
+                                                        color: Color(
+                                                          0x66E53E4B,
+                                                        ),
+                                                        blurRadius: 18,
+                                                        offset: Offset(0, 8),
                                                       ),
                                                     ],
                                                   ),
+                                                  child: ElevatedButton.icon(
+                                                    style: ElevatedButton.styleFrom(
+                                                      foregroundColor:
+                                                          Colors.white,
+                                                      backgroundColor:
+                                                          Colors.transparent,
+                                                      shadowColor:
+                                                          Colors.transparent,
+                                                      elevation: 0,
+                                                      padding:
+                                                          EdgeInsets.symmetric(
+                                                            horizontal:
+                                                                size.width < 700
+                                                                ? 22
+                                                                : 26,
+                                                            vertical:
+                                                                size.height <
+                                                                    430
+                                                                ? 15
+                                                                : 22,
+                                                          ),
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              12,
+                                                            ),
+                                                      ),
+                                                    ),
+                                                    onPressed: () => setState(
+                                                      () => _started = true,
+                                                    ),
+                                                    icon: const Icon(
+                                                      Icons
+                                                          .person_add_alt_1_rounded,
+                                                      size: 24,
+                                                    ),
+                                                    label: Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Flexible(
+                                                          child: Text(
+                                                            'Comenzar registro',
+                                                            maxLines: 1,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style: TextStyle(
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w900,
+                                                              fontSize: portrait
+                                                                  ? 14
+                                                                  : (size.width <
+                                                                            700
+                                                                        ? 18
+                                                                        : 22),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 14,
+                                                        ),
+                                                        const Icon(
+                                                          Icons
+                                                              .arrow_forward_rounded,
+                                                          size: 24,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
+                                              ],
+                                            ),
                                           ),
-                                        ),
+                                  ),
                                 ),
-                              ),
-                              if (!_started && !portrait)
-                                Expanded(
-                                  flex: 52,
-                                  child: Align(
-                                    alignment: Alignment.topRight,
-                                    child: FractionallySizedBox(
-                                      widthFactor: compact ? .84 : .78,
-                                      heightFactor: compact ? .82 : .86,
-                                      child: Transform.translate(
-                                        offset: Offset(0, compact ? 4 : 8),
-                                        child: Transform.rotate(
-                                          angle: -.012,
-                                          child: Image.asset(
-                                            'assets/images/walk-in-tablet.webp',
-                                            fit: BoxFit.contain,
-                                            filterQuality: FilterQuality.high,
+                                if (!_started && !portrait)
+                                  Expanded(
+                                    flex: 52,
+                                    child: Align(
+                                      alignment: Alignment.topRight,
+                                      child: FractionallySizedBox(
+                                        widthFactor: compact ? .84 : .78,
+                                        heightFactor: compact ? .82 : .86,
+                                        child: Transform.translate(
+                                          offset: Offset(0, compact ? 4 : 8),
+                                          child: Transform.rotate(
+                                            angle: -.012,
+                                            child: Image.asset(
+                                              'assets/images/walk-in-tablet.webp',
+                                              fit: BoxFit.contain,
+                                              filterQuality: FilterQuality.high,
+                                            ),
                                           ),
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
-                            ],
-                          ),
-                          if (!_started && !tabletWelcome)
-                            Positioned(
-                              left: compact ? 18 : 32,
-                              right: compact ? 18 : 32,
-                              bottom: compact ? 42 : 54,
-                              height: compact ? 58 : 68,
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: const [
-                                  Expanded(
-                                    child: _WalkInBenefit(
-                                      icon: Icons.bolt_rounded,
-                                      title: 'Proceso rápido',
-                                      subtitle: 'En pocos minutos',
-                                      color: Color(0xFFFF3155),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: _WalkInBenefit(
-                                      icon: Icons.shield_outlined,
-                                      title: 'Seguro y confiable',
-                                      subtitle: 'Tu información protegida',
-                                      color: Color(0xFF087FFF),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: _WalkInBenefit(
-                                      icon: Icons.person_add_alt_1_rounded,
-                                      title: 'Acceso controlado',
-                                      subtitle: 'Para tu seguridad',
-                                      color: Color(0xFFE7EEF9),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              ],
                             ),
-                        ],
+                            if (!_started && !tabletWelcome)
+                              Positioned(
+                                left: compact ? 18 : 32,
+                                right: compact ? 18 : 32,
+                                bottom: compact ? 42 : 54,
+                                height: compact ? 58 : 68,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: const [
+                                    Expanded(
+                                      child: _WalkInBenefit(
+                                        icon: Icons.bolt_rounded,
+                                        title: 'Proceso rápido',
+                                        subtitle: 'En pocos minutos',
+                                        color: Color(0xFFFF3155),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _WalkInBenefit(
+                                        icon: Icons.shield_outlined,
+                                        title: 'Seguro y confiable',
+                                        subtitle: 'Tu información protegida',
+                                        color: Color(0xFF087FFF),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: _WalkInBenefit(
+                                        icon: Icons.person_add_alt_1_rounded,
+                                        title: 'Acceso controlado',
+                                        subtitle: 'Para tu seguridad',
+                                        color: Color(0xFFE7EEF9),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TabletKioskWelcomePanel extends StatelessWidget {
+  const _TabletKioskWelcomePanel({required this.onStart});
+
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final scale = (width / 1180).clamp(.68, 1.25);
+        final benefitsScale =
+            ((width - 64 * scale - 24) / 3 / 270).clamp(.52, 1.0) *
+            (width / 1024).clamp(.72, 1.0);
+        final benefitsHeight = 112 * scale;
+        return Container(
+          key: const ValueKey('tablet-kiosk-welcome-panel'),
+          margin: EdgeInsets.fromLTRB(
+            width * .055,
+            0,
+            width * .055,
+            14 * scale,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22 * scale),
+            border: Border.all(
+              color: const Color(0xB53D8FFF),
+              width: 1.2 * scale,
+            ),
+            gradient: const LinearGradient(
+              colors: [Color(0xE5121D38), Color(0xE5081024)],
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0xA8084BB0),
+                blurRadius: 28,
+                spreadRadius: -12,
+              ),
             ],
           ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(21 * scale),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.asset(
+                  'assets/images/walk-in-panel-frame.webp',
+                  fit: BoxFit.cover,
+                  filterQuality: FilterQuality.high,
+                ),
+                Container(color: const Color(0x2607101F)),
+                Column(
+                  children: [
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, contentConstraints) {
+                          final contentScale =
+                              (contentConstraints.maxHeight / 500).clamp(
+                                .62,
+                                scale,
+                              );
+                          return Row(
+                            children: [
+                              Expanded(
+                                flex: 58,
+                                child: Padding(
+                                  padding: EdgeInsets.fromLTRB(
+                                    52 * contentScale,
+                                    24 * contentScale,
+                                    12 * contentScale,
+                                    12 * contentScale,
+                                  ),
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Transform.translate(
+                                      offset: Offset(0, -20 * contentScale),
+                                      child: _TabletKioskWelcomeCopy(
+                                        scale: contentScale,
+                                        onStart: onStart,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 42,
+                                child: Padding(
+                                  padding: EdgeInsets.fromLTRB(
+                                    0,
+                                    10 * contentScale,
+                                    22 * contentScale,
+                                    8 * contentScale,
+                                  ),
+                                  child: Transform.rotate(
+                                    angle: -.012,
+                                    child: Image.asset(
+                                      'assets/images/walk-in-tablet.webp',
+                                      fit: BoxFit.contain,
+                                      filterQuality: FilterQuality.high,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                    SizedBox(
+                      key: const ValueKey('tablet-kiosk-benefits'),
+                      height: benefitsHeight,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 28 * scale,
+                          vertical: 6 * scale,
+                        ),
+                        child: Transform.translate(
+                          key: const ValueKey('tablet-kiosk-benefits-content'),
+                          offset: Offset(0, -16 * scale),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: _WalkInBenefit(
+                                  icon: Icons.bolt_rounded,
+                                  title: 'Proceso rápido',
+                                  subtitle: 'En pocos minutos',
+                                  color: Color(0xFFFF3155),
+                                  scale: benefitsScale,
+                                ),
+                              ),
+                              _WalkInBenefitDivider(),
+                              Expanded(
+                                child: _WalkInBenefit(
+                                  icon: Icons.shield_outlined,
+                                  title: 'Seguro y confiable',
+                                  subtitle: 'Tu información protegida',
+                                  color: Color(0xFF087FFF),
+                                  scale: benefitsScale,
+                                ),
+                              ),
+                              _WalkInBenefitDivider(),
+                              Expanded(
+                                child: _WalkInBenefit(
+                                  icon: Icons.person_add_alt_1_rounded,
+                                  title: 'Acceso controlado',
+                                  subtitle: 'Para tu seguridad',
+                                  color: Color(0xFFE7EEF9),
+                                  scale: benefitsScale,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _WalkInTabletHeader extends StatelessWidget {
+  const _WalkInTabletHeader({required this.width});
+
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = (width / 1024).clamp(.75, 1.25);
+    return SizedBox(
+      key: const ValueKey('walk-in-tablet-header'),
+      height: 88 * scale,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 44 * scale),
+        child: Row(
+          children: [
+            Image.asset(
+              'assets/images/cymez-visitor-logo.webp',
+              key: const ValueKey('walk-in-tablet-brand-logo'),
+              width: 64 * scale,
+              height: 72 * scale,
+              fit: BoxFit.contain,
+            ),
+            SizedBox(width: 12 * scale),
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RichText(
+                  text: TextSpan(
+                    style: TextStyle(
+                      fontSize: 18 * scale,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.1 * scale,
+                    ),
+                    children: const [
+                      TextSpan(
+                        text: 'CYMEZ ',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      TextSpan(
+                        text: 'RECEP',
+                        style: TextStyle(color: Color(0xFFFF3155)),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 4 * scale),
+                Text(
+                  'VISITAS · CONTROL · SEGURIDAD',
+                  style: TextStyle(
+                    color: const Color(0xFFDCE6F7),
+                    fontSize: 10 * scale,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.2 * scale,
+                  ),
+                ),
+              ],
+            ),
+            const Spacer(),
+            Padding(
+              padding: EdgeInsets.only(right: 6 * scale),
+              child: Icon(
+                Icons.people_outline_rounded,
+                color: const Color(0xFFDCE6F7),
+                size: 23 * scale,
+              ),
+            ),
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'REGISTRO DE VISITANTES',
+                  style: TextStyle(
+                    color: const Color(0xFFDCE6F7),
+                    fontSize: 11 * scale,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1 * scale,
+                  ),
+                ),
+                SizedBox(height: 7 * scale),
+                Container(
+                  width: 28 * scale,
+                  height: 3 * scale,
+                  color: const Color(0xFFFF3155),
+                ),
+              ],
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }
@@ -3176,58 +4729,98 @@ class _WalkInBenefit extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.color,
+    this.scale,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final Color color;
+  final double? scale;
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final portrait = size.height > size.width;
-    final iconSize = portrait ? 24.0 : (size.width < 700 ? 34.0 : 44.0);
-    final titleSize = portrait ? 12.0 : (size.width < 700 ? 17.0 : 22.0);
-    final subtitleSize = portrait ? 10.0 : (size.width < 700 ? 15.0 : 18.0);
+    final benefitScale = scale;
+    final iconSize = benefitScale != null
+        ? 38 * benefitScale
+        : portrait
+        ? 24.0
+        : (size.width < 700 ? 34.0 : 44.0);
+    final titleSize = benefitScale != null
+        ? 20 * benefitScale
+        : portrait
+        ? 12.0
+        : (size.width < 700 ? 17.0 : 22.0);
+    final subtitleSize = benefitScale != null
+        ? 16 * benefitScale
+        : portrait
+        ? 10.0
+        : (size.width < 700 ? 15.0 : 18.0);
     return Container(
+      key: ValueKey('walk-in-benefit-$title'),
       alignment: Alignment.center,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(icon, color: color, size: iconSize),
-          SizedBox(width: portrait ? 6 : 12),
+          SizedBox(
+            width: benefitScale != null
+                ? 8 * benefitScale
+                : portrait
+                ? 6
+                : 12,
+          ),
           Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: titleSize,
-                    fontWeight: FontWeight.w800,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    key: ValueKey('walk-in-benefit-title-$title'),
+                    title,
+                    maxLines: 1,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: titleSize,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: const Color(0xFFBAC7DE),
-                    fontSize: subtitleSize,
+                  Text(
+                    key: ValueKey('walk-in-benefit-subtitle-$title'),
+                    subtitle,
+                    maxLines: 1,
+                    style: TextStyle(
+                      color: const Color(0xFFBAC7DE),
+                      fontSize: subtitleSize,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _WalkInBenefitDivider extends StatelessWidget {
+  const _WalkInBenefitDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 1,
+      height: 48,
+      margin: const EdgeInsets.symmetric(horizontal: 6),
+      color: const Color(0x333D8FFF),
     );
   }
 }
@@ -3351,6 +4944,1789 @@ class _WalkInForm extends StatelessWidget {
   }
 }
 
+class _TabletWalkInForm extends StatelessWidget {
+  const _TabletWalkInForm({required this.onPrevious, required this.onContinue});
+
+  final VoidCallback onPrevious;
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = math
+            .min(constraints.maxWidth / 1180, constraints.maxHeight / 650)
+            .clamp(0.62, 1.08);
+        final horizontalPadding = 42 * scale;
+        final verticalPadding = 34 * scale;
+        return SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            verticalPadding,
+            horizontalPadding,
+            30 * scale,
+          ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: math.max(
+                0,
+                constraints.maxHeight - verticalPadding - 30 * scale,
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'PASO 1 DE 4',
+                  style: TextStyle(
+                    color: const Color(0xFFBFD7FF),
+                    fontSize: 12 * scale,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1 * scale,
+                  ),
+                ),
+                SizedBox(height: 10 * scale),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8 * scale),
+                  child: Stack(
+                    children: [
+                      Container(
+                        height: 6 * scale,
+                        color: const Color(0x99233048),
+                      ),
+                      FractionallySizedBox(
+                        widthFactor: .25,
+                        child: Container(
+                          height: 6 * scale,
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                            ),
+                            borderRadius: BorderRadius.circular(8 * scale),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 34 * scale),
+                Text(
+                  'IDENTIFICACIÓN DE VISITA',
+                  style: TextStyle(
+                    color: const Color(0xFFBFD7FF),
+                    fontSize: 12 * scale,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.2 * scale,
+                  ),
+                ),
+                SizedBox(height: 10 * scale),
+                Row(
+                  children: [
+                    Container(
+                      width: 62 * scale,
+                      height: 62 * scale,
+                      decoration: BoxDecoration(
+                        color: const Color(0xCC07172E),
+                        borderRadius: BorderRadius.circular(16 * scale),
+                        border: Border.all(
+                          color: const Color(0xFF087FFF),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.account_box_outlined,
+                        color: const Color(0xFF63AEFF),
+                        size: 34 * scale,
+                      ),
+                    ),
+                    SizedBox(width: 18 * scale),
+                    Expanded(
+                      child: ShaderMask(
+                        blendMode: BlendMode.srcIn,
+                        shaderCallback: (bounds) => const LinearGradient(
+                          colors: [
+                            Color(0xFFF8FAFF),
+                            Color(0xFFF8FAFF),
+                            Color(0xFF087FFF),
+                            Color(0xFFE53E4B),
+                          ],
+                          stops: [0, .66, .84, 1],
+                        ).createShader(bounds),
+                        child: Text(
+                          'Datos del visitante',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 44 * scale,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -1.2 * scale,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 24 * scale),
+                _TabletWalkInField(
+                  label: 'Nombre completo',
+                  hint: 'Escribe el nombre completo',
+                  icon: Icons.person_outline_rounded,
+                  scale: scale,
+                ),
+                SizedBox(height: 18 * scale),
+                _TabletWalkInField(
+                  label: 'Empresa o procedencia',
+                  hint: 'Escribe empresa o procedencia',
+                  icon: Icons.business_outlined,
+                  scale: scale,
+                ),
+                SizedBox(height: 10 * scale),
+                Text(
+                  'Si no perteneces a una empresa o vienes por un asunto personal o ajeno a una empresa, selecciona:',
+                  style: TextStyle(
+                    color: const Color(0xFFBFD7FF),
+                    fontSize: 12 * scale,
+                    height: 1.3,
+                  ),
+                ),
+                SizedBox(height: 10 * scale),
+                OutlinedButton.icon(
+                  onPressed: () {},
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Color(0xFF087FFF)),
+                    backgroundColor: const Color(0xCC07172E),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 16 * scale,
+                      vertical: 10 * scale,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10 * scale),
+                    ),
+                  ),
+                  icon: Icon(
+                    Icons.people_outline_rounded,
+                    color: const Color(0xFF63AEFF),
+                    size: 18 * scale,
+                  ),
+                  label: Text(
+                    'Soy público general',
+                    style: TextStyle(
+                      fontSize: 13 * scale,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                SizedBox(height: 18 * scale),
+                _TabletWalkInField(
+                  label: 'Asunto o motivo de la visita',
+                  hint: 'Describe el motivo de tu visita',
+                  icon: Icons.chat_bubble_outline_rounded,
+                  maxLines: 2,
+                  scale: scale,
+                ),
+                SizedBox(height: 24 * scale),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: onPrevious,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Color(0xFF087FFF)),
+                        backgroundColor: const Color(0xCC07172E),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 20 * scale,
+                          vertical: 14 * scale,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10 * scale),
+                        ),
+                      ),
+                      icon: Icon(Icons.arrow_back_rounded, size: 18 * scale),
+                      label: Text(
+                        'Anterior',
+                        style: TextStyle(
+                          fontSize: 14 * scale,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10 * scale),
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                        ),
+                      ),
+                      child: ElevatedButton.icon(
+                        onPressed: onContinue,
+                        style: ElevatedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 22 * scale,
+                            vertical: 14 * scale,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10 * scale),
+                          ),
+                        ),
+                        iconAlignment: IconAlignment.end,
+                        icon: Icon(
+                          Icons.arrow_forward_rounded,
+                          size: 18 * scale,
+                        ),
+                        label: Text(
+                          'Continuar',
+                          style: TextStyle(
+                            fontSize: 14 * scale,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TabletWalkInEquipmentStep extends StatefulWidget {
+  const _TabletWalkInEquipmentStep({
+    required this.onPrevious,
+    required this.onContinue,
+  });
+
+  final VoidCallback onPrevious;
+  final VoidCallback onContinue;
+
+  @override
+  State<_TabletWalkInEquipmentStep> createState() =>
+      _TabletWalkInEquipmentStepState();
+}
+
+class _TabletWalkInEquipmentStepState
+    extends State<_TabletWalkInEquipmentStep> {
+  final _nameController = TextEditingController();
+  final _quantityController = TextEditingController(text: '1');
+  final _brandController = TextEditingController();
+  final _modelController = TextEditingController();
+  final _serialController = TextEditingController();
+  final _colorController = TextEditingController();
+  final List<String> _items = [];
+  String _type = 'Equipo';
+  bool? _bringsEquipment;
+  String? _validationMessage;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _quantityController.dispose();
+    _brandController.dispose();
+    _modelController.dispose();
+    _serialController.dispose();
+    _colorController.dispose();
+    super.dispose();
+  }
+
+  void _addItem() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      setState(() {
+        _validationMessage = 'Escribe el nombre o la descripción del artículo.';
+      });
+      return;
+    }
+
+    setState(() {
+      _items.add('$_type: $name');
+      _nameController.clear();
+      _quantityController.text = '1';
+      _brandController.clear();
+      _modelController.clear();
+      _serialController.clear();
+      _colorController.clear();
+      _validationMessage = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = math
+            .min(constraints.maxWidth / 1180, constraints.maxHeight / 620)
+            .clamp(.58, 1.08);
+        final horizontalPadding = 42 * scale;
+        final verticalPadding = 30 * scale;
+
+        return CustomScrollView(
+          shrinkWrap: true,
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  horizontalPadding,
+                  verticalPadding,
+                  horizontalPadding,
+                  28 * scale,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'PASO 2 DE 4',
+                      style: TextStyle(
+                        color: const Color(0xFFBFD7FF),
+                        fontSize: 12 * scale,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.1 * scale,
+                      ),
+                    ),
+                    SizedBox(height: 10 * scale),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8 * scale),
+                      child: Stack(
+                        children: [
+                          Container(
+                            height: 6 * scale,
+                            color: const Color(0x99233048),
+                          ),
+                          FractionallySizedBox(
+                            widthFactor: .5,
+                            child: Container(
+                              height: 6 * scale,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    Color(0xFFFF3155),
+                                    Color(0xFF087FFF),
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(8 * scale),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 28 * scale),
+                    Text(
+                      'DECLARACIÓN DE ARTÍCULOS',
+                      style: TextStyle(
+                        color: const Color(0xFFBFD7FF),
+                        fontSize: 12 * scale,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.2 * scale,
+                      ),
+                    ),
+                    SizedBox(height: 8 * scale),
+                    Text(
+                      'Equipo y herramientas',
+                      key: const ValueKey('tablet-equipment-title'),
+                      style: TextStyle(
+                        color: const Color(0xFFF4F7FF),
+                        fontSize: 38 * scale,
+                        height: 1.05,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -1 * scale,
+                      ),
+                    ),
+                    SizedBox(height: 10 * scale),
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 14 * scale,
+                        vertical: 10 * scale,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xAA261514),
+                        border: Border.all(
+                          color: const Color(0xAAFFAB35),
+                          width: 1 * scale,
+                        ),
+                        borderRadius: BorderRadius.circular(8 * scale),
+                      ),
+                      child: Text(
+                        'Declara todo el equipo y las herramientas que ingresarás a las instalaciones. Solo se permite el ingreso de artículos registrados; lo que no registres no podrá ingresar.',
+                        style: TextStyle(
+                          color: const Color(0xFFD8E4F6),
+                          fontSize: 14 * scale,
+                          height: 1.45,
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: 12 * scale),
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 12 * scale,
+                        vertical: 9 * scale,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xAA071C36),
+                        border: Border.all(color: const Color(0x553C8DDB)),
+                        borderRadius: BorderRadius.circular(8 * scale),
+                      ),
+                      child: Text(
+                        'Selecciona si ingresarás equipo o herramientas para continuar.',
+                        style: TextStyle(
+                          color: const Color(0xFFBFD7FF),
+                          fontSize: 11 * scale,
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: 16 * scale),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _TabletEquipmentChoice(
+                            key: const ValueKey('tablet-equipment-yes'),
+                            selected: _bringsEquipment == true,
+                            icon: Icons.handyman_outlined,
+                            title: 'Sí, llevo equipo o herramientas',
+                            subtitle: 'Agrega los artículos que ingresarás.',
+                            color: const Color(0xFF00AFFF),
+                            scale: scale,
+                            onTap: () => setState(() {
+                              _bringsEquipment = true;
+                              _validationMessage = null;
+                            }),
+                          ),
+                        ),
+                        SizedBox(width: 12 * scale),
+                        Expanded(
+                          child: _TabletEquipmentChoice(
+                            key: const ValueKey('tablet-equipment-no'),
+                            selected: _bringsEquipment == false,
+                            icon: Icons.block_rounded,
+                            title: 'No llevo equipo ni herramientas',
+                            subtitle: 'Continuarás sin declarar artículos.',
+                            color: const Color(0xFFFF318B),
+                            scale: scale,
+                            onTap: () => setState(() {
+                              _bringsEquipment = false;
+                              _validationMessage = null;
+                            }),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_bringsEquipment == true) ...[
+                      SizedBox(height: 12 * scale),
+                      _TabletEquipmentEntryForm(
+                        scale: scale,
+                        type: _type,
+                        onTypeChanged: (value) => setState(() => _type = value),
+                        nameController: _nameController,
+                        quantityController: _quantityController,
+                        brandController: _brandController,
+                        modelController: _modelController,
+                        serialController: _serialController,
+                        colorController: _colorController,
+                        onAdd: _addItem,
+                        items: _items,
+                        validationMessage: _validationMessage,
+                      ),
+                    ] else if (_bringsEquipment == false) ...[
+                      SizedBox(height: 12 * scale),
+                      Container(
+                        key: const ValueKey('tablet-equipment-none-message'),
+                        width: double.infinity,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 14 * scale,
+                          vertical: 12 * scale,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xAA061C39),
+                          border: Border.all(color: const Color(0xAA087FFF)),
+                          borderRadius: BorderRadius.circular(8 * scale),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.check_circle_outline_rounded,
+                              color: const Color(0xFF42A5FF),
+                              size: 20 * scale,
+                            ),
+                            SizedBox(width: 10 * scale),
+                            Expanded(
+                              child: Text(
+                                'Has indicado que no llevas artículos.',
+                                style: TextStyle(
+                                  color: const Color(0xFFD8E4F6),
+                                  fontSize: 12 * scale,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    SizedBox(height: 16 * scale),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: widget.onPrevious,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Color(0xFF087FFF)),
+                            backgroundColor: const Color(0xCC07172E),
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 20 * scale,
+                              vertical: 13 * scale,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(9 * scale),
+                            ),
+                          ),
+                          icon: Icon(
+                            Icons.arrow_back_rounded,
+                            size: 17 * scale,
+                          ),
+                          label: Text(
+                            'Anterior',
+                            style: TextStyle(
+                              fontSize: 13 * scale,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(9 * scale),
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                            ),
+                          ),
+                          child: ElevatedButton.icon(
+                            onPressed: widget.onContinue,
+                            style: ElevatedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 22 * scale,
+                                vertical: 13 * scale,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(9 * scale),
+                              ),
+                            ),
+                            iconAlignment: IconAlignment.end,
+                            icon: Icon(
+                              Icons.arrow_forward_rounded,
+                              size: 17 * scale,
+                            ),
+                            label: Text(
+                              'Continuar',
+                              style: TextStyle(
+                                fontSize: 13 * scale,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _TabletWalkInIdentificationStep extends StatefulWidget {
+  const _TabletWalkInIdentificationStep({
+    required this.onPrevious,
+    required this.onContinue,
+  });
+
+  final VoidCallback onPrevious;
+  final VoidCallback onContinue;
+
+  @override
+  State<_TabletWalkInIdentificationStep> createState() =>
+      _TabletWalkInIdentificationStepState();
+}
+
+class _TabletWalkInIdentificationStepState
+    extends State<_TabletWalkInIdentificationStep> {
+  String? _identificationType;
+  bool? _identificationHeldForSafekeeping;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = math
+            .min(constraints.maxWidth / 1180, constraints.maxHeight / 620)
+            .clamp(.58, 1.08);
+        final horizontalPadding = 42 * scale;
+        final verticalPadding = 30 * scale;
+        final identificationOptions = [
+          (title: 'INE', icon: Icons.badge_outlined),
+          (title: 'Gafete', icon: Icons.shield_outlined),
+          (title: 'Pasaporte', icon: Icons.contact_page_outlined),
+          (title: 'Licencia de conducir', icon: Icons.badge_outlined),
+          (title: 'Otra identificación', icon: Icons.add_moderator_outlined),
+        ];
+
+        return SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            verticalPadding,
+            horizontalPadding,
+            28 * scale,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'PASO 3 DE 4',
+                style: TextStyle(
+                  color: const Color(0xFFBFD7FF),
+                  fontSize: 12 * scale,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.1 * scale,
+                ),
+              ),
+              SizedBox(height: 10 * scale),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8 * scale),
+                child: Stack(
+                  children: [
+                    Container(
+                      height: 6 * scale,
+                      color: const Color(0x99233048),
+                    ),
+                    FractionallySizedBox(
+                      widthFactor: .75,
+                      child: Container(
+                        height: 6 * scale,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                          ),
+                          borderRadius: BorderRadius.circular(8 * scale),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 28 * scale),
+              Text(
+                'CONTROL DE IDENTIDAD',
+                style: TextStyle(
+                  color: const Color(0xFFBFD7FF),
+                  fontSize: 12 * scale,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2 * scale,
+                ),
+              ),
+              SizedBox(height: 8 * scale),
+              Text(
+                'Identificación',
+                key: const ValueKey('tablet-identification-title'),
+                style: TextStyle(
+                  color: const Color(0xFFF4F7FF),
+                  fontSize: 38 * scale,
+                  height: 1.05,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -1 * scale,
+                ),
+              ),
+              SizedBox(height: 8 * scale),
+              Text(
+                'Selecciona el tipo de identificación presentada. No captures números ni fotografías del documento.',
+                style: TextStyle(
+                  color: const Color(0xFFD8E4F6),
+                  fontSize: 14 * scale,
+                  height: 1.4,
+                ),
+              ),
+              SizedBox(height: 12 * scale),
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  horizontal: 12 * scale,
+                  vertical: 9 * scale,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xAA071C36),
+                  border: Border.all(color: const Color(0x553C8DDB)),
+                  borderRadius: BorderRadius.circular(8 * scale),
+                ),
+                child: Text(
+                  'Recuperamos tu avance. Si vuelves a recargar esta pestaña, se conservará.',
+                  style: TextStyle(
+                    color: const Color(0xFFBFD7FF),
+                    fontSize: 11 * scale,
+                  ),
+                ),
+              ),
+              SizedBox(height: 18 * scale),
+              Text(
+                'Tipo de identificación presentada *',
+                style: TextStyle(
+                  color: const Color(0xFFE7EEF9),
+                  fontSize: 13 * scale,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              SizedBox(height: 10 * scale),
+              Row(
+                children: [
+                  for (
+                    var index = 0;
+                    index < identificationOptions.length;
+                    index++
+                  ) ...[
+                    if (index > 0) SizedBox(width: 10 * scale),
+                    Expanded(
+                      child: _TabletIdentificationOption(
+                        key: ValueKey(
+                          'tablet-identification-option-${identificationOptions[index].title}',
+                        ),
+                        title: identificationOptions[index].title,
+                        icon: identificationOptions[index].icon,
+                        selected:
+                            _identificationType ==
+                            identificationOptions[index].title,
+                        scale: scale,
+                        onTap: () => setState(
+                          () => _identificationType =
+                              identificationOptions[index].title,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              SizedBox(height: 18 * scale),
+              Container(
+                key: const ValueKey('tablet-identification-safekeeping'),
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(
+                  14 * scale,
+                  10 * scale,
+                  14 * scale,
+                  9 * scale,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xAA061020),
+                  border: Border.all(color: const Color(0x663B6E9E)),
+                  borderRadius: BorderRadius.circular(9 * scale),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '¿Declaras que tus identificaciones fueron entregadas a recepción para resguardo?',
+                      style: TextStyle(
+                        color: const Color(0xFFE7EEF9),
+                        fontSize: 13 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 5 * scale),
+                    _TabletIdentificationRadio(
+                      selected: _identificationHeldForSafekeeping == true,
+                      label: 'Sí, las entregué para resguardo',
+                      scale: scale,
+                      onTap: () => setState(
+                        () => _identificationHeldForSafekeeping = true,
+                      ),
+                    ),
+                    _TabletIdentificationRadio(
+                      selected: _identificationHeldForSafekeeping == false,
+                      label: 'No, solo las presenté para verificación',
+                      scale: scale,
+                      onTap: () => setState(
+                        () => _identificationHeldForSafekeeping = false,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 16 * scale),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: widget.onPrevious,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Color(0xFF087FFF)),
+                      backgroundColor: const Color(0xCC07172E),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 20 * scale,
+                        vertical: 13 * scale,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(9 * scale),
+                      ),
+                    ),
+                    icon: Icon(Icons.arrow_back_rounded, size: 17 * scale),
+                    label: Text(
+                      'Anterior',
+                      style: TextStyle(
+                        fontSize: 13 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(9 * scale),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                      ),
+                    ),
+                    child: ElevatedButton.icon(
+                      onPressed: widget.onContinue,
+                      style: ElevatedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        backgroundColor: Colors.transparent,
+                        shadowColor: Colors.transparent,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 22 * scale,
+                          vertical: 13 * scale,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(9 * scale),
+                        ),
+                      ),
+                      iconAlignment: IconAlignment.end,
+                      icon: Icon(Icons.arrow_forward_rounded, size: 17 * scale),
+                      label: Text(
+                        'Continuar',
+                        style: TextStyle(
+                          fontSize: 13 * scale,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TabletWalkInReviewStep extends StatefulWidget {
+  const _TabletWalkInReviewStep({
+    required this.onPrevious,
+    required this.onSubmit,
+  });
+
+  final VoidCallback onPrevious;
+  final VoidCallback onSubmit;
+
+  @override
+  State<_TabletWalkInReviewStep> createState() =>
+      _TabletWalkInReviewStepState();
+}
+
+class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
+  bool _confirmed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = math
+            .min(constraints.maxWidth / 1180, constraints.maxHeight / 620)
+            .clamp(.58, 1.08);
+        final horizontalPadding = 42 * scale;
+        final verticalPadding = 30 * scale;
+        const summary = [
+          (label: 'NOMBRE', value: 'Jesus Efren'),
+          (label: 'EMPRESA O PROCEDENCIA', value: 'Público general'),
+          (label: 'ASUNTO', value: 'Entrevista de trabajo'),
+          (label: 'EQUIPO Y HERRAMIENTAS', value: 'No lleva artículos'),
+          (label: 'IDENTIFICACIÓN', value: 'INE'),
+          (
+            label: 'DECLARACIÓN DE RESGUARDO',
+            value: 'Declara que solo las presentó para verificación',
+          ),
+        ];
+
+        return SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            verticalPadding,
+            horizontalPadding,
+            28 * scale,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'PASO 4 DE 4',
+                style: TextStyle(
+                  color: const Color(0xFFBFD7FF),
+                  fontSize: 12 * scale,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.1 * scale,
+                ),
+              ),
+              SizedBox(height: 10 * scale),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8 * scale),
+                child: Container(
+                  height: 6 * scale,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(height: 28 * scale),
+              Text(
+                'ÚLTIMA REVISIÓN',
+                style: TextStyle(
+                  color: const Color(0xFFBFD7FF),
+                  fontSize: 12 * scale,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2 * scale,
+                ),
+              ),
+              SizedBox(height: 8 * scale),
+              Text(
+                'Revisa tu registro',
+                key: const ValueKey('tablet-review-title'),
+                style: TextStyle(
+                  color: const Color(0xFFF4F7FF),
+                  fontSize: 38 * scale,
+                  height: 1.05,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -1 * scale,
+                ),
+              ),
+              SizedBox(height: 18 * scale),
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.symmetric(
+                  horizontal: 12 * scale,
+                  vertical: 9 * scale,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xAA071C36),
+                  border: Border.all(color: const Color(0x553C8DDB)),
+                  borderRadius: BorderRadius.circular(8 * scale),
+                ),
+                child: Text(
+                  'Recuperamos tu avance. Si vuelves a recargar esta pestaña, se conservará.',
+                  style: TextStyle(
+                    color: const Color(0xFFBFD7FF),
+                    fontSize: 11 * scale,
+                  ),
+                ),
+              ),
+              SizedBox(height: 16 * scale),
+              LayoutBuilder(
+                builder: (context, gridConstraints) {
+                  final gap = 10 * scale;
+                  final cellWidth = (gridConstraints.maxWidth - gap) / 2;
+                  final cellHeight = 62 * scale;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: 10 * scale,
+                    children: [
+                      for (final item in summary)
+                        SizedBox(
+                          width: cellWidth,
+                          height: cellHeight,
+                          child: _TabletReviewSummaryCard(
+                            label: item.label,
+                            value: item.value,
+                            scale: scale,
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+              SizedBox(height: 16 * scale),
+              Material(
+                color: const Color(0xB8071830),
+                borderRadius: BorderRadius.circular(10 * scale),
+                child: InkWell(
+                  key: const ValueKey('tablet-review-confirmation'),
+                  onTap: () => setState(() => _confirmed = !_confirmed),
+                  borderRadius: BorderRadius.circular(10 * scale),
+                  child: Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.all(14 * scale),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0x553C8DDB)),
+                      borderRadius: BorderRadius.circular(10 * scale),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _confirmed
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          key: const ValueKey('tablet-review-checkbox-icon'),
+                          color: _confirmed
+                              ? const Color(0xFF36A4FF)
+                              : const Color(0xFF78B7FF),
+                          size: 23 * scale,
+                        ),
+                        SizedBox(width: 12 * scale),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Confirmo que la información proporcionada es correcta.',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13 * scale,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              SizedBox(height: 5 * scale),
+                              Text(
+                                'Verifica tus datos antes de enviar el registro.',
+                                style: TextStyle(
+                                  color: const Color(0xFFBFD7FF),
+                                  fontSize: 11 * scale,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(height: 16 * scale),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: widget.onPrevious,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Color(0xFF087FFF)),
+                      backgroundColor: const Color(0xCC07172E),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 20 * scale,
+                        vertical: 13 * scale,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(9 * scale),
+                      ),
+                    ),
+                    icon: Icon(Icons.arrow_back_rounded, size: 17 * scale),
+                    label: Text(
+                      'Anterior',
+                      style: TextStyle(
+                        fontSize: 13 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(9 * scale),
+                      gradient: _confirmed
+                          ? const LinearGradient(
+                              colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                            )
+                          : const LinearGradient(
+                              colors: [Color(0xFF596274), Color(0xFF596274)],
+                            ),
+                    ),
+                    child: ElevatedButton.icon(
+                      key: const ValueKey('tablet-review-submit'),
+                      onPressed: _confirmed ? widget.onSubmit : null,
+                      style: ElevatedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        disabledForegroundColor: Colors.white70,
+                        backgroundColor: Colors.transparent,
+                        disabledBackgroundColor: Colors.transparent,
+                        shadowColor: Colors.transparent,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 22 * scale,
+                          vertical: 13 * scale,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(9 * scale),
+                        ),
+                      ),
+                      icon: Icon(Icons.send_rounded, size: 16 * scale),
+                      label: Text(
+                        'Enviar registro',
+                        style: TextStyle(
+                          fontSize: 13 * scale,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TabletReviewSummaryCard extends StatelessWidget {
+  const _TabletReviewSummaryCard({
+    required this.label,
+    required this.value,
+    required this.scale,
+  });
+
+  final String label;
+  final String value;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: ValueKey('tablet-review-summary-$label'),
+      padding: EdgeInsets.symmetric(
+        horizontal: 14 * scale,
+        vertical: 9 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: const Color(0xCC07182D),
+        border: Border.all(color: const Color(0x553C8DDB)),
+        borderRadius: BorderRadius.circular(9 * scale),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: const Color(0xFF61B7FF),
+              fontSize: 10 * scale,
+              fontWeight: FontWeight.w900,
+              letterSpacing: .45 * scale,
+            ),
+          ),
+          SizedBox(height: 5 * scale),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12 * scale,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabletIdentificationOption extends StatelessWidget {
+  const _TabletIdentificationOption({
+    super.key,
+    required this.title,
+    required this.icon,
+    required this.selected,
+    required this.scale,
+    required this.onTap,
+  });
+
+  final String title;
+  final IconData icon;
+  final bool selected;
+  final double scale;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10 * scale),
+        gradient: LinearGradient(
+          colors: selected
+              ? const [Color(0xFFFF3155), Color(0xFF087FFF)]
+              : const [Color(0x774A82B9), Color(0x774A82B9)],
+        ),
+      ),
+      padding: EdgeInsets.all(1 * scale),
+      child: Material(
+        color: const Color(0xF0071123),
+        borderRadius: BorderRadius.circular(9 * scale),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9 * scale),
+          child: SizedBox(
+            height: 104 * scale,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  icon,
+                  color: selected
+                      ? const Color(0xFF60B4FF)
+                      : const Color(0xFF78B7FF),
+                  size: 29 * scale,
+                ),
+                SizedBox(height: 10 * scale),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4 * scale),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      title,
+                      key: ValueKey('tablet-identification-label-$title'),
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabletIdentificationRadio extends StatelessWidget {
+  const _TabletIdentificationRadio({
+    required this.selected,
+    required this.label,
+    required this.scale,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final String label;
+  final double scale;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(7 * scale),
+      child: Padding(
+        padding: EdgeInsets.symmetric(vertical: 3 * scale),
+        child: Row(
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              color: selected
+                  ? const Color(0xFF39A5FF)
+                  : const Color(0xFFDCE6F7),
+              size: 20 * scale,
+            ),
+            SizedBox(width: 8 * scale),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: const Color(0xFFD8E4F6),
+                  fontSize: 12 * scale,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TabletEquipmentChoice extends StatelessWidget {
+  const _TabletEquipmentChoice({
+    super.key,
+    required this.selected,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    required this.scale,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final double scale;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12 * scale),
+        gradient: LinearGradient(
+          colors: [
+            selected ? color : const Color(0x99FF3155),
+            selected ? color : const Color(0x990087FF),
+          ],
+        ),
+        boxShadow: selected
+            ? [BoxShadow(color: color.withValues(alpha: .25), blurRadius: 16)]
+            : null,
+      ),
+      padding: EdgeInsets.all(1 * scale),
+      child: Material(
+        color: const Color(0xF0071123),
+        borderRadius: BorderRadius.circular(11 * scale),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(11 * scale),
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: 14 * scale,
+              vertical: 12 * scale,
+            ),
+            child: Row(
+              children: [
+                Icon(icon, color: color, size: 30 * scale),
+                SizedBox(width: 12 * scale),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13 * scale,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(height: 5 * scale),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          color: const Color(0xFFBFD7FF),
+                          fontSize: 11 * scale,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabletEquipmentEntryForm extends StatelessWidget {
+  const _TabletEquipmentEntryForm({
+    required this.scale,
+    required this.type,
+    required this.onTypeChanged,
+    required this.nameController,
+    required this.quantityController,
+    required this.brandController,
+    required this.modelController,
+    required this.serialController,
+    required this.colorController,
+    required this.onAdd,
+    required this.items,
+    required this.validationMessage,
+  });
+
+  final double scale;
+  final String type;
+  final ValueChanged<String> onTypeChanged;
+  final TextEditingController nameController;
+  final TextEditingController quantityController;
+  final TextEditingController brandController;
+  final TextEditingController modelController;
+  final TextEditingController serialController;
+  final TextEditingController colorController;
+  final VoidCallback onAdd;
+  final List<String> items;
+  final String? validationMessage;
+
+  InputDecoration _decoration() => InputDecoration(
+    filled: true,
+    fillColor: const Color(0xF0061020),
+    contentPadding: EdgeInsets.symmetric(
+      horizontal: 12 * scale,
+      vertical: 9 * scale,
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8 * scale),
+      borderSide: const BorderSide(color: Color(0xFF24405F)),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8 * scale),
+      borderSide: BorderSide(
+        color: const Color(0xFF168BFF),
+        width: 1.2 * scale,
+      ),
+    ),
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8 * scale)),
+  );
+
+  Widget _field(String label, Widget input) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: EdgeInsets.only(left: 2 * scale, bottom: 5 * scale),
+        child: Text(
+          label,
+          key: ValueKey('tablet-equipment-label-$label'),
+          style: TextStyle(
+            color: const Color(0xFFE2EBFA),
+            fontSize: 11 * scale,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+      input,
+    ],
+  );
+
+  Widget _input(
+    String label,
+    TextEditingController controller, {
+    TextInputType? keyboardType,
+  }) {
+    return _field(
+      label,
+      TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 12 * scale,
+          fontWeight: FontWeight.w600,
+        ),
+        decoration: _decoration(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('tablet-equipment-entry-form'),
+      width: double.infinity,
+      padding: EdgeInsets.all(12 * scale),
+      decoration: BoxDecoration(
+        color: const Color(0xC9071020),
+        border: Border.all(color: const Color(0xAA087FFF)),
+        borderRadius: BorderRadius.circular(9 * scale),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                flex: 1,
+                child: _field(
+                  'Tipo',
+                  DropdownButtonFormField<String>(
+                    key: const ValueKey('tablet-equipment-type-select'),
+                    initialValue: type,
+                    dropdownColor: const Color(0xFF0C1830),
+                    borderRadius: BorderRadius.circular(12 * scale),
+                    menuMaxHeight: 220 * scale,
+                    icon: Icon(
+                      Icons.expand_more_rounded,
+                      color: const Color(0xFF71B9FF),
+                      size: 22 * scale,
+                    ),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12 * scale,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    decoration: _decoration(),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'Equipo',
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.devices_other_rounded,
+                              color: Color(0xFF58B8FF),
+                              size: 17,
+                            ),
+                            SizedBox(width: 9),
+                            Text('Equipo'),
+                          ],
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Herramienta',
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.handyman_outlined,
+                              color: Color(0xFFFF5B83),
+                              size: 17,
+                            ),
+                            SizedBox(width: 9),
+                            Text('Herramienta'),
+                          ],
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) onTypeChanged(value);
+                    },
+                  ),
+                ),
+              ),
+              SizedBox(width: 10 * scale),
+              Expanded(
+                flex: 2,
+                child: _input('Nombre o descripción *', nameController),
+              ),
+            ],
+          ),
+          SizedBox(height: 10 * scale),
+          Row(
+            children: [
+              Expanded(
+                child: _input(
+                  'Cantidad',
+                  quantityController,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              SizedBox(width: 10 * scale),
+              Expanded(child: _input('Marca', brandController)),
+              SizedBox(width: 10 * scale),
+              Expanded(child: _input('Modelo', modelController)),
+            ],
+          ),
+          SizedBox(height: 10 * scale),
+          Row(
+            children: [
+              Expanded(child: _input('Número de serie', serialController)),
+              SizedBox(width: 10 * scale),
+              Expanded(child: _input('Color', colorController)),
+              SizedBox(width: 10 * scale),
+              Expanded(
+                child: SizedBox(
+                  height: 42 * scale,
+                  child: OutlinedButton.icon(
+                    onPressed: onAdd,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Color(0xFF087FFF)),
+                      backgroundColor: const Color(0xAA07172E),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(7 * scale),
+                      ),
+                      padding: EdgeInsets.symmetric(horizontal: 8 * scale),
+                    ),
+                    icon: Icon(
+                      Icons.add_rounded,
+                      color: const Color(0xFF64B6FF),
+                      size: 18 * scale,
+                    ),
+                    label: Text(
+                      'Agregar artículo',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (validationMessage != null) ...[
+            SizedBox(height: 7 * scale),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                validationMessage!,
+                style: TextStyle(
+                  color: const Color(0xFFFF7189),
+                  fontSize: 10 * scale,
+                ),
+              ),
+            ),
+          ],
+          if (items.isNotEmpty) ...[
+            SizedBox(height: 10 * scale),
+            for (final item in items)
+              Padding(
+                padding: EdgeInsets.only(bottom: 5 * scale),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle_outline_rounded,
+                      color: const Color(0xFF45A5FF),
+                      size: 16 * scale,
+                    ),
+                    SizedBox(width: 8 * scale),
+                    Expanded(
+                      child: Text(
+                        item,
+                        style: TextStyle(
+                          color: const Color(0xFFD8E4F6),
+                          fontSize: 11 * scale,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _TabletWalkInField extends StatelessWidget {
+  const _TabletWalkInField({
+    required this.label,
+    required this.hint,
+    required this.icon,
+    required this.scale,
+    this.maxLines = 1,
+  });
+
+  final String label;
+  final String hint;
+  final IconData icon;
+  final double scale;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 17 * scale, color: const Color(0xFFFF4564)),
+            SizedBox(width: 10 * scale),
+            Text(
+              label,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 14 * scale,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            SizedBox(width: 5 * scale),
+            Text(
+              '*',
+              style: TextStyle(
+                color: const Color(0xFFFF4564),
+                fontSize: 14 * scale,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 9 * scale),
+        Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10 * scale),
+            gradient: const LinearGradient(
+              colors: [Color(0xFFE53E4B), Color(0xFF087FFF)],
+            ),
+          ),
+          padding: EdgeInsets.all(1 * scale),
+          child: TextField(
+            maxLines: maxLines,
+            minLines: maxLines,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 14 * scale,
+              fontWeight: FontWeight.w600,
+            ),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: TextStyle(
+                color: const Color(0xFF93A3BD),
+                fontSize: 14 * scale,
+              ),
+              prefixIcon: Icon(
+                icon,
+                color: const Color(0xFFDCE6F7),
+                size: 21 * scale,
+              ),
+              filled: true,
+              fillColor: const Color(0xF0071020),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16 * scale,
+                vertical: 13 * scale,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(9 * scale),
+                borderSide: BorderSide.none,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(9 * scale),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(9 * scale),
+                borderSide: BorderSide(
+                  color: const Color(0xFF53A6FF),
+                  width: 1.2 * scale,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _WalkInTextField extends StatelessWidget {
   const _WalkInTextField({
     required this.label,
@@ -3395,16 +6771,22 @@ class _WalkInTextField extends StatelessWidget {
 }
 
 class ReceptionHomePage extends StatelessWidget {
-  const ReceptionHomePage({super.key});
+  const ReceptionHomePage({super.key, this.authService, this.user});
+
+  final AuthService? authService;
+  final AuthenticatedUser? user;
 
   @override
   Widget build(BuildContext context) {
-    return const _ReceptionDashboardPage();
+    return _ReceptionDashboardPage(authService: authService, user: user);
   }
 }
 
 class _ReceptionDashboardPage extends StatefulWidget {
-  const _ReceptionDashboardPage();
+  const _ReceptionDashboardPage({this.authService, this.user});
+
+  final AuthService? authService;
+  final AuthenticatedUser? user;
 
   @override
   State<_ReceptionDashboardPage> createState() =>
@@ -3467,9 +6849,15 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
         onLogbook: _openLogbook,
       ),
       body: switch (_activeSection) {
-        'departments' => const _DepartmentsPage(),
+        'departments' => _DepartmentsPage(
+          authService: widget.authService,
+          isAdmin: widget.user?.isAdmin ?? false,
+        ),
         'hosts' => const _HostsPage(),
-        'accesses' => const _AccessesPage(),
+        'accesses' => _AccessesPage(
+          authService: widget.authService,
+          isAdmin: widget.user?.isAdmin ?? false,
+        ),
         'external_companies' => const _ExternalCompaniesPage(),
         'external_staff' => const _ExternalStaffPage(),
         'equipment' => const _EquipmentPage(),
@@ -3520,17 +6908,17 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
                     responsivePadding(context),
                     10,
                     responsivePadding(context),
-                    18,
+                    responsiveBottomScrollPadding(context),
                   ),
-                  children: const [
-                    _DashboardHeader(),
-                    SizedBox(height: 12),
-                    _DashboardSection(
+                  children: [
+                    _DashboardHeader(authService: widget.authService),
+                    const SizedBox(height: 12),
+                    const _DashboardSection(
                       icon: Icons.home_rounded,
                       title: 'Inicio',
                     ),
-                    SizedBox(height: 12),
-                    Row(
+                    const SizedBox(height: 12),
+                    const Row(
                       children: [
                         Expanded(
                           child: _DashboardMetricCard(
@@ -3553,8 +6941,8 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
                         ),
                       ],
                     ),
-                    SizedBox(height: 12),
-                    Row(
+                    const SizedBox(height: 12),
+                    const Row(
                       children: [
                         Expanded(
                           child: _DashboardMetricCard(
@@ -3577,16 +6965,16 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
                         ),
                       ],
                     ),
-                    SizedBox(height: 12),
-                    _MovementHistoryCard(),
-                    SizedBox(height: 12),
-                    _CompositionCard(),
-                    SizedBox(height: 12),
-                    _TrendCard(),
-                    SizedBox(height: 12),
-                    _AgendaPanel(),
-                    SizedBox(height: 12),
-                    _BitacoraPanel(),
+                    const SizedBox(height: 12),
+                    const _MovementHistoryCard(),
+                    const SizedBox(height: 12),
+                    const _CompositionCard(),
+                    const SizedBox(height: 12),
+                    const _TrendCard(),
+                    const SizedBox(height: 12),
+                    const _AgendaPanel(),
+                    const SizedBox(height: 12),
+                    const _BitacoraPanel(),
                   ],
                 ),
               ),
@@ -3599,7 +6987,9 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
 }
 
 class _DashboardHeader extends StatefulWidget {
-  const _DashboardHeader();
+  const _DashboardHeader({this.authService});
+
+  final AuthService? authService;
 
   @override
   State<_DashboardHeader> createState() => _DashboardHeaderState();
@@ -3623,8 +7013,11 @@ class _DashboardHeaderState extends State<_DashboardHeader> {
     final offset = renderBox.localToGlobal(Offset.zero);
     final menuTop = offset.dy + renderBox.size.height - 3;
     _profileEntry = OverlayEntry(
-      builder: (overlayContext) =>
-          _ProfileMenuOverlay(top: menuTop, onClose: _closeProfileMenu),
+      builder: (overlayContext) => _ProfileMenuOverlay(
+        top: menuTop,
+        onClose: _closeProfileMenu,
+        authService: widget.authService ?? AuthService.shared,
+      ),
     );
     Overlay.of(context).insert(_profileEntry!);
   }
@@ -3761,10 +7154,15 @@ class _ProfileButton extends StatelessWidget {
 }
 
 class _ProfileMenuOverlay extends StatefulWidget {
-  const _ProfileMenuOverlay({required this.top, required this.onClose});
+  const _ProfileMenuOverlay({
+    required this.top,
+    required this.onClose,
+    required this.authService,
+  });
 
   final double top;
   final VoidCallback onClose;
+  final AuthService authService;
 
   @override
   State<_ProfileMenuOverlay> createState() => _ProfileMenuOverlayState();
@@ -3772,12 +7170,26 @@ class _ProfileMenuOverlay extends StatefulWidget {
 
 class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
   bool _darkMode = true;
+  bool _isLoggingOut = false;
 
-  void _logout() {
-    widget.onClose();
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => const ReceptionLoginPage()),
-    );
+  Future<void> _logout() async {
+    if (_isLoggingOut) return;
+    setState(() => _isLoggingOut = true);
+    try {
+      await widget.authService.logout();
+      if (!mounted) return;
+      widget.onClose();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => ReceptionLoginPage(authService: widget.authService),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _isLoggingOut = false);
+      ScaffoldMessenger.maybeOf(context)
+          ?.showSnackBar(SnackBar(content: Text(error.message)));
+    }
   }
 
   @override
@@ -3911,7 +7323,7 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                     height: 42,
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: _logout,
+                      onPressed: _isLoggingOut ? null : _logout,
                       style: OutlinedButton.styleFrom(
                         foregroundColor: const Color(0xFFFF5A72),
                         side: const BorderSide(color: Color(0x99FF3155)),
@@ -3921,8 +7333,8 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                         ),
                       ),
                       icon: const Icon(Icons.logout_rounded, size: 18),
-                      label: const Text(
-                        'Cerrar sesión',
+                      label: Text(
+                        _isLoggingOut ? 'Cerrando sesión...' : 'Cerrar sesión',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
@@ -4909,7 +8321,10 @@ class _LineChartPainter extends CustomPainter {
 }
 
 class _AccessesPage extends StatefulWidget {
-  const _AccessesPage();
+  const _AccessesPage({required this.authService, required this.isAdmin});
+
+  final AuthService? authService;
+  final bool isAdmin;
 
   @override
   State<_AccessesPage> createState() => _AccessesPageState();
@@ -4917,37 +8332,23 @@ class _AccessesPage extends StatefulWidget {
 
 class _AccessesPageState extends State<_AccessesPage> {
   final _searchController = TextEditingController();
-  final _accounts = const [
-    _SystemAccount(
-      login: 'demo.admin',
-      name: 'Administrador de prueba',
-      role: 'Administrador',
-      email: 'admin.demo@visitas.local',
-      phone: '5550000010',
-      active: true,
-      accessLabel: 'Administrador',
-    ),
-    _SystemAccount(
-      login: 'demo.recepcion',
-      name: 'Recepción de prueba',
-      role: 'Recepción',
-      email: 'recepcion.demo@visitas.local',
-      phone: '5550000011',
-      active: true,
-      accessLabel: 'Recepción',
-    ),
-    _SystemAccount(
-      login: 'jehg13072002',
-      name: 'Programador de prueba',
-      role: 'Programador',
-      email: 'jehg13072002@gmail.com',
-      phone: '5550000012',
-      active: true,
-      accessLabel: 'Administrador',
-    ),
-  ];
-
+  late final AuthService _authService =
+      widget.authService ?? AuthService.shared;
+  List<AccessAccount> _accounts = const [];
   String _query = '';
+  String? _errorMessage;
+  bool _isLoading = true;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isAdmin) {
+      unawaited(_loadAccounts());
+    } else {
+      _isLoading = false;
+    }
+  }
 
   @override
   void dispose() {
@@ -4955,11 +8356,77 @@ class _AccessesPageState extends State<_AccessesPage> {
     super.dispose();
   }
 
+  Future<void> _loadAccounts() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final accounts = await _authService.getAccessAccounts();
+      if (!mounted) return;
+      setState(() {
+        _accounts = accounts;
+        _isLoading = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudieron cargar las cuentas. Inténtalo de nuevo.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _editAccess(AccessAccount account) async {
+    final sections = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _AccessEditDialog(account: account),
+    );
+    if (sections == null || !mounted) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final accounts = await _authService.updateAccess(account.login, sections);
+      if (!mounted) return;
+      setState(() {
+        _accounts = accounts;
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permisos actualizados correctamente.')),
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'No se pudo guardar el acceso. Inténtalo de nuevo.';
+        _isSaving = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final filteredAccounts = _accounts.where((account) {
       final value =
-          '${account.login} ${account.name} ${account.role} ${account.email}'
+          '${account.login} ${account.name ?? ''} ${account.role ?? ''} '
+                  '${account.email ?? ''} ${account.phone ?? ''} '
+                  '${account.accessLabel}'
               .toLowerCase();
       return value.contains(_query.toLowerCase());
     }).toList();
@@ -4975,7 +8442,7 @@ class _AccessesPageState extends State<_AccessesPage> {
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
                 child: _DashboardHeader(),
@@ -5110,21 +8577,77 @@ class _AccessesPageState extends State<_AccessesPage> {
                         ),
                       ),
                     ),
+                    if (_errorMessage != null) ...[
+                      const SizedBox(height: 10),
+                      _AccessMessageCard(
+                        message: _errorMessage!,
+                        isError: true,
+                        onRetry: _loadAccounts,
+                      ),
+                    ],
+                    if (_isSaving) ...[
+                      const SizedBox(height: 10),
+                      const LinearProgressIndicator(
+                        color: Color(0xFF087FFF),
+                        backgroundColor: Color(0xFF17243D),
+                      ),
+                    ],
                   ],
                 ),
               ),
             ),
-            const SliverToBoxAdapter(child: SizedBox(height: 12)),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
-              sliver: SliverList.separated(
-                itemCount: filteredAccounts.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  final account = filteredAccounts[index];
-                  return _AccessAccountCard(account: account);
-                },
+              padding: EdgeInsets.fromLTRB(
+                14,
+                0,
+                14,
+                responsiveBottomScrollPadding(context),
               ),
+              sliver: _isLoading
+                  ? const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 36),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: Color(0xFF087FFF),
+                          ),
+                        ),
+                      ),
+                    )
+                  : _errorMessage != null
+                  ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                  : !widget.isAdmin
+                  ? const SliverToBoxAdapter(
+                      child: _AccessMessageCard(
+                        message: 'Inicia sesión con una cuenta administradora para consultar y modificar accesos.',
+                      ),
+                    )
+                  : _accounts.isEmpty
+                  ? const SliverToBoxAdapter(
+                      child: _AccessMessageCard(
+                        message: 'No hay cuentas registradas para mostrar.',
+                      ),
+                    )
+                  : filteredAccounts.isEmpty
+                  ? const SliverToBoxAdapter(
+                      child: _AccessMessageCard(
+                        message:
+                            'No hay cuentas que coincidan con la búsqueda.',
+                      ),
+                    )
+                  : SliverList.separated(
+                      itemCount: filteredAccounts.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final account = filteredAccounts[index];
+                        return _AccessAccountCard(
+                          account: account,
+                          isAdmin: widget.isAdmin,
+                          isSaving: _isSaving,
+                          onEdit: () => _editAccess(account),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -5133,30 +8656,18 @@ class _AccessesPageState extends State<_AccessesPage> {
   }
 }
 
-class _SystemAccount {
-  const _SystemAccount({
-    required this.login,
-    required this.name,
-    required this.role,
-    required this.email,
-    required this.phone,
-    required this.active,
-    required this.accessLabel,
+class _AccessAccountCard extends StatelessWidget {
+  const _AccessAccountCard({
+    required this.account,
+    required this.isAdmin,
+    required this.isSaving,
+    required this.onEdit,
   });
 
-  final String login;
-  final String name;
-  final String role;
-  final String email;
-  final String phone;
-  final bool active;
-  final String accessLabel;
-}
-
-class _AccessAccountCard extends StatelessWidget {
-  const _AccessAccountCard({required this.account});
-
-  final _SystemAccount account;
+  final AccessAccount account;
+  final bool isAdmin;
+  final bool isSaving;
+  final VoidCallback onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -5235,7 +8746,7 @@ class _AccessAccountCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          account.name,
+                          account.name ?? '—',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -5253,16 +8764,16 @@ class _AccessAccountCard extends StatelessWidget {
                     ),
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
-                        colors: account.active
+                        colors: account.isActive
                             ? const [Color(0xFF153D35), Color(0xFF1D574A)]
                             : const [Color(0xFF3A2430), Color(0xFF572738)],
                       ),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      account.active ? 'Activa' : 'Inactiva',
+                      account.isActive ? 'Activa' : 'Inactiva',
                       style: TextStyle(
-                        color: account.active
+                        color: account.isActive
                             ? const Color(0xFF4AE3B5)
                             : const Color(0xFFFF7D9B),
                         fontSize: 9,
@@ -5285,17 +8796,17 @@ class _AccessAccountCard extends StatelessWidget {
                     _AccessDetail(
                       Icons.work_outline_rounded,
                       'Puesto',
-                      account.role,
+                      account.role ?? '—',
                     ),
                     _AccessDetail(
                       Icons.mail_outline_rounded,
                       'Correo',
-                      account.email,
+                      account.email ?? '—',
                     ),
                     _AccessDetail(
                       Icons.phone_rounded,
                       'Teléfono',
-                      account.phone,
+                      account.phone ?? '—',
                     ),
                     _AccessDetail(
                       Icons.admin_panel_settings_outlined,
@@ -5306,47 +8817,45 @@ class _AccessAccountCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 40,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(10),
-                    gradient: const LinearGradient(
-                      colors: [
-                        Color(0xFF087FFF),
-                        Color(0xFF3D8FFF),
-                        Color(0xFF00C8FF),
+              if (isAdmin)
+                SizedBox(
+                  width: double.infinity,
+                  height: 40,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      gradient: const LinearGradient(
+                        colors: [
+                          Color(0xFF087FFF),
+                          Color(0xFF3D8FFF),
+                          Color(0xFF00C8FF),
+                        ],
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x550087FF),
+                          blurRadius: 10,
+                          offset: Offset(0, 4),
+                        ),
                       ],
                     ),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x550087FF),
-                        blurRadius: 10,
-                        offset: Offset(0, 4),
+                    child: FilledButton.icon(
+                      onPressed: isSaving ? null : onEdit,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.transparent,
+                        foregroundColor: Colors.white,
                       ),
-                    ],
-                  ),
-                  child: FilledButton.icon(
-                    onPressed: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => const _AccessEditDialog(),
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: const Icon(Icons.edit_rounded, size: 16),
-                    label: const Text(
-                      'Editar acceso',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
+                      icon: const Icon(Icons.edit_rounded, size: 16),
+                      label: const Text(
+                        'Editar acceso',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
             ],
           ),
         ],
@@ -5390,8 +8899,71 @@ class _AccessDetail extends StatelessWidget {
   }
 }
 
-class _AccessEditDialog extends StatelessWidget {
-  const _AccessEditDialog();
+class _AccessMessageCard extends StatelessWidget {
+  const _AccessMessageCard({
+    required this.message,
+    this.isError = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool isError;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isError ? const Color(0x331A0D1A) : const Color(0xFF111D35),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isError ? const Color(0x99FF5A72) : const Color(0x440087FF),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFFD7E3F7),
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 10),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _AccessEditDialog extends StatefulWidget {
+  const _AccessEditDialog({required this.account});
+
+  final AccessAccount account;
+
+  @override
+  State<_AccessEditDialog> createState() => _AccessEditDialogState();
+}
+
+class _AccessEditDialogState extends State<_AccessEditDialog> {
+  late String _selectedAccess =
+      widget.account.sectionAccess.contains('administrador')
+      ? 'administrador'
+      : widget.account.sectionAccess.contains('recepcion')
+      ? 'recepcion'
+      : 'none';
 
   @override
   Widget build(BuildContext context) {
@@ -5406,57 +8978,85 @@ class _AccessEditDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Editar acceso',
+              'Editar control de acceso',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
               ),
             ),
-            const SizedBox(height: 18),
-            const _HostFormField('Usuario'),
+            const SizedBox(height: 6),
+            Text(
+              widget.account.login,
+              style: const TextStyle(
+                color: Color(0xFF67ACFF),
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             const SizedBox(height: 12),
-            const _HostFormField('Nombre'),
+            const Text(
+              'Elige el nivel de acceso para esta cuenta.',
+              style: TextStyle(color: Color(0xFFB5C1D6), fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            RadioGroup<String>(
+              groupValue: _selectedAccess,
+              onChanged: (selected) {
+                if (selected != null) {
+                  setState(() => _selectedAccess = selected);
+                }
+              },
+              child: Column(
+                children: [
+                  _accessOption('administrador', 'Administrador'),
+                  _accessOption('recepcion', 'Recepción'),
+                  _accessOption('none', 'Sin acceso'),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
-            const _HostFormField('Correo electrónico'),
-            const SizedBox(height: 12),
-            const _HostFormField('Teléfono', keyboardType: TextInputType.phone),
-            const SizedBox(height: 12),
-            const _HostFormField('Puesto / rol'),
-            const SizedBox(height: 18),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  gradient: const LinearGradient(
-                    colors: [
-                      Color(0xFF087FFF),
-                      Color(0xFF3D8FFF),
-                      Color(0xFF00C8FF),
-                    ],
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancelar'),
                   ),
                 ),
-                child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    foregroundColor: Colors.white,
-                  ),
-                  child: const Text(
-                    'Guardar cambios',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => Navigator.of(context).pop(
+                      _selectedAccess == 'none'
+                          ? <String>[]
+                          : <String>[_selectedAccess],
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF087FFF),
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text(
+                      'Guardar',
+                      style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _accessOption(String value, String label) {
+    return RadioListTile<String>(
+      value: value,
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      activeColor: const Color(0xFF35A8FF),
+      title: Text(label, style: const TextStyle(color: Colors.white)),
     );
   }
 }
@@ -5526,7 +9126,7 @@ class _ExternalCompaniesPageState extends State<_ExternalCompaniesPage> {
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
                 child: _DashboardHeader(),
@@ -5639,7 +9239,12 @@ class _ExternalCompaniesPageState extends State<_ExternalCompaniesPage> {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 12)),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+              padding: EdgeInsets.fromLTRB(
+                14,
+                0,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
               sliver: SliverList.separated(
                 itemCount: records.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 10),
@@ -6270,7 +9875,7 @@ class _ExternalStaffPageState extends State<_ExternalStaffPage> {
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
                 child: _DashboardHeader(),
@@ -6432,7 +10037,12 @@ class _ExternalStaffPageState extends State<_ExternalStaffPage> {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 12)),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+              padding: EdgeInsets.fromLTRB(
+                14,
+                0,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
               sliver: company == null
                   ? SliverList.separated(
                       itemCount: visibleCompanies.length,
@@ -7012,7 +10622,12 @@ class _AppointmentsPageState extends State<_AppointmentsPage> {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 12)),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              padding: EdgeInsets.fromLTRB(
+                14,
+                0,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
               sliver: filtered.isEmpty
                   ? const SliverToBoxAdapter(child: _AppointmentEmptyState())
                   : SliverList.separated(
@@ -7057,7 +10672,12 @@ class _AppointmentsPageState extends State<_AppointmentsPage> {
             ),
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+                padding: EdgeInsets.fromLTRB(
+                  14,
+                  0,
+                  14,
+                  responsiveBottomScrollPadding(context),
+                ),
                 child: _AppointmentsCalendar(
                   selectedDay: _selectedDay,
                   appointmentDays: const {27: 3, 28: 1},
@@ -8112,23 +11732,26 @@ class _DailyLogbookPage extends StatefulWidget {
 class _DailyLogbookPageState extends State<_DailyLogbookPage> {
   String _filter = 'Todos';
   String _query = '';
+  int _periodPage = 0;
+  int _activityPage = 0;
+  static const _pageSize = 5;
 
-  static const _movements = [
+  static const _periodMovements = [
     _LogbookMovement(
       name: 'Abner Alejandro Soto',
       time: '09:04',
-      date: '29 oct',
-      type: 'Ingreso',
+      date: '3 nov',
+      type: 'Entrada',
       folio: '99928727',
-      company: 'Registro manual',
-      detail: 'Checklist completado',
+      company: 'Público general',
+      detail: 'Dentro',
       color: Color(0xFF087FFF),
       icon: Icons.login_rounded,
     ),
     _LogbookMovement(
       name: 'Rafael Gonzales Castañeda',
       time: '08:57',
-      date: '29 oct',
+      date: '3 nov',
       type: 'Llegada',
       folio: '53597403',
       company: 'Registro manual',
@@ -8139,8 +11762,8 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
     _LogbookMovement(
       name: 'Pedro Hernandez',
       time: '08:12',
-      date: '29 oct',
-      type: 'Ingreso',
+      date: '3 nov',
+      type: 'Entrada',
       folio: '94174021',
       company: 'Soluciones Industriales del Norte',
       detail: 'Anfitrión: Administrador de prueba',
@@ -8150,7 +11773,76 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
     _LogbookMovement(
       name: 'Jesus Efren Hinojosa Guerra',
       time: '18:58',
-      date: '28 oct',
+      date: '2 nov',
+      type: 'Salida',
+      folio: '41720855',
+      company: 'Soluciones Industriales del Norte',
+      detail: 'Salida registrada correctamente',
+      color: Color(0xFFE53E4B),
+      icon: Icons.logout_rounded,
+    ),
+  ];
+
+  static const _recentActivity = [
+    _LogbookMovement(
+      name: 'Abner Alejandro Soto',
+      time: '09:04',
+      date: '3 nov',
+      type: 'Entrada',
+      folio: '99928727',
+      company: 'Público general',
+      detail: 'Ingreso autorizado sin equipo ni herramientas',
+      color: Color(0xFF087FFF),
+      icon: Icons.login_rounded,
+    ),
+    _LogbookMovement(
+      name: 'Abner Alejandro Soto',
+      time: '08:57',
+      date: '3 nov',
+      type: 'Llegada',
+      folio: '99928727',
+      company: 'Público general',
+      detail: 'Pendiente de autorización · Motivo: Entrevista',
+      color: Color(0xFF26E2A7),
+      icon: Icons.call_received_rounded,
+    ),
+    _LogbookMovement(
+      name: 'Rafael Gonzales Castañeda',
+      time: '08:57',
+      date: '3 nov',
+      type: 'Llegada',
+      folio: '53597403',
+      company: 'Público general',
+      detail: 'Pendiente de autorización · Motivo: Entrevista',
+      color: Color(0xFF26E2A7),
+      icon: Icons.call_received_rounded,
+    ),
+    _LogbookMovement(
+      name: 'Pedro Hernandez',
+      time: '08:12',
+      date: '3 nov',
+      type: 'Entrada',
+      folio: '94174021',
+      company: 'Soluciones Industriales del Norte',
+      detail: 'Anfitrión: Administrador de prueba',
+      color: Color(0xFF087FFF),
+      icon: Icons.login_rounded,
+    ),
+    _LogbookMovement(
+      name: 'Pedro Hernandez',
+      time: '08:01',
+      date: '3 nov',
+      type: 'Llegada',
+      folio: '94174021',
+      company: 'Soluciones Industriales del Norte',
+      detail: 'Pendiente de autorización',
+      color: Color(0xFF26E2A7),
+      icon: Icons.call_received_rounded,
+    ),
+    _LogbookMovement(
+      name: 'Jesus Efren Hinojosa Guerra',
+      time: '18:58',
+      date: '2 nov',
       type: 'Salida',
       folio: '41720855',
       company: 'Soluciones Industriales del Norte',
@@ -8199,16 +11891,35 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _movements.where((movement) {
+    final normalized = _query.trim().toLowerCase();
+    bool matches(_LogbookMovement movement) {
       final matchesFilter = _filter == 'Todos' || movement.type == _filter;
-      final normalized = _query.toLowerCase();
       final matchesQuery =
           normalized.isEmpty ||
           movement.name.toLowerCase().contains(normalized) ||
           movement.company.toLowerCase().contains(normalized) ||
           movement.folio.contains(normalized);
       return matchesFilter && matchesQuery;
-    }).toList();
+    }
+
+    final periodItems = _periodMovements.where(matches).toList();
+    final activityItems = _recentActivity.where(matches).toList();
+    final periodPages = math
+        .max(1, (periodItems.length / _pageSize).ceil())
+        .toInt();
+    final activityPages = math
+        .max(1, (activityItems.length / _pageSize).ceil())
+        .toInt();
+    final periodPage = _periodPage.clamp(0, periodPages - 1).toInt();
+    final activityPage = _activityPage.clamp(0, activityPages - 1).toInt();
+    final visiblePeriodItems = periodItems
+        .skip(periodPage * _pageSize)
+        .take(_pageSize)
+        .toList();
+    final visibleActivityItems = activityItems
+        .skip(activityPage * _pageSize)
+        .take(_pageSize)
+        .toList();
 
     return Container(
       decoration: const BoxDecoration(
@@ -8320,7 +12031,11 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
                       ),
                       const SizedBox(height: 10),
                       TextField(
-                        onChanged: (value) => setState(() => _query = value),
+                        onChanged: (value) => setState(() {
+                          _query = value;
+                          _periodPage = 0;
+                          _activityPage = 0;
+                        }),
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
                           hintText: 'Buscar por nombre, folio o empresa',
@@ -8341,20 +12056,17 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
                         ),
                       ),
                       const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
+                      Row(
                         children: [
-                          SizedBox(
-                            width: (MediaQuery.sizeOf(context).width - 38) / 2,
+                          Expanded(
                             child: _LogbookActionButton(
                               label: 'Nuevo registro',
                               icon: Icons.login_rounded,
                               onTap: () => _openRegister(),
                             ),
                           ),
-                          SizedBox(
-                            width: (MediaQuery.sizeOf(context).width - 38) / 2,
+                          const SizedBox(width: 10),
+                          Expanded(
                             child: _LogbookActionButton(
                               label: 'Introducir código',
                               icon: Icons.pin_rounded,
@@ -8389,7 +12101,7 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
                     for (final filter in const [
                       'Todos',
                       'Llegada',
-                      'Ingreso',
+                      'Entrada',
                       'Salida',
                     ])
                       Padding(
@@ -8397,7 +12109,11 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
                         child: ChoiceChip(
                           label: Text(filter),
                           selected: _filter == filter,
-                          onSelected: (_) => setState(() => _filter = filter),
+                          onSelected: (_) => setState(() {
+                            _filter = filter;
+                            _periodPage = 0;
+                            _activityPage = 0;
+                          }),
                           selectedColor: const Color(0xFF087FFF),
                           backgroundColor: const Color(0xFF111B31),
                           side: BorderSide(
@@ -8417,15 +12133,71 @@ class _DailyLogbookPageState extends State<_DailyLogbookPage> {
                 ),
               ),
             ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 28),
-              sliver: SliverList.separated(
-                itemCount: filtered.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (_, index) => _LogbookMovementCard(
-                  movement: filtered[index],
-                  onTap: () => _openMovement(filtered[index]),
-                ),
+            SliverToBoxAdapter(
+              child: _LogbookSection(
+                title: 'Movimientos del periodo',
+                subtitle: 'Un registro por visitante · Estado actual',
+                icon: Icons.fact_check_rounded,
+                count: periodItems.length,
+                children: [
+                  if (visiblePeriodItems.isEmpty)
+                    const _LogbookEmptyState(
+                      message:
+                          'No hay movimientos que coincidan con la búsqueda.',
+                    )
+                  else
+                    for (final movement in visiblePeriodItems)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _LogbookMovementCard(
+                          movement: movement,
+                          onTap: () => _openMovement(movement),
+                        ),
+                      ),
+                  _LogbookPagination(
+                    itemCount: periodItems.length,
+                    page: periodPage,
+                    pageCount: periodPages,
+                    pageSize: _pageSize,
+                    onPageChanged: (page) => setState(() => _periodPage = page),
+                  ),
+                ],
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: _LogbookSection(
+                title: 'Actividad reciente',
+                subtitle: 'Cada llegada, entrada y salida con su hora',
+                icon: Icons.bolt_rounded,
+                count: activityItems.length,
+                children: [
+                  if (visibleActivityItems.isEmpty)
+                    const _LogbookEmptyState(
+                      message: 'No hay actividad que coincida con la búsqueda.',
+                    )
+                  else
+                    for (final movement in visibleActivityItems)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _RecentActivityCard(
+                          movement: movement,
+                          onTap: () => _openMovement(movement),
+                        ),
+                      ),
+                  _LogbookPagination(
+                    itemCount: activityItems.length,
+                    page: activityPage,
+                    pageCount: activityPages,
+                    pageSize: _pageSize,
+                    onPageChanged: (page) =>
+                        setState(() => _activityPage = page),
+                  ),
+                ],
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: MediaQuery.sizeOf(context).shortestSide < 600 ? 72 : 32,
               ),
             ),
           ],
@@ -8457,6 +12229,162 @@ class _LogbookMovement {
   final String detail;
   final Color color;
   final IconData icon;
+}
+
+class _LogbookSection extends StatelessWidget {
+  const _LogbookSection({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.count,
+    required this.children,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final int count;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 14, 14, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xE610172A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x99087FFF)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: const Color(0xFF63B8FF), size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF9FB2CD),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0x1A087FFF),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: const Color(0x665DAEFF)),
+                ),
+                child: Text(
+                  '$count ${count == 1 ? 'registro' : 'registros'}',
+                  style: const TextStyle(
+                    color: Color(0xFFB7D9FF),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Divider(height: 1, color: Color(0x332D78C4)),
+          ),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class _LogbookEmptyState extends StatelessWidget {
+  const _LogbookEmptyState({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Center(
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFF9FB2CD), fontSize: 12),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogbookPagination extends StatelessWidget {
+  const _LogbookPagination({
+    required this.itemCount,
+    required this.page,
+    required this.pageCount,
+    required this.pageSize,
+    required this.onPageChanged,
+  });
+
+  final int itemCount;
+  final int page;
+  final int pageCount;
+  final int pageSize;
+  final ValueChanged<int> onPageChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final firstItem = itemCount == 0 ? 0 : page * pageSize + 1;
+    final lastItem = math.min(itemCount, (page + 1) * pageSize);
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            'Mostrando $firstItem–$lastItem de $itemCount registros',
+            style: const TextStyle(color: Color(0xFF91A2BD), fontSize: 10),
+          ),
+        ),
+        IconButton(
+          tooltip: 'Página anterior',
+          onPressed: page > 0 ? () => onPageChanged(page - 1) : null,
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.chevron_left_rounded),
+          color: const Color(0xFF9FB2CD),
+        ),
+        Text(
+          'Página ${page + 1} de $pageCount',
+          style: const TextStyle(color: Color(0xFFB7C7DF), fontSize: 10),
+        ),
+        IconButton(
+          tooltip: 'Página siguiente',
+          onPressed: page + 1 < pageCount
+              ? () => onPageChanged(page + 1)
+              : null,
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.chevron_right_rounded),
+          color: const Color(0xFF9FB2CD),
+        ),
+      ],
+    );
+  }
 }
 
 class _LogbookMetric extends StatelessWidget {
@@ -8701,6 +12629,118 @@ class _LogbookMovementCard extends StatelessWidget {
                     size: 20,
                   ),
                 ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentActivityCard extends StatelessWidget {
+  const _RecentActivityCard({required this.movement, required this.onTap});
+
+  final _LogbookMovement movement;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0A1930),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0x332D78C4)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: movement.color.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: movement.color.withValues(alpha: .46),
+                  ),
+                ),
+                child: Icon(movement.icon, color: movement.color, size: 21),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: movement.color.withValues(alpha: .14),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            movement.type,
+                            style: TextStyle(
+                              color: movement.color,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          movement.time,
+                          style: const TextStyle(
+                            color: Color(0xFFB7C7DF),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 7),
+                    Text(
+                      '${movement.name} · ${movement.company}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFFD8E1EF),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          left: BorderSide(color: Color(0xFF2479C8), width: 2),
+                        ),
+                      ),
+                      child: Text(
+                        'Folio ${movement.folio} · ${movement.detail}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF91ACCD),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -9462,7 +13502,12 @@ class _EquipmentPage extends StatelessWidget {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 12)),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+              padding: EdgeInsets.fromLTRB(
+                14,
+                0,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
               sliver: SliverList.separated(
                 itemCount: _declarations.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 10),
@@ -10300,26 +14345,162 @@ class _HostFormField extends StatelessWidget {
   }
 }
 
-class _DepartmentsPage extends StatelessWidget {
-  const _DepartmentsPage();
+class _DepartmentsPage extends StatefulWidget {
+  const _DepartmentsPage({required this.authService, required this.isAdmin});
 
-  static const departments = [
-    'ASUNTOS INTERNOS',
-    'AYMSC',
-    'CALIDAD',
-    'CAPACITACION',
-    'COMPRAS',
-    'CONTRALORIA',
-    'CYM HIDALGO',
-    'CYM MT',
-    'CYM MTY',
-    'CYM NG',
-    'CYM NL',
-    'CYM TJ',
-    'DIRECCION',
-    'LEGAL',
-    'MONITOREO',
-  ];
+  final AuthService? authService;
+  final bool isAdmin;
+
+  @override
+  State<_DepartmentsPage> createState() => _DepartmentsPageState();
+}
+
+class _DepartmentsPageState extends State<_DepartmentsPage> {
+  late final AuthService _authService =
+      widget.authService ?? AuthService.shared;
+  List<Department> _departments = const [];
+  bool _isLoading = true;
+  bool _isSaving = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadDepartments());
+  }
+
+  Future<void> _loadDepartments() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final departments = await _authService.getDepartments();
+      if (!mounted) return;
+      setState(() {
+        _departments = departments;
+        _isLoading = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudieron cargar los departamentos. Inténtalo de nuevo.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _saveDepartment({Department? department}) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _DepartmentFormDialog(department: department),
+    );
+    if (name == null || !mounted) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final departments = department == null
+          ? await _authService.createDepartment(name)
+          : await _authService.updateDepartment(department.id, name);
+      if (!mounted) return;
+      setState(() {
+        _departments = departments;
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            department == null
+                ? 'Departamento registrado correctamente.'
+                : 'Departamento actualizado correctamente.',
+          ),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudo guardar el departamento. Inténtalo de nuevo.';
+        _isSaving = false;
+      });
+    }
+  }
+
+  Future<void> _deleteDepartment(Department department) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF111D32),
+        title: const Text(
+          'Eliminar departamento',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Text(
+          '¿Quieres eliminar "${department.name}"?',
+          style: const TextStyle(color: Color(0xFFD4DDF0)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFFF3155),
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final departments = await _authService.deleteDepartment(department.id);
+      if (!mounted) return;
+      setState(() {
+        _departments = departments;
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Departamento eliminado.')));
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'No se pudo eliminar el departamento. Inténtalo de nuevo.';
+        _isSaving = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -10334,10 +14515,10 @@ class _DepartmentsPage extends StatelessWidget {
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: _DashboardHeader(),
+                child: _DashboardHeader(authService: _authService),
               ),
             ),
             SliverToBoxAdapter(
@@ -10376,138 +14557,278 @@ class _DepartmentsPage extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: const Color(0xFF087FFF)),
                   ),
-                  child: Column(
-                    children: [
-                      Row(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final compact = constraints.maxWidth < 560;
+                      final icon = Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: const Color(0x221B8AFF),
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: const Color(0xFF087FFF)),
+                        ),
+                        child: const Icon(
+                          Icons.account_tree_rounded,
+                          color: Color(0xFF087FFF),
+                          size: 19,
+                        ),
+                      );
+                      const title = Expanded(
+                        child: Text(
+                          'Departamentos',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      );
+                      final count = Text(
+                        '${_departments.length} departamentos',
+                        maxLines: 1,
+                        style: const TextStyle(
+                          color: Color(0xFF087FFF),
+                          fontSize: 10,
+                        ),
+                      );
+                      final registerButton = SizedBox(
+                        height: 38,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(19),
+                            gradient: const LinearGradient(
+                              colors: [
+                                Color(0xFF087FFF),
+                                Color(0xFF3D8FFF),
+                                Color(0xFF00C8FF),
+                              ],
+                            ),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Color(0x660087FF),
+                                blurRadius: 12,
+                                offset: Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: FilledButton.icon(
+                            onPressed: !widget.isAdmin || _isSaving
+                                ? null
+                                : () => _saveDepartment(),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                            ),
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text(
+                              'Registrar departamento',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 11),
+                            ),
+                          ),
+                        ),
+                      );
+
+                      if (compact) {
+                        return Column(
+                          children: [
+                            Row(
+                              children: [
+                                icon,
+                                const SizedBox(width: 10),
+                                title,
+                                const SizedBox(width: 8),
+                                count,
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            if (widget.isAdmin)
+                              SizedBox(
+                                width: double.infinity,
+                                child: registerButton,
+                              ),
+                          ],
+                        );
+                      }
+
+                      return Row(
                         children: [
-                          Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: const Color(0x221B8AFF),
-                              borderRadius: BorderRadius.circular(9),
-                              border: Border.all(
-                                color: const Color(0xFF087FFF),
-                              ),
-                            ),
-                            child: const Icon(
-                              Icons.account_tree_rounded,
-                              color: Color(0xFF087FFF),
-                              size: 19,
-                            ),
-                          ),
+                          icon,
                           const SizedBox(width: 10),
-                          const Expanded(
-                            child: Text(
-                              'Departamentos',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                          Text(
-                            '${departments.length} departamentos',
-                            style: const TextStyle(
-                              color: Color(0xFF087FFF),
-                              fontSize: 10,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          SizedBox(
-                            height: 38,
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(19),
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFF087FFF),
-                                    Color(0xFF3D8FFF),
-                                    Color(0xFF00C8FF),
-                                  ],
-                                ),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Color(0x660087FF),
-                                    blurRadius: 12,
-                                    offset: Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: FilledButton.icon(
-                                onPressed: () => _showDepartmentForm(context),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: Colors.transparent,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                  ),
-                                ),
-                                icon: const Icon(Icons.add, size: 18),
-                                label: const Text(
-                                  'Registrar departamento',
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(fontSize: 11),
-                                ),
-                              ),
-                            ),
-                          ),
+                          title,
+                          count,
+                          if (widget.isAdmin) ...[
+                            const SizedBox(width: 8),
+                            registerButton,
+                          ],
                         ],
-                      ),
-                    ],
+                      );
+                    },
                   ),
                 ),
               ),
             ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
-              sliver: SliverLayoutBuilder(
-                builder: (context, constraints) {
-                  final width = constraints.crossAxisExtent;
-                  final columns = width >= 720
-                      ? 4
-                      : width >= 500
-                      ? 3
-                      : 2;
-                  return SliverGrid(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) => _DepartmentCard(departments[index]),
-                      childCount: departments.length,
-                    ),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: columns,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                      mainAxisExtent: 148,
-                    ),
-                  );
-                },
+            if (_errorMessage != null)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                  child: _DepartmentMessageCard(
+                    message: _errorMessage!,
+                    isError: true,
+                    onRetry: _loadDepartments,
+                  ),
+                ),
               ),
+            if (_isSaving)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(14, 8, 14, 0),
+                  child: LinearProgressIndicator(
+                    color: Color(0xFF087FFF),
+                    backgroundColor: Color(0xFF17243D),
+                  ),
+                ),
+              ),
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                14,
+                12,
+                14,
+                responsiveBottomScrollPadding(context),
+              ),
+              sliver: _isLoading
+                  ? const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 36),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: Color(0xFF087FFF),
+                          ),
+                        ),
+                      ),
+                    )
+                  : _errorMessage != null
+                  ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                  : _departments.isEmpty
+                  ? const SliverToBoxAdapter(
+                      child: _DepartmentMessageCard(
+                        message: 'Aún no hay departamentos. Registra el primero para comenzar.',
+                      ),
+                    )
+                  : SliverLayoutBuilder(
+                      builder: (context, constraints) {
+                        return SliverGrid(
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) => _DepartmentCard(
+                              department: _departments[index],
+                              isAdmin: widget.isAdmin,
+                              isSaving: _isSaving,
+                              onEdit: () => _saveDepartment(
+                                department: _departments[index],
+                              ),
+                              onDelete: () =>
+                                  _deleteDepartment(_departments[index]),
+                            ),
+                            childCount: _departments.length,
+                          ),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 2,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
+                                mainAxisExtent: 196,
+                              ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  static Future<void> _showDepartmentForm(BuildContext context) {
-    return showDialog<void>(
-      context: context,
-      barrierColor: const Color(0xE0000000),
-      builder: (_) => const _DepartmentFormDialog(),
+class _DepartmentMessageCard extends StatelessWidget {
+  const _DepartmentMessageCard({
+    required this.message,
+    this.isError = false,
+    this.onRetry,
+  });
+
+  final String message;
+  final bool isError;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111D32),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isError ? const Color(0x99FF5A72) : const Color(0x550087FF),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isError ? Icons.cloud_off_rounded : Icons.account_tree_rounded,
+            size: 32,
+            color: isError ? const Color(0xFFFF7187) : const Color(0xFF59B8FF),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFFD4DDF0),
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
 
 class _DepartmentCard extends StatelessWidget {
-  const _DepartmentCard(this.name);
+  const _DepartmentCard({
+    required this.department,
+    required this.isAdmin,
+    required this.isSaving,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
-  final String name;
+  final Department department;
+  final bool isAdmin;
+  final bool isSaving;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     return Container(
+      key: ValueKey('department-card-${department.id}'),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
@@ -10546,17 +14867,27 @@ class _DepartmentCard extends StatelessWidget {
             Row(
               children: [
                 Container(
-                  width: 34,
-                  height: 34,
+                  width: 40,
+                  height: 40,
                   decoration: BoxDecoration(
-                    color: const Color(0x261B8AFF),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0x660087FF)),
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xFF087FFF), Color(0xFF00C8FF)],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x550087FF),
+                        blurRadius: 12,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
                   ),
                   child: const Icon(
                     Icons.account_tree_outlined,
-                    color: Color(0xFF087FFF),
-                    size: 18,
+                    color: Colors.white,
+                    size: 21,
                   ),
                 ),
                 const Spacer(),
@@ -10566,42 +14897,88 @@ class _DepartmentCard extends StatelessWidget {
                     vertical: 5,
                   ),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0x330087FF), Color(0x1600D4FF)],
-                    ),
-                    borderRadius: BorderRadius.circular(7),
-                    border: Border.all(color: const Color(0x550087FF)),
+                    color: const Color(0xFF102B48),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0x664A9DFF)),
                   ),
-                  child: const Text(
-                    '0 anfitriones vinculados',
+                  child: Text(
+                    '#${department.id}',
                     style: TextStyle(
-                      color: Color(0xFF7BCBFF),
-                      fontSize: 7,
-                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF9BCBFF),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 13),
+            Text(
+              department.name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                height: 1.15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(
+                  Icons.people_alt_outlined,
+                  color: Color(0xFF63C5FF),
+                  size: 14,
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    '${department.hostCount} ${department.hostCount == 1 ? 'anfitrión vinculado' : 'anfitriones vinculados'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFB8D7F4),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
               ],
             ),
             const Spacer(),
-            Text(
-              name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
+            if (isAdmin)
+              Row(
+                children: [
+                  Expanded(
+                    child: _DepartmentActionButton(
+                      label: 'Editar',
+                      icon: Icons.edit_rounded,
+                      gradient: const [Color(0xFF087FFF), Color(0xFF00B7E8)],
+                      onPressed: isSaving ? null : onEdit,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _DepartmentActionButton(
+                      label: 'Eliminar',
+                      icon: Icons.delete_outline_rounded,
+                      gradient: const [Color(0xFFFF3155), Color(0xFFD91B50)],
+                      onPressed: isSaving ? null : onDelete,
+                    ),
+                  ),
+                ],
+              )
+            else
+              const Text(
+                'Departamento registrado',
+                style: TextStyle(
+                  color: Color(0xFF9BCBFF),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(child: _DepartmentActionButton.edit()),
-                const SizedBox(width: 6),
-                Expanded(child: _DepartmentActionButton.delete()),
-              ],
-            ),
           ],
         ),
       ),
@@ -10610,20 +14987,17 @@ class _DepartmentCard extends StatelessWidget {
 }
 
 class _DepartmentActionButton extends StatelessWidget {
-  const _DepartmentActionButton({required this.label, required this.gradient});
-
-  factory _DepartmentActionButton.edit() => const _DepartmentActionButton(
-    label: 'Editar',
-    gradient: [Color(0xFF087FFF), Color(0xFF00B7E8)],
-  );
-
-  factory _DepartmentActionButton.delete() => const _DepartmentActionButton(
-    label: 'Eliminar',
-    gradient: [Color(0xFFFF3155), Color(0xFFD91B50)],
-  );
+  const _DepartmentActionButton({
+    required this.label,
+    required this.icon,
+    required this.gradient,
+    required this.onPressed,
+  });
 
   final String label;
+  final IconData icon;
   final List<Color> gradient;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -10641,20 +15015,31 @@ class _DepartmentActionButton extends StatelessWidget {
         ],
       ),
       padding: const EdgeInsets.all(1),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF0C162B),
+      child: Material(
+        color: const Color(0xFF0C162B),
+        borderRadius: BorderRadius.circular(7),
+        child: InkWell(
+          onTap: onPressed,
           borderRadius: BorderRadius.circular(7),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: gradient.first == const Color(0xFFFF3155)
-                  ? const Color(0xFFFF667A)
-                  : const Color(0xFF72C8FF),
-              fontSize: 9,
-              fontWeight: FontWeight.w800,
+          child: Tooltip(
+            message: label,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 13, color: Colors.white),
+                  const SizedBox(width: 4),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -10663,8 +15048,37 @@ class _DepartmentActionButton extends StatelessWidget {
   }
 }
 
-class _DepartmentFormDialog extends StatelessWidget {
-  const _DepartmentFormDialog();
+class _DepartmentFormDialog extends StatefulWidget {
+  const _DepartmentFormDialog({this.department});
+
+  final Department? department;
+
+  @override
+  State<_DepartmentFormDialog> createState() => _DepartmentFormDialogState();
+}
+
+class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
+  late final _nameController = TextEditingController(
+    text: widget.department?.name ?? '',
+  );
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty || name.length > 120) {
+      setState(() {
+        _errorMessage = 'Escribe un nombre de hasta 120 caracteres.';
+      });
+      return;
+    }
+    Navigator.of(context).pop(name);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -10712,8 +15126,10 @@ class _DepartmentFormDialog extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 18),
-            const Text(
-              'Registrar departamento',
+            Text(
+              widget.department == null
+                  ? 'Registrar departamento'
+                  : 'Editar departamento',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 20,
@@ -10721,8 +15137,10 @@ class _DepartmentFormDialog extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 5),
-            const Text(
-              'Captura el nombre del departamento.',
+            Text(
+              widget.department == null
+                  ? 'Captura el nombre del departamento.'
+                  : 'Actualiza el nombre del departamento.',
               style: TextStyle(color: Color(0xFFAAB5C7), fontSize: 12),
             ),
             const SizedBox(height: 22),
@@ -10736,6 +15154,11 @@ class _DepartmentFormDialog extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             TextField(
+              controller: _nameController,
+              autofocus: true,
+              maxLength: 120,
+              textCapitalization: TextCapitalization.words,
+              onSubmitted: (_) => _save(),
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 filled: true,
@@ -10753,6 +15176,7 @@ class _DepartmentFormDialog extends StatelessWidget {
                     width: 2,
                   ),
                 ),
+                errorText: _errorMessage,
               ),
             ),
             const SizedBox(height: 22),
@@ -10771,7 +15195,7 @@ class _DepartmentFormDialog extends StatelessWidget {
                   ),
                 ),
                 child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: _save,
                   style: FilledButton.styleFrom(
                     backgroundColor: Colors.transparent,
                     foregroundColor: Colors.white,
@@ -10779,8 +15203,10 @@ class _DepartmentFormDialog extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text(
-                    'Registrar departamento',
+                  child: Text(
+                    widget.department == null
+                        ? 'Registrar departamento'
+                        : 'Guardar cambios',
                     style: TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
