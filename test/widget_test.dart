@@ -1087,7 +1087,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Los degradados de los pasos 1 y 3 tienen mejor contraste', (
+  testWidgets('Los degradados de los pasos 1 y 3 son nítidos y contrastantes', (
     WidgetTester tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -1101,7 +1101,13 @@ void main() {
     final registrationGradient = tester.widget<ShaderMask>(
       find.byKey(const ValueKey('registration-onboarding-gradient-word')),
     );
-    expect((registrationGradient.child as Text).style!.shadows, hasLength(3));
+    final registrationText = registrationGradient.child as Text;
+    expect(registrationText.style!.fontWeight, FontWeight.w900);
+    expect(registrationText.style!.shadows, hasLength(1));
+    expect(
+      registrationText.style!.shadows!.single.blurRadius,
+      lessThanOrEqualTo(2),
+    );
 
     await tester.tap(find.text('Continuar'));
     await tester.pumpAndSettle();
@@ -1117,8 +1123,12 @@ void main() {
     );
     expect(readyGradient.child, isA<FittedBox>());
     expect(
+      tester.widgetList<Text>(readyGradientText).single.style!.fontWeight,
+      FontWeight.w900,
+    );
+    expect(
       tester.widgetList<Text>(readyGradientText).single.style!.shadows,
-      hasLength(3),
+      hasLength(1),
     );
     expect(tester.takeException(), isNull);
   });
@@ -1146,7 +1156,8 @@ void main() {
       find.byKey(const ValueKey('control-onboarding-gradient-word')),
     );
     final gradientText = gradient.child as Text;
-    expect(gradientText.style!.shadows, hasLength(3));
+    expect(gradientText.style!.fontWeight, FontWeight.w900);
+    expect(gradientText.style!.shadows, hasLength(1));
 
     await tester.tap(find.text('Continuar'));
     await tester.pumpAndSettle();
@@ -1655,16 +1666,13 @@ void main() {
     await tester.tap(find.text('Bitácora diaria'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Nuevo registro'), findsOneWidget);
-    expect(find.text('Introducir código'), findsOneWidget);
-    final newRegistration = tester.getRect(find.text('Nuevo registro'));
-    final enterCode = tester.getRect(find.text('Introducir código'));
-    expect(newRegistration.top, closeTo(enterCode.top, 2));
-    expect(newRegistration.right, lessThan(enterCode.left));
+    expect(find.text('Bitácora diaria'), findsOneWidget);
+    expect(find.text('Registrar'), findsOneWidget);
+    expect(find.text('Persona API página 1 · Llegada'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('La bitácora separa estado y eventos con paginación', (
+  testWidgets('La bitácora muestra datos y paginación de la API', (
     WidgetTester tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -1692,40 +1700,17 @@ void main() {
     await tester.tap(find.text('Bitácora diaria'));
     await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(
-      find.text('Movimientos del periodo'),
-      250,
-      scrollable: find
-          .descendant(
-            of: find.byType(CustomScrollView).first,
-            matching: find.byType(Scrollable),
-          )
-          .first,
-    );
-    expect(find.text('Movimientos del periodo'), findsOneWidget);
-    expect(find.text('4 registros'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Actividad reciente'),
-      250,
-      scrollable: find
-          .descendant(
-            of: find.byType(CustomScrollView).first,
-            matching: find.byType(Scrollable),
-          )
-          .first,
-    );
-    expect(find.text('Actividad reciente'), findsOneWidget);
-    expect(find.text('6 registros'), findsOneWidget);
-    expect(find.text('Página 1 de 2'), findsOneWidget);
-    await tester.drag(
-      find.byType(CustomScrollView).first,
-      const Offset(0, -900),
-    );
+    expect(find.text('Movimientos: 4'), findsOneWidget);
+    expect(find.text('Dentro ahora: 2'), findsOneWidget);
+    expect(find.text('Pendientes: 1'), findsOneWidget);
+    expect(find.text('Persona API página 1 · Llegada'), findsOneWidget);
+    expect(find.text('1 de 2'), findsOneWidget);
+    await tester.ensureVisible(find.byTooltip('Página siguiente'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Página siguiente').last);
+    await tester.tap(find.byTooltip('Página siguiente'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('41720855'), findsOneWidget);
-    expect(find.text('Página 2 de 2'), findsOneWidget);
+    expect(find.text('Persona API página 2 · Llegada'), findsOneWidget);
+    expect(find.text('2 de 2'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
@@ -1744,10 +1729,35 @@ http.Response? _homeDashboardResponse(http.Request request) {
     return http.Response(jsonEncode({'appointments': []}), 200);
   }
   if (request.url.path == '/api/daily-log') {
+    final page = int.tryParse(request.url.queryParameters['page'] ?? '') ?? 1;
     return http.Response(
       jsonEncode({
-        'summary': {'insideNow': 0, 'pendingArrivals': 0},
-        'recentEntries': [],
+        'entries': [
+          {
+            'id': page,
+            'date': '2026-11-04',
+            'time': '09:30',
+            'event': 'Llegada',
+            'person': 'Persona API página $page',
+            'company': 'Empresa API',
+            'details': '',
+            'actorName': 'Recepción',
+          },
+        ],
+        'recentEntries': [
+          {
+            'date': '2026-11-04',
+            'time': '09:30',
+            'event': 'Llegada',
+            'person': 'Persona API página $page',
+          },
+        ],
+        'summary': {'movementCount': 4, 'insideNow': 2, 'pendingArrivals': 1},
+        'hosts': ['Anfitrión API'],
+        'total': 2,
+        'page': page,
+        'pageSize': 1,
+        'pages': 2,
       }),
       200,
     );

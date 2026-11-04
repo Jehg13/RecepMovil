@@ -206,6 +206,10 @@ void main() {
     expect(find.text('cuenta-1'), findsOneWidget);
     expect(find.text('persona@example.test'), findsOneWidget);
     expect(find.text('Recepción'), findsWidgets);
+    final accessCard = tester.widget<Container>(
+      find.byKey(const ValueKey('access-account-card-cuenta-1')),
+    );
+    expect(accessCard.child, isA<Column>());
 
     await tester.tap(find.text('Editar acceso'));
     await tester.pumpAndSettle();
@@ -217,10 +221,24 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('consulta, registra y elimina anfitriones desde la API', (
-    tester,
-  ) async {
-    final hosts = <Map<String, dynamic>>[];
+  testWidgets('edita solo departamento y elimina anfitriones', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final hosts = <Map<String, dynamic>>[
+      {
+        'id': 8,
+        'login': 'host-ana',
+        'name': 'Ana García López',
+        'departmentId': 4,
+        'role': 'Analista',
+        'email': 'ana.garcia@example.test',
+        'phone': '5551234567',
+        'accessRoles': [],
+      },
+    ];
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
       if (request.method == 'GET' &&
@@ -232,42 +250,24 @@ void main() {
           jsonEncode({
             'departments': [
               {'id': 4, 'name': 'Recursos Humanos', 'hostCount': 0},
+              {'id': 5, 'name': 'Operaciones', 'hostCount': 0},
             ],
           }),
           200,
         );
       }
-      if (request.method == 'GET' && request.url.path == '/api/host-accounts') {
-        return http.Response(jsonEncode({'accounts': []}), 200);
-      }
-      if (request.method == 'POST' &&
-          request.url.path == '/api/department-hosts') {
-        expect(jsonDecode(request.body), {
-          'login': 'host-nuevo',
-          'name': 'Anfitrión Nuevo',
-          'departmentId': 4,
-          'role': '',
-          'email': '',
-          'phone': '',
-        });
-        hosts.add({
-          'id': 8,
-          'login': 'host-nuevo',
-          'name': 'Anfitrión Nuevo',
-          'departmentId': 4,
-          'role': '',
-          'email': '',
-          'phone': '',
-          'accessRoles': [],
-        });
-        return http.Response(jsonEncode({'hosts': hosts}), 201);
+      if (request.method == 'PATCH' &&
+          request.url.path == '/api/department-hosts/8') {
+        expect(jsonDecode(request.body), {'departmentId': 5});
+        hosts[0]['departmentId'] = 5;
+        return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
       if (request.method == 'DELETE' &&
           request.url.path == '/api/department-hosts/8') {
         hosts.clear();
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
-      return http.Response('', 404);
+      fail('La pantalla de anfitriones solo debe consultar datos.');
     });
     final service = AuthService(
       client: client,
@@ -290,21 +290,33 @@ void main() {
     await tester.tap(find.text('Anfitriones').last);
     await tester.pumpAndSettle();
 
-    expect(
-      find.text('Todavía no hay anfitriones registrados.'),
-      findsOneWidget,
-    );
-    await tester.tap(find.byTooltip('Registrar anfitrión'));
+    expect(find.text('Ana García López'), findsOneWidget);
+    expect(find.text('host-ana'), findsOneWidget);
+    expect(find.text('ana.garcia@example.test'), findsOneWidget);
+    expect(find.text('Recursos Humanos'), findsOneWidget);
+    expect(find.text('Analista'), findsOneWidget);
+    expect(find.text('5551234567'), findsOneWidget);
+    expect(find.byTooltip('Registrar anfitrión'), findsNothing);
+    expect(find.byTooltip('Editar anfitrión'), findsNothing);
+    expect(find.byType(TextFormField), findsNothing);
+    await tester.ensureVisible(find.text('Cambiar departamento'));
+    await tester.tap(find.text('Cambiar departamento'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextFormField).at(0), 'Anfitrión Nuevo');
-    await tester.enterText(find.byType(TextFormField).at(1), 'host-nuevo');
-    await tester.ensureVisible(find.text('Registrar anfitrión').last);
-    await tester.tap(find.text('Registrar anfitrión').last);
+    await tester.tap(find.byType(DropdownButtonFormField<int>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Operaciones').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Anfitrión Nuevo'), findsOneWidget);
-    expect(find.text('Recursos Humanos'), findsOneWidget);
-    await tester.tap(find.byTooltip('Eliminar anfitrión'));
+    expect(find.text('Operaciones'), findsOneWidget);
+    expect(find.text('Ana García López'), findsOneWidget);
+    expect(find.text('ana.garcia@example.test'), findsOneWidget);
+    expect(find.text('Analista'), findsOneWidget);
+    expect(find.text('5551234567'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Eliminar').last);
+    await tester.tap(find.text('Eliminar').last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Eliminar').last);
     await tester.pumpAndSettle();

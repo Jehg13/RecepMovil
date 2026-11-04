@@ -1,8 +1,6 @@
 # CYMEZ Recepción móvil
 
-Aplicación móvil de Recepción creada con Flutter. El proyecto inicial incluye
-una pantalla de bienvenida con la identidad visual de CYMEZ; los flujos de
-recepción y la conexión con la API se incorporarán después.
+Aplicación móvil de Recepción creada con Flutter y conectada a la API de CYMEZ.
 
 ## Requisitos
 
@@ -18,14 +16,15 @@ flutter pub get
 flutter run
 ```
 
-Para probar la versión web en Edge con el renderizador WebAssembly de Flutter:
+Para probar la versión web en Edge:
 
 ```powershell
-flutter run -d web-server --release --wasm
+flutter run -d web-server --web-port 59459
 ```
 
-Abre en Edge la URL que muestra la terminal. Este modo evita el costo adicional
-del modo debug y usa Skwasm cuando el navegador es compatible.
+La API debe incluir `http://localhost:59459` en `CORS_ALLOWED_ORIGINS`.
+Abre en Edge la URL que muestra la terminal; el puerto fijo permite que la
+cookie de sesión se comparta con la API autorizada.
 
 ## Validar
 

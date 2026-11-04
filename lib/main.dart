@@ -15,6 +15,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'auth_service.dart';
+import 'connected_modules.dart';
 
 const _red = Color(0xFFFF1538);
 const _blue = Color(0xFF087FFF);
@@ -1372,12 +1373,9 @@ class _RegistrationOnboardingCopy extends StatelessWidget {
               key: const ValueKey('registration-onboarding-gradient-word'),
               blendMode: BlendMode.srcIn,
               shaderCallback: (bounds) => const LinearGradient(
-                colors: [
-                  Color(0xFFFF5575),
-                  Color(0xFFFF4EA8),
-                  Color(0xFF55B8FF),
-                ],
-                stops: [0, 0.52, 1],
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [Color(0xFFFF4563), Color(0xFF35BFFF)],
               ).createShader(bounds),
               child: Text(
                 'visitas',
@@ -1390,14 +1388,14 @@ class _RegistrationOnboardingCopy extends StatelessWidget {
                       : compact
                       ? 45
                       : 48,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.4,
                   shadows: const [
                     Shadow(
-                      color: Color(0xFF020817),
+                      color: Color(0xB3071020),
                       offset: Offset(0, 2),
-                      blurRadius: 3,
+                      blurRadius: 2,
                     ),
-                    Shadow(color: Color(0xCCFF245F), blurRadius: 14),
-                    Shadow(color: Color(0xAA287FFF), blurRadius: 18),
                   ],
                 ),
               ),
@@ -1847,12 +1845,9 @@ class _ReadyOnboardingCopy extends StatelessWidget {
               key: const ValueKey('ready-onboarding-gradient-word'),
               blendMode: BlendMode.srcIn,
               shaderCallback: (bounds) => const LinearGradient(
-                colors: [
-                  Color(0xFFFF5575),
-                  Color(0xFFFF4EA8),
-                  Color(0xFF55B8FF),
-                ],
-                stops: [0, 0.52, 1],
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [Color(0xFFFF4563), Color(0xFF35BFFF)],
               ).createShader(bounds),
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -1860,14 +1855,14 @@ class _ReadyOnboardingCopy extends StatelessWidget {
                 child: Text(
                   'comenzar',
                   style: titleStyle.copyWith(
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.4,
                     shadows: const [
                       Shadow(
-                        color: Color(0xFF020817),
+                        color: Color(0xB3071020),
                         offset: Offset(0, 2),
-                        blurRadius: 3,
+                        blurRadius: 2,
                       ),
-                      Shadow(color: Color(0xCCFF245F), blurRadius: 14),
-                      Shadow(color: Color(0xAA287FFF), blurRadius: 18),
                     ],
                   ),
                 ),
@@ -3114,25 +3109,22 @@ class _ControlOnboardingCopy extends StatelessWidget {
                     key: const ValueKey('control-onboarding-gradient-word'),
                     blendMode: BlendMode.srcIn,
                     shaderCallback: (bounds) => const LinearGradient(
-                      colors: [
-                        Color(0xFFFF5575),
-                        Color(0xFFFF4EA8),
-                        Color(0xFF55B8FF),
-                      ],
-                      stops: [0, 0.52, 1],
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      colors: [Color(0xFFFF4563), Color(0xFF35BFFF)],
                     ).createShader(bounds),
                     child: Text(
                       'salidas',
                       style: titleStyle.copyWith(
                         color: _white,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.4,
                         shadows: const [
                           Shadow(
-                            color: Color(0xFF020817),
+                            color: Color(0xB3071020),
                             offset: Offset(0, 2),
-                            blurRadius: 3,
+                            blurRadius: 2,
                           ),
-                          Shadow(color: Color(0xCCFF245F), blurRadius: 14),
-                          Shadow(color: Color(0xAA287FFF), blurRadius: 18),
                         ],
                       ),
                       maxLines: 1,
@@ -6796,6 +6788,30 @@ class _ReceptionDashboardPage extends StatefulWidget {
 class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
   String _activeSection = 'home';
 
+  bool get _canManageExternalModules {
+    final user = widget.user;
+    return user != null &&
+        (user.isAdmin ||
+            (user.sectionAccess.contains('anfitriones') &&
+                !user.sectionAccess.contains('recepcion')));
+  }
+
+  Widget _withAuthService(
+    Widget Function(AuthService authService, AuthenticatedUser? user) builder,
+  ) {
+    final authService = widget.authService;
+    if (authService == null) {
+      return const Center(
+        child: Text(
+          'No hay una sesión disponible para consultar esta sección.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white),
+        ),
+      );
+    }
+    return builder(authService, widget.user);
+  }
+
   void _openDepartments() {
     setState(() => _activeSection = 'departments');
   }
@@ -6868,11 +6884,40 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
                 authService: widget.authService,
                 isAdmin: widget.user?.isAdmin ?? false,
               ),
-              'external_companies' => const _ExternalCompaniesPage(),
-              'external_staff' => const _ExternalStaffPage(),
-              'equipment' => const _EquipmentPage(),
-              'appointments' => const _AppointmentsPage(),
-              'logbook' => const _DailyLogbookPage(),
+              'external_companies' => _withAuthService(
+                (authService, user) => ConnectedExternalCompaniesPage(
+                  authService: authService,
+                  isAdmin: user?.isAdmin ?? false,
+                  canManage: _canManageExternalModules,
+                ),
+              ),
+              'external_staff' => _withAuthService(
+                (authService, user) => ConnectedExternalStaffPage(
+                  authService: authService,
+                  isAdmin: user?.isAdmin ?? false,
+                  canManage: _canManageExternalModules,
+                ),
+              ),
+              'equipment' => _withAuthService(
+                (authService, user) => ConnectedEquipmentPage(
+                  authService: authService,
+                  isAdmin: user?.isAdmin ?? false,
+                  canManage: _canManageExternalModules,
+                ),
+              ),
+              'appointments' => _withAuthService(
+                (authService, user) => ConnectedAppointmentsPage(
+                  authService: authService,
+                  isAdmin: user?.isAdmin ?? false,
+                  canManage: _canManageExternalModules,
+                ),
+              ),
+              'logbook' => _withAuthService(
+                (authService, user) => ConnectedDailyLogbookPage(
+                  authService: authService,
+                  isAdmin: user?.isAdmin ?? false,
+                ),
+              ),
               _ => Container(
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
@@ -9144,192 +9189,190 @@ class _AccessAccountCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      key: ValueKey('access-account-card-${account.login}'),
+      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0C1527)],
+          colors: [Color(0xFF14243D), Color(0xFF0B1528)],
         ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x440087FF)),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x553D9DFF)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x220087FF),
-            blurRadius: 18,
-            offset: Offset(0, 8),
+            color: Color(0x1F087FFF),
+            blurRadius: 22,
+            offset: Offset(0, 9),
           ),
         ],
       ),
-      child: Stack(
+      child: Column(
         children: [
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 90,
-            child: Container(
-              height: 2,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Color(0xFF087FFF),
-                    Color(0xFF00C8FF),
-                    Colors.transparent,
+          Row(
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const RadialGradient(
+                    colors: [Color(0xFF24BDF5), Color(0xFF087FFF)],
+                  ),
+                  border: Border.all(
+                    color: const Color(0xFF9ADFFF),
+                    width: 1.5,
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x440087FF),
+                      blurRadius: 14,
+                      offset: Offset(0, 3),
+                    ),
                   ],
+                ),
+                child: const Icon(
+                  Icons.person_outline_rounded,
+                  color: Colors.white,
+                  size: 27,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      account.login,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      account.name ?? '—',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF67ACFF),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: account.isActive
+                        ? const [Color(0xFF153D35), Color(0xFF1D574A)]
+                        : const [Color(0xFF3A2430), Color(0xFF572738)],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: account.isActive
+                        ? const Color(0x554AE3B5)
+                        : const Color(0x55FF7D9B),
+                  ),
+                ),
+                child: Text(
+                  account.isActive ? 'Activa' : 'Inactiva',
+                  style: TextStyle(
+                    color: account.isActive
+                        ? const Color(0xFF4AE3B5)
+                        : const Color(0xFFFF7D9B),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.fromLTRB(13, 12, 13, 5),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0x241C75C5), Color(0x160D315A)],
+              ),
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: const Color(0x332D83D1)),
+            ),
+            child: Column(
+              children: [
+                _AccessDetail(
+                  Icons.work_outline_rounded,
+                  'Puesto',
+                  account.role ?? '—',
+                ),
+                _AccessDetail(
+                  Icons.mail_outline_rounded,
+                  'Correo',
+                  account.email ?? '—',
+                ),
+                _AccessDetail(
+                  Icons.phone_rounded,
+                  'Teléfono',
+                  account.phone ?? '—',
+                ),
+                _AccessDetail(
+                  Icons.admin_panel_settings_outlined,
+                  'Acceso',
+                  account.accessLabel,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (isAdmin)
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(13),
+                  gradient: const LinearGradient(
+                    colors: [
+                      Color(0xFF087FFF),
+                      Color(0xFF168EFF),
+                      Color(0xFF04BCEB),
+                    ],
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x550087FF),
+                      blurRadius: 13,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: FilledButton.icon(
+                  onPressed: isSaving ? null : onEdit,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.edit_rounded, size: 18),
+                  label: const Text(
+                    'Editar acceso',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
-          Column(
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF087FFF), Color(0xFF00C8FF)],
-                      ),
-                      border: Border.all(color: const Color(0xFF8FD5FF)),
-                      boxShadow: const [
-                        BoxShadow(color: Color(0x660087FF), blurRadius: 12),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.person_outline_rounded,
-                      color: Colors.white,
-                      size: 23,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          account.login,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 15,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          account.name ?? '—',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xFF67ACFF),
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: account.isActive
-                            ? const [Color(0xFF153D35), Color(0xFF1D574A)]
-                            : const [Color(0xFF3A2430), Color(0xFF572738)],
-                      ),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      account.isActive ? 'Activa' : 'Inactiva',
-                      style: TextStyle(
-                        color: account.isActive
-                            ? const Color(0xFF4AE3B5)
-                            : const Color(0xFFFF7D9B),
-                        fontSize: 9,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Container(
-                padding: const EdgeInsets.all(11),
-                decoration: BoxDecoration(
-                  color: const Color(0x19087FFF),
-                  borderRadius: BorderRadius.circular(13),
-                  border: Border.all(color: const Color(0x220087FF)),
-                ),
-                child: Column(
-                  children: [
-                    _AccessDetail(
-                      Icons.work_outline_rounded,
-                      'Puesto',
-                      account.role ?? '—',
-                    ),
-                    _AccessDetail(
-                      Icons.mail_outline_rounded,
-                      'Correo',
-                      account.email ?? '—',
-                    ),
-                    _AccessDetail(
-                      Icons.phone_rounded,
-                      'Teléfono',
-                      account.phone ?? '—',
-                    ),
-                    _AccessDetail(
-                      Icons.admin_panel_settings_outlined,
-                      'Acceso',
-                      account.accessLabel,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
-              if (isAdmin)
-                SizedBox(
-                  width: double.infinity,
-                  height: 40,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
-                      gradient: const LinearGradient(
-                        colors: [
-                          Color(0xFF087FFF),
-                          Color(0xFF3D8FFF),
-                          Color(0xFF00C8FF),
-                        ],
-                      ),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x550087FF),
-                          blurRadius: 10,
-                          offset: Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: FilledButton.icon(
-                      onPressed: isSaving ? null : onEdit,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.transparent,
-                        foregroundColor: Colors.white,
-                      ),
-                      icon: const Icon(Icons.edit_rounded, size: 16),
-                      label: const Text(
-                        'Editar acceso',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
         ],
       ),
     );
@@ -9346,23 +9389,34 @@ class _AccessDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 15, color: const Color(0xFF087FFF)),
-          const SizedBox(width: 8),
           SizedBox(
-            width: 52,
+            width: 23,
+            child: Icon(icon, size: 16, color: const Color(0xFF28A0FF)),
+          ),
+          const SizedBox(width: 7),
+          SizedBox(
+            width: 57,
             child: Text(
               label,
-              style: const TextStyle(color: Color(0xFF7F8CA5), fontSize: 11),
+              style: const TextStyle(
+                color: Color(0xFF91A4C1),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(color: Color(0xFFD7E3F7), fontSize: 12),
+              style: const TextStyle(
+                color: Color(0xFFE1ECFC),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],
@@ -14500,7 +14554,6 @@ class _HostsPageState extends State<_HostsPage> {
       widget.authService ?? AuthService.shared;
   List<DepartmentHost> _hosts = const [];
   List<Department> _departments = const [];
-  List<HostAccountOption> _accounts = const [];
   String _query = '';
   String? _errorMessage;
   bool _isLoading = true;
@@ -14550,15 +14603,11 @@ class _HostsPageState extends State<_HostsPage> {
       final results = await Future.wait([
         _authService.getDepartmentHosts(),
         _authService.getDepartments(),
-        if (widget.isAdmin) _authService.getHostAccounts(),
       ]);
       if (!mounted) return;
       setState(() {
         _hosts = results[0] as List<DepartmentHost>;
         _departments = results[1] as List<Department>;
-        _accounts = widget.isAdmin
-            ? results[2] as List<HostAccountOption>
-            : const [];
         _isLoading = false;
       });
     } on AuthApiException catch (error) {
@@ -14577,68 +14626,33 @@ class _HostsPageState extends State<_HostsPage> {
     }
   }
 
-  Future<void> _editHost({DepartmentHost? host}) async {
-    if (!widget.isAdmin || _isSaving) return;
-    if (_departments.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Registra primero un departamento para asignar anfitriones.',
-          ),
-        ),
-      );
-      return;
-    }
-    final draft = await showDialog<_DepartmentHostDraft>(
+  Future<void> _editHostDepartment(DepartmentHost host) async {
+    if (!widget.isAdmin || _isSaving || _departments.isEmpty) return;
+    final departmentId = await showDialog<int>(
       context: context,
-      barrierColor: const Color(0xE0000000),
-      builder: (_) => _HostFormDialog(
-        host: host,
+      builder: (context) => _HostDepartmentDialog(
         departments: _departments,
-        accounts: _accounts,
+        selectedDepartmentId: host.departmentId,
       ),
     );
-    if (draft == null || !mounted) return;
+    if (departmentId == null || !mounted) return;
 
     setState(() {
       _isSaving = true;
       _errorMessage = null;
     });
     try {
-      if (draft.fromAccessAccount) {
-        await _authService.grantHostAccess(draft.login);
-      }
-      final hosts = host == null
-          ? await _authService.createDepartmentHost(
-              login: draft.login,
-              name: draft.name,
-              departmentId: draft.departmentId,
-              role: draft.role,
-              email: draft.email,
-              phone: draft.phone,
-            )
-          : await _authService.updateDepartmentHost(
-              id: host.id,
-              login: draft.login,
-              name: draft.name,
-              departmentId: draft.departmentId,
-              role: draft.role,
-              email: draft.email,
-              phone: draft.phone,
-            );
+      final hosts = await _authService.updateDepartmentHostDepartment(
+        id: host.id,
+        departmentId: departmentId,
+      );
       if (!mounted) return;
       setState(() {
         _hosts = hosts;
         _isSaving = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            host == null
-                ? 'Anfitrión registrado correctamente.'
-                : 'Anfitrión actualizado correctamente.',
-          ),
-        ),
+        const SnackBar(content: Text('Departamento actualizado.')),
       );
     } on AuthApiException catch (error) {
       if (!mounted) return;
@@ -14649,7 +14663,7 @@ class _HostsPageState extends State<_HostsPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = 'No se pudo guardar el anfitrión. Inténtalo de nuevo.';
+        _errorMessage = 'No se pudo actualizar el departamento.';
         _isSaving = false;
       });
     }
@@ -14666,7 +14680,7 @@ class _HostsPageState extends State<_HostsPage> {
           style: TextStyle(color: Colors.white),
         ),
         content: Text(
-          '¿Quieres eliminar a "${host.name}" del departamento ${_departmentName(host.departmentId)}?',
+          '¿Quieres eliminar a "${host.name}" de la lista de anfitriones?',
           style: const TextStyle(color: Color(0xFFD4DDF0)),
         ),
         actions: [
@@ -14708,7 +14722,7 @@ class _HostsPageState extends State<_HostsPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = 'No se pudo eliminar el anfitrión. Inténtalo de nuevo.';
+        _errorMessage = 'No se pudo eliminar el anfitrión.';
         _isSaving = false;
       });
     }
@@ -14798,18 +14812,6 @@ class _HostsPageState extends State<_HostsPage> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                          if (widget.isAdmin) ...[
-                            const SizedBox(width: 8),
-                            IconButton.filled(
-                              tooltip: 'Registrar anfitrión',
-                              onPressed: _isSaving ? null : () => _editHost(),
-                              style: IconButton.styleFrom(
-                                backgroundColor: const Color(0xFF087FFF),
-                                foregroundColor: Colors.white,
-                              ),
-                              icon: const Icon(Icons.person_add_alt_1_rounded),
-                            ),
-                          ],
                           IconButton(
                             tooltip: 'Actualizar anfitriones',
                             onPressed: _isLoading ? null : _loadHosts,
@@ -14866,16 +14868,6 @@ class _HostsPageState extends State<_HostsPage> {
                 ),
               ),
             ),
-            if (_isSaving)
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
-                  child: LinearProgressIndicator(
-                    color: Color(0xFF087FFF),
-                    backgroundColor: Color(0xFF17243D),
-                  ),
-                ),
-              ),
             SliverPadding(
               padding: EdgeInsets.fromLTRB(
                 14,
@@ -14921,7 +14913,7 @@ class _HostsPageState extends State<_HostsPage> {
                             departmentName: _departmentName(host.departmentId),
                             isAdmin: widget.isAdmin,
                             isSaving: _isSaving,
-                            onEdit: () => _editHost(host: host),
+                            onEditDepartment: () => _editHostDepartment(host),
                             onDelete: () => _deleteHost(host),
                           ),
                         );
@@ -14992,7 +14984,7 @@ class _DepartmentHostCard extends StatelessWidget {
     required this.departmentName,
     required this.isAdmin,
     required this.isSaving,
-    required this.onEdit,
+    required this.onEditDepartment,
     required this.onDelete,
   });
 
@@ -15000,7 +14992,7 @@ class _DepartmentHostCard extends StatelessWidget {
   final String departmentName;
   final bool isAdmin;
   final bool isSaving;
-  final VoidCallback onEdit;
+  final VoidCallback onEditDepartment;
   final VoidCallback onDelete;
 
   @override
@@ -15027,125 +15019,202 @@ class _DepartmentHostCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF087FFF), Color(0xFF00C8FF)],
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.person_rounded, color: Colors.white),
-              ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      host.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      host.login,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF9BCBFF),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (isAdmin) ...[
-                IconButton(
-                  tooltip: 'Editar anfitrión',
-                  onPressed: isSaving ? null : onEdit,
-                  icon: const Icon(
-                    Icons.edit_rounded,
-                    color: Color(0xFF63C5FF),
-                    size: 19,
+          _HostInfoRow(
+            icon: Icons.person_outline_rounded,
+            label: 'Login',
+            value: host.login,
+          ),
+          _HostInfoRow(
+            icon: Icons.badge_outlined,
+            label: 'Nombre completo',
+            value: host.name,
+          ),
+          _HostInfoRow(
+            icon: Icons.email_outlined,
+            label: 'Correo electrónico',
+            value: host.email,
+            copyTooltip: 'Copiar correo electrónico',
+          ),
+          _HostInfoRow(
+            icon: Icons.apartment_rounded,
+            label: 'Departamento',
+            value: departmentName,
+          ),
+          _HostInfoRow(
+            icon: Icons.work_outline_rounded,
+            label: 'Puesto',
+            value: host.role,
+          ),
+          _HostInfoRow(
+            icon: Icons.phone_outlined,
+            label: 'Teléfono',
+            value: host.phone,
+            copyTooltip: 'Copiar teléfono',
+          ),
+          if (isAdmin) ...[
+            const SizedBox(height: 10),
+            const Divider(color: Color(0xFF28405E), height: 1),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: isSaving ? null : onEditDepartment,
+                  icon: const Icon(Icons.apartment_rounded, size: 18),
+                  label: const Text('Cambiar departamento'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF8FBFFF),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Eliminar anfitrión',
+                TextButton.icon(
                   onPressed: isSaving ? null : onDelete,
-                  icon: const Icon(
-                    Icons.delete_outline_rounded,
-                    color: Color(0xFFFF7185),
-                    size: 20,
+                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                  label: const Text('Eliminar'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFFFF7185),
                   ),
                 ),
               ],
-            ],
-          ),
-          const SizedBox(height: 11),
-          Wrap(
-            spacing: 8,
-            runSpacing: 7,
-            children: [
-              _HostInfoChip(
-                icon: Icons.apartment_rounded,
-                label: departmentName,
-              ),
-              if (host.role.isNotEmpty)
-                _HostInfoChip(
-                  icon: Icons.work_outline_rounded,
-                  label: host.role,
-                ),
-              if (host.email.isNotEmpty)
-                _HostInfoChip(icon: Icons.email_outlined, label: host.email),
-              if (host.phone.isNotEmpty)
-                _HostInfoChip(icon: Icons.phone_outlined, label: host.phone),
-            ],
-          ),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class _HostInfoChip extends StatelessWidget {
-  const _HostInfoChip({required this.icon, required this.label});
+class _HostDepartmentDialog extends StatefulWidget {
+  const _HostDepartmentDialog({
+    required this.departments,
+    required this.selectedDepartmentId,
+  });
 
-  final IconData icon;
-  final String label;
+  final List<Department> departments;
+  final int selectedDepartmentId;
+
+  @override
+  State<_HostDepartmentDialog> createState() => _HostDepartmentDialogState();
+}
+
+class _HostDepartmentDialogState extends State<_HostDepartmentDialog> {
+  late int? _departmentId =
+      widget.departments.any(
+        (department) => department.id == widget.selectedDepartmentId,
+      )
+      ? widget.selectedDepartmentId
+      : null;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 250),
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0C1A2E),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0x332D8FFF)),
+    return AlertDialog(
+      backgroundColor: const Color(0xFF111D32),
+      title: const Text(
+        'Cambiar departamento',
+        style: TextStyle(color: Colors.white),
       ),
+      content: DropdownButtonFormField<int>(
+        initialValue: _departmentId,
+        isExpanded: true,
+        dropdownColor: const Color(0xFF17243D),
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: 'Departamento',
+          labelStyle: const TextStyle(color: Color(0xFFB5C1D6)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFF27476A)),
+          ),
+        ),
+        items: widget.departments
+            .map(
+              (department) => DropdownMenuItem(
+                value: department.id,
+                child: Text(department.name, overflow: TextOverflow.ellipsis),
+              ),
+            )
+            .toList(),
+        onChanged: (value) => setState(() => _departmentId = value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _departmentId == null
+              ? null
+              : () => Navigator.of(context).pop(_departmentId),
+          child: const Text('Guardar'),
+        ),
+      ],
+    );
+  }
+}
+
+class _HostInfoRow extends StatelessWidget {
+  const _HostInfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.copyTooltip,
+  });
+
+  final IconData icon;
+  final String label, value;
+  final String? copyTooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayValue = value.trim().isEmpty ? 'No disponible' : value;
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: const Color(0xFF63C5FF)),
-          const SizedBox(width: 5),
+          Icon(icon, size: 17, color: const Color(0xFF63C5FF)),
+          const SizedBox(width: 9),
           Flexible(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Color(0xFFCBD9EB), fontSize: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF8FA1BC),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  displayValue,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFFE2EAF5),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
           ),
+          if (copyTooltip != null && value.trim().isNotEmpty)
+            IconButton(
+              tooltip: copyTooltip,
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: value));
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text('$label copiado.')));
+              },
+              icon: const Icon(
+                Icons.content_copy_rounded,
+                size: 16,
+                color: Color(0xFF8FBFFF),
+              ),
+            ),
         ],
       ),
     );

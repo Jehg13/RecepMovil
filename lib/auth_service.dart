@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'src/web_http_client_stub.dart'
+    if (dart.library.js_interop) 'src/web_http_client.dart';
+
 const _sessionCookieName = 'visitas_session';
 const _sessionCookieStorageKey = 'reception_session_cookie';
 const _requestTimeout = Duration(seconds: 15);
@@ -347,13 +350,18 @@ class SecureSessionCookieStorage implements SessionCookieStorage {
   Future<void> clear() => _storage.delete(key: _sessionCookieStorageKey);
 }
 
+http.Client _createHttpClient(bool isWeb) {
+  if (!isWeb) return http.Client();
+  return createWebHttpClient();
+}
+
 class AuthService {
   AuthService({
     http.Client? client,
     SessionCookieStorage? cookieStorage,
     String? baseUrl,
     bool? isWeb,
-  }) : _client = client ?? http.Client(),
+  }) : _client = client ?? _createHttpClient(isWeb ?? kIsWeb),
        _cookieStorage = cookieStorage ?? SecureSessionCookieStorage(),
        _baseUrl = (baseUrl ?? _configuredBaseUrl).replaceFirst(
          RegExp(r'/+$'),
@@ -649,6 +657,348 @@ class AuthService {
     return _parseDepartmentHosts(response.body);
   }
 
+  Future<List<Map<String, dynamic>>> getBusinessPartners() async =>
+      _getApiRecords('/api/business-partners', 'businessPartners');
+
+  Future<List<Map<String, dynamic>>> saveBusinessPartner(
+    Map<String, Object?> partner, {
+    int? id,
+  }) async {
+    final data = await _requestApi(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/business-partners' : '/api/business-partners/$id',
+      body: partner,
+      successCodes: const {200, 201},
+    );
+    return _apiRecords(data, 'businessPartners');
+  }
+
+  Future<List<Map<String, dynamic>>> deleteBusinessPartner(int id) async =>
+      _getApiRecords(
+        '/api/business-partners/$id',
+        'businessPartners',
+        method: 'DELETE',
+      );
+
+  Future<List<Map<String, dynamic>>> getExternalStaff() async =>
+      _getApiRecords('/api/external-staff', 'externalStaff');
+
+  Future<List<Map<String, dynamic>>> saveExternalStaff(
+    Map<String, Object?> staff, {
+    int? id,
+  }) async {
+    final data = await _requestApi(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/external-staff' : '/api/external-staff/$id',
+      body: staff,
+      successCodes: const {200, 201},
+    );
+    return _apiRecords(data, 'externalStaff');
+  }
+
+  Future<List<Map<String, dynamic>>> deleteExternalStaff(int id) async =>
+      _getApiRecords(
+        '/api/external-staff/$id',
+        'externalStaff',
+        method: 'DELETE',
+      );
+
+  Future<List<Map<String, dynamic>>> getAppointments() async =>
+      _getApiRecords('/api/appointments', 'appointments');
+
+  Future<List<Map<String, dynamic>>> saveAppointment(
+    Map<String, Object?> appointment, {
+    int? id,
+  }) async {
+    final data = await _requestApi(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/appointments' : '/api/appointments/$id',
+      body: appointment,
+      successCodes: const {200, 201},
+    );
+    return _apiRecords(data, 'appointments');
+  }
+
+  Future<List<Map<String, dynamic>>> updateAppointmentStatus(
+    int id,
+    String status,
+  ) async {
+    final data = await _requestApi(
+      'PATCH',
+      '/api/appointments/$id',
+      body: {'status': status},
+    );
+    return _apiRecords(data, 'appointments');
+  }
+
+  Future<List<Map<String, dynamic>>> deleteAppointment(int id) async {
+    final data = await _requestApi('DELETE', '/api/appointments/$id');
+    return _apiRecords(data, 'appointments');
+  }
+
+  Future<String> sendAppointmentQr(int id, {int? employeeId}) async {
+    final data = await _requestApi(
+      'POST',
+      '/api/appointments/$id/send-qr',
+      body: employeeId == null ? const {} : {'employeeId': employeeId},
+    );
+    final message = data['message'];
+    if (message is! String || message.isEmpty) {
+      throw const AuthApiException(
+        'La respuesta del envío del pase no es válida.',
+      );
+    }
+    return message;
+  }
+
+  Future<Map<String, dynamic>> getDailyLog({
+    required String from,
+    required String to,
+    String query = '',
+    String event = '',
+    int page = 1,
+    int pageSize = 30,
+  }) async {
+    final uri = _uri('/api/daily-log').replace(
+      queryParameters: {
+        'from': from,
+        'to': to,
+        if (query.trim().isNotEmpty) 'q': query.trim(),
+        if (event.isNotEmpty) 'event': event,
+        'page': '$page',
+        'pageSize': '$pageSize',
+      },
+    );
+    final data = await _requestApi(
+      'GET',
+      uri.toString().replaceFirst(_baseUrl, ''),
+    );
+    if (data['entries'] is! List ||
+        data['summary'] is! Map<String, dynamic> ||
+        data['hosts'] is! List ||
+        data['total'] is! num ||
+        data['pages'] is! num) {
+      throw const AuthApiException('La respuesta de la bitácora no es válida.');
+    }
+    return data;
+  }
+
+  Future<void> createDailyLogEntry(Map<String, Object?> entry) async {
+    await _requestApi(
+      'POST',
+      '/api/daily-log',
+      body: entry,
+      successCodes: const {200, 201},
+    );
+  }
+
+  Future<void> deleteDailyLogEntry(int id) async {
+    if (id <= 0) {
+      throw const AuthApiException('El movimiento seleccionado no es válido.');
+    }
+    await _requestApi('DELETE', '/api/daily-log/$id');
+  }
+
+  Future<Map<String, dynamic>> getEquipmentOptions() async {
+    final data = await _requestApi('GET', '/api/equipment/options');
+    for (final key in const ['partners', 'staff', 'appointments']) {
+      final records = data[key];
+      if (records is! List ||
+          records.any((record) => record is! Map<String, dynamic>)) {
+        throw const AuthApiException(
+          'La respuesta de opciones de equipo no es válida.',
+        );
+      }
+    }
+    return data;
+  }
+
+  Future<List<Map<String, dynamic>>> getEquipmentDeclarations({
+    String query = '',
+    int page = 1,
+  }) async {
+    final uri = _uri('/api/equipment/declarations')
+        .replace(queryParameters: {'q': query, 'page': '$page'});
+    final data = await _requestApi(
+      'GET',
+      uri.toString().replaceFirst(_baseUrl, ''),
+    );
+    return _apiRecords(data, 'declarations');
+  }
+
+  Future<Map<String, dynamic>> createEquipmentDeclaration(
+    Map<String, Object?> declaration,
+  ) => _requestApi(
+    'POST',
+    '/api/equipment/declarations',
+    body: declaration,
+    successCodes: const {200, 201},
+  );
+
+  Future<Map<String, dynamic>> getEquipmentDeclaration(int id) async {
+    final data = await _requestApi('GET', '/api/equipment/declarations/$id');
+    final declaration = data['declaration'];
+    if (declaration is! Map<String, dynamic> ||
+        declaration['id'] is! num ||
+        declaration['personName'] is! String ||
+        declaration['companyName'] is! String ||
+        declaration['status'] is! String ||
+        declaration['items'] is! List ||
+        declaration['inspections'] is! List) {
+      throw const AuthApiException(
+        'La respuesta de detalle de equipo no es válida.',
+      );
+    }
+    return data;
+  }
+
+  Future<String> createEquipmentDeclarationLink(int id) async {
+    final data = await _requestApi(
+      'POST',
+      '/api/equipment/declarations/$id/link',
+      body: const {},
+    );
+    final token = data['token'];
+    if (token is! String || token.isEmpty) {
+      throw const AuthApiException('El servidor no generó un enlace válido.');
+    }
+    return token;
+  }
+
+  Future<void> revokeEquipmentDeclarationLink(int id) async {
+    await _requestApi(
+      'POST',
+      '/api/equipment/declarations/$id/revoke',
+      body: const {},
+    );
+  }
+
+  Future<void> submitEquipmentInspection(
+    int id,
+    String phase,
+    List<Map<String, Object?>> items,
+  ) async {
+    await _requestApi(
+      'PUT',
+      '/api/equipment/declarations/$id/inspections/$phase',
+      body: {'items': items},
+    );
+  }
+
+  Future<void> deleteEquipmentDeclaration(int id) async {
+    await _requestApi('DELETE', '/api/equipment/declarations/$id');
+  }
+
+  Future<List<Map<String, dynamic>>> _getApiRecords(
+    String path,
+    String key, {
+    String method = 'GET',
+  }) async {
+    final data = await _requestApi(method, path);
+    return _apiRecords(data, key);
+  }
+
+  List<Map<String, dynamic>> _apiRecords(
+    Map<String, dynamic> data,
+    String key,
+  ) {
+    final records = data[key];
+    if (records is! List ||
+        records.any(
+          (record) =>
+              record is! Map<String, dynamic> ||
+              !_isValidApiRecord(key, record),
+        )) {
+      throw AuthApiException('La respuesta de $key no es válida.');
+    }
+    return List<Map<String, dynamic>>.unmodifiable(
+      records.cast<Map<String, dynamic>>(),
+    );
+  }
+
+  bool _isValidApiRecord(String key, Map<String, dynamic> record) {
+    bool hasStrings(List<String> fields) =>
+        fields.every((field) => record[field] is String);
+    bool hasNumbers(List<String> fields) =>
+        fields.every((field) => record[field] is num);
+    return switch (key) {
+      'businessPartners' =>
+        hasNumbers(['id', 'employeeCount']) &&
+            hasStrings([
+              'name',
+              'description',
+              'rfc',
+              'category',
+              'subject',
+              'type',
+              'status',
+            ]),
+      'externalStaff' =>
+        hasNumbers(['id', 'businessPartnerId']) &&
+            hasStrings([
+              'fullName',
+              'phone',
+              'email',
+              'relationshipType',
+              'companyName',
+            ]),
+      'appointments' =>
+        hasNumbers(['id']) &&
+            (record['businessPartnerId'] == null ||
+                record['businessPartnerId'] is num) &&
+            hasStrings([
+              'date',
+              'time',
+              'visitor',
+              'email',
+              'referenceCode',
+              'company',
+              'host',
+              'status',
+            ]),
+      'declarations' =>
+        hasNumbers(['id', 'itemCount', 'incidentCount']) &&
+            hasStrings([
+              'personName',
+              'companyName',
+              'status',
+              'createdBy',
+              'createdAt',
+            ]),
+      _ => true,
+    };
+  }
+
+  Future<Map<String, dynamic>> _requestApi(
+    String method,
+    String path, {
+    Map<String, Object?>? body,
+    Set<int> successCodes = const {200},
+  }) async {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      ...await _sessionHeaders(),
+      if (body != null) 'Content-Type': 'application/json',
+    };
+    final uri = _uri(path);
+    final response = await _send(() {
+      final encodedBody = body == null ? null : jsonEncode(body);
+      return switch (method) {
+        'GET' => _client.get(uri, headers: headers),
+        'POST' => _client.post(uri, headers: headers, body: encodedBody),
+        'PATCH' => _client.patch(uri, headers: headers, body: encodedBody),
+        'PUT' => _client.put(uri, headers: headers, body: encodedBody),
+        'DELETE' => _client.delete(uri, headers: headers),
+        _ => throw ArgumentError.value(method, 'method', 'Método no admitido'),
+      };
+    });
+    if (!successCodes.contains(response.statusCode)) {
+      throw _responseError(response);
+    }
+    if (response.body.isEmpty) return <String, dynamic>{};
+    return _decodeObject(response.body);
+  }
+
   Future<List<HostAccountOption>> getHostAccounts() async {
     final headers = await _sessionHeaders();
     final response = await _send(
@@ -722,6 +1072,33 @@ class AuthService {
       email: email,
       phone: phone,
     );
+  }
+
+  Future<List<DepartmentHost>> updateDepartmentHostDepartment({
+    required int id,
+    required int departmentId,
+  }) async {
+    if (id <= 0 || departmentId <= 0) {
+      throw const AuthApiException(
+        'El anfitrión o departamento seleccionado no es válido.',
+      );
+    }
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...await _sessionHeaders(),
+    };
+    final response = await _send(
+      () => _client.patch(
+        _uri('/api/department-hosts/$id'),
+        headers: headers,
+        body: jsonEncode({'departmentId': departmentId}),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw _responseError(response);
+    }
+    return _parseDepartmentHosts(response.body);
   }
 
   Future<List<DepartmentHost>> _saveDepartmentHost({
