@@ -1,11 +1,76 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import 'app_feedback.dart';
 import 'auth_service.dart';
+import 'reception_header.dart';
+
+class _RealtimeRefreshCoordinator {
+  _RealtimeRefreshCoordinator(this._authService, this._refresh);
+
+  final AuthService _authService;
+  final VoidCallback _refresh;
+  StreamSubscription<RealtimeEvent>? _subscription;
+  Timer? _reconnectTimer;
+  Timer? _fallbackTimer;
+  bool _disposed = false;
+
+  void start() => _connect();
+
+  void _connect() {
+    if (_disposed) return;
+    _subscription = _authService.watchRealtimeUpdates().listen(
+      (event) {
+        if (event == RealtimeEvent.disconnected) {
+          _startFallback();
+          return;
+        }
+        if (event == RealtimeEvent.connected) {
+          _fallbackTimer?.cancel();
+          _fallbackTimer = null;
+        }
+        _refresh();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Se interrumpió la conexión de actualizaciones: $error');
+        _scheduleReconnect();
+      },
+      onDone: _scheduleReconnect,
+    );
+  }
+
+  void _scheduleReconnect() {
+    if (_disposed || _reconnectTimer != null) return;
+    _startFallback();
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      _reconnectTimer = null;
+      _connect();
+    });
+  }
+
+  void _startFallback() {
+    if (_disposed || _fallbackTimer != null) return;
+    _fallbackTimer ??= Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _refresh(),
+    );
+  }
+
+  void dispose() {
+    _disposed = true;
+    _reconnectTimer?.cancel();
+    _fallbackTimer?.cancel();
+    unawaited(_subscription?.cancel());
+  }
+}
 
 const _pageBackground = LinearGradient(
   begin: Alignment.topCenter,
@@ -15,6 +80,32 @@ const _pageBackground = LinearGradient(
 const _panelBackground = Color(0xFF111D35);
 const _accent = Color(0xFF168BFF);
 const _muted = Color(0xFFB5C1D6);
+
+bool _isLightTheme(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.light;
+
+Color _primaryTextColor(BuildContext context) =>
+    _isLightTheme(context) ? const Color(0xFF17243A) : Colors.white;
+
+Color _secondaryTextColor(BuildContext context) =>
+    _isLightTheme(context) ? const Color(0xFF5C6B80) : _muted;
+
+Color _panelColor(BuildContext context) =>
+    _isLightTheme(context) ? Colors.white : _panelBackground;
+
+Color _logInsetColor(BuildContext context) =>
+    _isLightTheme(context) ? const Color(0xFFF3F6FB) : const Color(0xFF0A1426);
+
+Color _logDialogColor(BuildContext context) =>
+    _isLightTheme(context) ? Colors.white : const Color(0xFF101A2D);
+
+Color _logBorderColor(BuildContext context) =>
+    _isLightTheme(context) ? const Color(0xFFDCE4EF) : const Color(0x333D9DFF);
+
+BoxDecoration _connectedPageDecoration(BuildContext context) =>
+    _isLightTheme(context)
+    ? const BoxDecoration(color: Color(0xFFF3F7FC))
+    : const BoxDecoration(gradient: _pageBackground);
 
 String _dateString(DateTime date) =>
     '${date.year.toString().padLeft(4, '0')}-'
@@ -31,17 +122,57 @@ String _displayDate(Object? value) {
             '${date.year}';
 }
 
-void _showMessage(BuildContext context, String message, {bool error = false}) {
-  ScaffoldMessenger.of(context)
-    ..hideCurrentSnackBar()
-    ..showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: error
-            ? const Color(0xFFB4233B)
-            : const Color(0xFF087FFF),
-      ),
-    );
+void _showMessage(
+  BuildContext context,
+  String message, {
+  bool error = false,
+  AppFeedbackType type = AppFeedbackType.success,
+  String? title,
+}) {
+  AppFeedback.show(
+    context,
+    message,
+    type: error ? AppFeedbackType.error : type,
+    title: title,
+  );
+}
+
+ButtonStyle _logPrimaryButtonStyle(
+  BuildContext context, {
+  EdgeInsetsGeometry padding = const EdgeInsets.symmetric(
+    horizontal: 18,
+    vertical: 13,
+  ),
+}) {
+  return FilledButton.styleFrom(
+    backgroundColor: const Color(0xFF087FFF),
+    foregroundColor: Colors.white,
+    padding: padding,
+    textStyle: const TextStyle(fontWeight: FontWeight.w700),
+    shape: const StadiumBorder(),
+  );
+}
+
+ButtonStyle _logOutlinedButtonStyle(
+  BuildContext context, {
+  EdgeInsetsGeometry padding = const EdgeInsets.symmetric(
+    horizontal: 16,
+    vertical: 12,
+  ),
+}) {
+  return OutlinedButton.styleFrom(
+    foregroundColor: _isLightTheme(context)
+        ? const Color(0xFF1769AA)
+        : const Color(0xFF9FCBFF),
+    side: BorderSide(
+      color: _isLightTheme(context)
+          ? const Color(0xFFB8C7D9)
+          : const Color(0xFF3B82B8),
+    ),
+    padding: padding,
+    textStyle: const TextStyle(fontWeight: FontWeight.w700),
+    shape: const StadiumBorder(),
+  );
 }
 
 Future<bool> _confirmAction(
@@ -49,88 +180,111 @@ Future<bool> _confirmAction(
   required String title,
   required String message,
   String confirmLabel = 'Continuar',
-}) async =>
-    await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: _panelBackground,
-        title: Text(title, style: const TextStyle(color: Colors.white)),
-        content: Text(message, style: const TextStyle(color: _muted)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmLabel),
-          ),
-        ],
-      ),
-    ) ??
-    false;
+}) async {
+  final destructive = RegExp(
+    r'eliminar|revocar|cancelar',
+    caseSensitive: false,
+  ).hasMatch('$title $confirmLabel');
+  return showReceptionConfirmDialog(
+    context: context,
+    title: title,
+    message: message,
+    confirmLabel: confirmLabel,
+    destructive: destructive,
+  );
+}
 
 class _ConnectedPage extends StatelessWidget {
   const _ConnectedPage({
     required this.title,
     required this.subtitle,
     required this.child,
+    this.user,
     this.trailing,
   });
 
   final String title;
   final String subtitle;
   final Widget child;
+  final AuthenticatedUser? user;
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) => Container(
-    decoration: const BoxDecoration(gradient: _pageBackground),
-    child: SafeArea(
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 14, 8),
-            child: Row(
-              children: [
-                Builder(
-                  builder: (context) => IconButton(
-                    tooltip: 'Abrir menú',
-                    onPressed: () => Scaffold.of(context).openDrawer(),
-                    icon: const Icon(Icons.menu_rounded, color: Colors.white),
-                  ),
+  Widget build(BuildContext context) {
+    final userName = user?.name?.trim();
+    final displayName = userName != null && userName.isNotEmpty
+        ? userName
+        : user?.login ?? 'Cuenta';
+    final displayRole = user?.role?.trim().isNotEmpty == true
+        ? user!.role!.trim()
+        : user?.isAdmin == true
+        ? 'Administrador'
+        : 'Recepción';
+    return Container(
+      key: const ValueKey('connected-section-root'),
+      decoration: _connectedPageDecoration(context),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: ReceptionHeaderBar(
+                name: displayName,
+                role: displayRole,
+                onMenuTap: () => Scaffold.of(context).openDrawer(),
+                onProfileTap: () => showReceptionThemeMenu(
+                  context: context,
+                  name: displayName,
+                  role: displayRole,
                 ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(color: _muted, fontSize: 11),
-                      ),
-                    ],
-                  ),
-                ),
-                ?trailing,
-              ],
+              ),
             ),
-          ),
-          Expanded(child: child),
-        ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ?trailing,
+                ],
+              ),
+            ),
+            Expanded(child: child),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 Widget _loadingOrError({
+  required BuildContext context,
   required bool loading,
   required String? error,
   required VoidCallback onRetry,
@@ -150,7 +304,7 @@ Widget _loadingOrError({
             Text(
               error,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white),
+              style: TextStyle(color: _primaryTextColor(context)),
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
@@ -167,77 +321,65 @@ Widget _loadingOrError({
 }
 
 Widget _panel({
+  required BuildContext context,
   required Widget child,
   EdgeInsets padding = const EdgeInsets.all(14),
 }) => Container(
   padding: padding,
   decoration: BoxDecoration(
-    color: _panelBackground,
+    color: _panelColor(context),
     borderRadius: BorderRadius.circular(16),
     border: Border.all(color: const Color(0x66087FFF)),
   ),
   child: child,
 );
 
+Widget _logbookPanel({required BuildContext context, required Widget child}) =>
+    Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _isLightTheme(context) ? Colors.white : null,
+        gradient: _isLightTheme(context)
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF17243D), Color(0xFF0B1427)],
+              ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF087FFF), width: 1.1),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x220087FF),
+            blurRadius: 16,
+            offset: Offset(0, 6),
+          ),
+        ],
+      ),
+      child: child,
+    );
+
 Widget _searchBox({
+  required BuildContext context,
   required String hint,
   required ValueChanged<String> onChanged,
   int? maxLength,
 }) => TextField(
   maxLength: maxLength,
   onChanged: onChanged,
-  style: const TextStyle(color: Colors.white),
+  style: TextStyle(color: _primaryTextColor(context)),
   decoration: InputDecoration(
     hintText: hint,
     hintStyle: const TextStyle(color: Color(0xFF8290A8), fontSize: 13),
     prefixIcon: const Icon(Icons.search_rounded, color: _accent),
     filled: true,
-    fillColor: const Color(0xFF0B1427),
+    fillColor: _isLightTheme(context)
+        ? const Color(0xFFF2F7FD)
+        : const Color(0xFF0B1427),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
       borderSide: BorderSide.none,
     ),
-  ),
-);
-
-Widget _recordTile({
-  required String title,
-  required String subtitle,
-  required IconData icon,
-  List<Widget> actions = const [],
-  Widget? trailing,
-}) => _panel(
-  child: Row(
-    children: [
-      Container(
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          color: const Color(0x33168BFF),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(icon, color: const Color(0xFF68B7FF)),
-      ),
-      const SizedBox(width: 11),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(subtitle, style: const TextStyle(color: _muted, fontSize: 11)),
-          ],
-        ),
-      ),
-      ?trailing,
-      ...actions,
-    ],
   ),
 );
 
@@ -246,12 +388,14 @@ class ConnectedExternalCompaniesPage extends StatefulWidget {
     required this.authService,
     required this.isAdmin,
     required this.canManage,
+    this.user,
     super.key,
   });
 
   final AuthService authService;
   final bool isAdmin;
   final bool canManage;
+  final AuthenticatedUser? user;
 
   @override
   State<ConnectedExternalCompaniesPage> createState() =>
@@ -343,13 +487,24 @@ class _ConnectedExternalCompaniesPageState
     return _ConnectedPage(
       title: 'Empresas y visitantes',
       subtitle: 'Contratistas, proveedores y registros externos',
+      user: widget.user,
       trailing: IconButton(
         tooltip: 'Actualizar',
         onPressed: _load,
-        icon: const Icon(Icons.refresh_rounded, color: Colors.white),
+        icon: Icon(
+          Icons.refresh_rounded,
+          color: _isLightTheme(context)
+              ? const Color(0xFF52657D)
+              : Colors.white,
+        ),
       ),
       child: _loading || _error != null
-          ? _loadingOrError(loading: _loading, error: _error, onRetry: _load)
+          ? _loadingOrError(
+              context: context,
+              loading: _loading,
+              error: _error,
+              onRetry: _load,
+            )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
@@ -408,160 +563,173 @@ class _ExternalPartnersToolbar extends StatelessWidget {
   final VoidCallback onRegister;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF172844), Color(0xFF0C172B)],
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _isLightTheme(context) ? Colors.white : null,
+        gradient: _isLightTheme(context)
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF172844), Color(0xFF0C172B)],
+              ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x663B9DFF)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1F168BFF),
+            blurRadius: 22,
+            offset: Offset(0, 9),
+          ),
+        ],
       ),
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: const Color(0x663B9DFF)),
-      boxShadow: const [
-        BoxShadow(
-          color: Color(0x1F168BFF),
-          blurRadius: 22,
-          offset: Offset(0, 9),
-        ),
-      ],
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF1388FF), Color(0xFF31C4FF)],
-                ),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: const Icon(
-                Icons.domain_rounded,
-                color: Colors.white,
-                size: 22,
-              ),
-            ),
-            const SizedBox(width: 11),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$count ${count == 1 ? 'registro' : 'registros'}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const Text(
-                    'Directorio de externos',
-                    style: TextStyle(color: _muted, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            if (canManage)
-              DecoratedBox(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
-                    colors: [Color(0xFF168BFF), Color(0xFF725CFF)],
+                    colors: [Color(0xFF1388FF), Color(0xFF31C4FF)],
                   ),
                   borderRadius: BorderRadius.circular(14),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x33168BFF),
-                      blurRadius: 12,
-                      offset: Offset(0, 5),
+                ),
+                child: const Icon(
+                  Icons.domain_rounded,
+                  color: Colors.white,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$count ${count == 1 ? 'registro' : 'registros'}',
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      'Directorio de externos',
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ),
-                child: FilledButton.icon(
-                  onPressed: onRegister,
-                  icon: const Icon(Icons.add_rounded, size: 19),
-                  label: const Text('Registrar'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 13,
-                      vertical: 12,
+              ),
+              if (canManage)
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF168BFF), Color(0xFF725CFF)],
                     ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x33168BFF),
+                        blurRadius: 12,
+                        offset: Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: FilledButton.icon(
+                    onPressed: onRegister,
+                    icon: const Icon(Icons.add_rounded, size: 19),
+                    label: const Text('Registrar'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 13,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                     ),
                   ),
                 ),
+            ],
+          ),
+          const SizedBox(height: 15),
+          TextField(
+            onChanged: onQueryChanged,
+            style: TextStyle(color: _primaryTextColor(context), fontSize: 14),
+            decoration: InputDecoration(
+              hintText: 'Buscar nombre, RFC, categoría o asunto',
+              hintStyle: TextStyle(
+                color: _secondaryTextColor(context),
+                fontSize: 12,
               ),
-          ],
-        ),
-        const SizedBox(height: 15),
-        TextField(
-          onChanged: onQueryChanged,
-          style: const TextStyle(color: Colors.white, fontSize: 14),
-          decoration: InputDecoration(
-            hintText: 'Buscar nombre, RFC, categoría o asunto',
-            hintStyle: const TextStyle(color: Color(0xFF8290A8), fontSize: 12),
-            prefixIcon: const Icon(
-              Icons.search_rounded,
-              color: Color(0xFF4AA8FF),
-            ),
-            prefixIconConstraints: const BoxConstraints(
-              minWidth: 48,
-              minHeight: 48,
-            ),
-            filled: true,
-            fillColor: const Color(0xFF091426),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 14,
-              vertical: 15,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(15),
-              borderSide: const BorderSide(color: Color(0x243D9DFF)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(15),
-              borderSide: const BorderSide(color: Color(0xFF168BFF)),
+              prefixIcon: const Icon(
+                Icons.search_rounded,
+                color: Color(0xFF4AA8FF),
+              ),
+              prefixIconConstraints: const BoxConstraints(
+                minWidth: 48,
+                minHeight: 48,
+              ),
+              filled: true,
+              fillColor: _isLightTheme(context)
+                  ? const Color(0xFFF3F6FB)
+                  : const Color(0xFF091426),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 15,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(15),
+                borderSide: const BorderSide(color: Color(0x243D9DFF)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(15),
+                borderSide: const BorderSide(color: Color(0xFF168BFF)),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 14),
-        const Text(
-          'FILTRAR POR TIPO',
-          style: TextStyle(
-            color: Color(0xFF8F9FB9),
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1.1,
+          const SizedBox(height: 14),
+          Text(
+            'FILTRAR POR TIPO',
+            style: TextStyle(
+              color: _secondaryTextColor(context),
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.1,
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 7,
-          runSpacing: 7,
-          children: [
-            for (final type in const [
-              'Todos',
-              'Contratista',
-              'Proveedor',
-              'Visitante',
-            ])
-              _PartnerFilterChip(
-                label: type,
-                selected: selectedType == type,
-                onTap: () => onTypeChanged(type),
-              ),
-          ],
-        ),
-      ],
-    ),
-  );
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (final type in const [
+                'Todos',
+                'Contratista',
+                'Proveedor',
+                'Visitante',
+              ])
+                _PartnerFilterChip(
+                  label: type,
+                  selected: selectedType == type,
+                  onTap: () => onTypeChanged(type),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _PartnerFilterChip extends StatelessWidget {
@@ -579,7 +747,11 @@ class _PartnerFilterChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = _partnerTypeColor(label);
     return Material(
-      color: selected ? color.withValues(alpha: 0.2) : const Color(0xFF0B1629),
+      color: selected
+          ? color.withValues(alpha: _isLightTheme(context) ? 0.16 : 0.2)
+          : _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0B1629),
       borderRadius: BorderRadius.circular(30),
       child: InkWell(
         onTap: onTap,
@@ -590,13 +762,21 @@ class _PartnerFilterChip extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(30),
             border: Border.all(
-              color: selected ? color.withValues(alpha: 0.8) : Colors.white12,
+              color: selected
+                  ? color.withValues(alpha: 0.8)
+                  : _isLightTheme(context)
+                  ? const Color(0xFFDCE4EF)
+                  : Colors.white12,
             ),
           ),
           child: Text(
             label,
             style: TextStyle(
-              color: selected ? Colors.white : const Color(0xFFA8B6CC),
+              color: selected
+                  ? _isLightTheme(context)
+                        ? const Color(0xFF17243A)
+                        : Colors.white
+                  : _secondaryTextColor(context),
               fontSize: 11,
               fontWeight: FontWeight.w700,
             ),
@@ -624,6 +804,7 @@ class _ExternalPartnerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
     final type = '${record['type'] ?? 'Contratista'}';
     final isVisitor = type == 'Visitante';
     final color = _partnerTypeColor(type);
@@ -641,11 +822,14 @@ class _ExternalPartnerCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0C1628)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF17243D), Color(0xFF0C1628)],
+              ),
         borderRadius: BorderRadius.circular(19),
         border: Border.all(color: color.withValues(alpha: 0.34)),
         boxShadow: [
@@ -687,8 +871,8 @@ class _ExternalPartnerCard extends StatelessWidget {
                   children: [
                     Text(
                       '${record['name'] ?? 'Sin nombre'}',
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 15,
                         height: 1.25,
                         fontWeight: FontWeight.w800,
@@ -715,35 +899,6 @@ class _ExternalPartnerCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (canManage || isAdmin)
-                PopupMenuButton<String>(
-                  tooltip: 'Acciones del registro',
-                  color: const Color(0xFF15233B),
-                  icon: const Icon(Icons.more_vert_rounded, color: _muted),
-                  onSelected: (action) {
-                    if (action == 'edit') onEdit();
-                    if (action == 'delete') onDelete();
-                  },
-                  itemBuilder: (context) => [
-                    if (canManage)
-                      const PopupMenuItem(
-                        value: 'edit',
-                        child: _PartnerMenuItem(
-                          icon: Icons.edit_rounded,
-                          label: 'Editar',
-                        ),
-                      ),
-                    if (isAdmin)
-                      const PopupMenuItem(
-                        value: 'delete',
-                        child: _PartnerMenuItem(
-                          icon: Icons.delete_outline_rounded,
-                          label: 'Eliminar',
-                          destructive: true,
-                        ),
-                      ),
-                  ],
-                ),
             ],
           ),
           if (description.isNotEmpty) ...[
@@ -752,8 +907,8 @@ class _ExternalPartnerCard extends StatelessWidget {
               description,
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Color(0xFFB7C4D8),
+              style: TextStyle(
+                color: _secondaryTextColor(context),
                 height: 1.45,
                 fontSize: 12,
               ),
@@ -817,6 +972,66 @@ class _ExternalPartnerCard extends StatelessWidget {
             value: registeredBy.isEmpty ? 'Registro manual' : registeredBy,
             icon: Icons.person_outline_rounded,
           ),
+          if (canManage || isAdmin) ...[
+            const SizedBox(height: 13),
+            Container(height: 1, color: Colors.white.withValues(alpha: 0.08)),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (canManage)
+                  Expanded(
+                    child: SizedBox(
+                      height: 42,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF087FFF), Color(0xFF04BCEB)],
+                          ),
+                        ),
+                        child: FilledButton.icon(
+                          onPressed: onEdit,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            foregroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.edit_rounded, size: 17),
+                          label: const Text(
+                            'Editar',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (canManage && isAdmin) const SizedBox(width: 9),
+                if (isAdmin)
+                  Expanded(
+                    child: SizedBox(
+                      height: 42,
+                      child: OutlinedButton.icon(
+                        onPressed: onDelete,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFFF7189),
+                          side: const BorderSide(color: Color(0x66FF7189)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          size: 18,
+                        ),
+                        label: const Text(
+                          'Eliminar',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -835,51 +1050,56 @@ class _PartnerDetailTile extends StatelessWidget {
   final IconData icon;
 
   @override
-  Widget build(BuildContext context) => Container(
-    constraints: const BoxConstraints(minHeight: 57),
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-    decoration: BoxDecoration(
-      color: const Color(0xFF0B1629),
-      borderRadius: BorderRadius.circular(13),
-      border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
-    ),
-    child: Row(
-      children: [
-        Icon(icon, size: 17, color: const Color(0xFF62B4FF)),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                label.toUpperCase(),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFF8797B0),
-                  fontSize: 9,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.65,
+  Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 57),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+      decoration: BoxDecoration(
+        color: isLight ? const Color(0xFFF2F7FD) : const Color(0xFF0B1629),
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: const Color(0xFF62B4FF)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: isLight
+                        ? const Color(0xFF65758B)
+                        : const Color(0xFF8797B0),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.65,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                value,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFFE0E9F7),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
-    ),
-  );
+        ],
+      ),
+    );
+  }
 }
 
 class _PartnerBadge extends StatelessWidget {
@@ -914,36 +1134,6 @@ class _PartnerBadge extends StatelessWidget {
         ),
       ],
     ),
-  );
-}
-
-class _PartnerMenuItem extends StatelessWidget {
-  const _PartnerMenuItem({
-    required this.icon,
-    required this.label,
-    this.destructive = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool destructive;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Icon(
-        icon,
-        size: 18,
-        color: destructive ? const Color(0xFFFF7189) : const Color(0xFF9BCCFF),
-      ),
-      const SizedBox(width: 10),
-      Text(
-        label,
-        style: TextStyle(
-          color: destructive ? const Color(0xFFFF9AAA) : Colors.white,
-        ),
-      ),
-    ],
   );
 }
 
@@ -1015,7 +1205,7 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
       maxLines: maxLines,
       keyboardType: keyboardType,
       inputFormatters: inputFormatters,
-      style: const TextStyle(color: Colors.white, fontSize: 14),
+      style: TextStyle(color: _primaryTextColor(context), fontSize: 14),
       validator:
           validator ??
           (value) => requiredField && (value == null || value.trim().isEmpty)
@@ -1024,19 +1214,22 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        labelStyle: const TextStyle(color: Color(0xFFA7B6CD), fontSize: 13),
-        hintStyle: const TextStyle(color: Color(0xFF687993), fontSize: 12),
+        labelStyle: TextStyle(
+          color: _secondaryTextColor(context),
+          fontSize: 13,
+        ),
+        hintStyle: TextStyle(color: _secondaryTextColor(context), fontSize: 12),
         prefixIcon: Icon(icon, color: const Color(0xFF6AB8FF), size: 19),
         alignLabelWithHint: maxLines > 1,
         filled: true,
-        fillColor: const Color(0xFF0A1426),
+        fillColor: _logInsetColor(context),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 14,
           vertical: 15,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: Color(0x223D9DFF)),
+          borderSide: BorderSide(color: _logBorderColor(context)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
@@ -1066,11 +1259,14 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
           maxHeight: MediaQuery.sizeOf(context).height * 0.9,
         ),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172844), Color(0xFF0A1426)],
-          ),
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF0A1426)],
+                ),
           borderRadius: BorderRadius.circular(23),
           border: Border.all(color: const Color(0x663D9DFF)),
           boxShadow: const [
@@ -1113,16 +1309,19 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
                             isEditing
                                 ? 'Editar registro'
                                 : 'Nuevo registro externo',
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
                               fontSize: 19,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
                           const SizedBox(height: 3),
-                          const Text(
+                          Text(
                             'Completa la información del registro',
-                            style: TextStyle(color: _muted, fontSize: 11),
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 11,
+                            ),
                           ),
                         ],
                       ),
@@ -1131,22 +1330,22 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
-                      color: _muted,
+                      color: _secondaryTextColor(context),
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1, color: Color(0x223D9DFF)),
+              Divider(height: 1, color: _logBorderColor(context)),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'TIPO DE REGISTRO',
                         style: TextStyle(
-                          color: Color(0xFF8F9FB9),
+                          color: _secondaryTextColor(context),
                           fontSize: 10,
                           fontWeight: FontWeight.w800,
                           letterSpacing: 1,
@@ -1226,12 +1425,12 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
                                 : null;
                           },
                         ),
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 9, top: 1),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 9, top: 1),
                           child: Text(
                             'ESTADO DEL REGISTRO',
                             style: TextStyle(
-                              color: Color(0xFF8F9FB9),
+                              color: _secondaryTextColor(context),
                               fontSize: 10,
                               fontWeight: FontWeight.w800,
                               letterSpacing: 1,
@@ -1262,8 +1461,12 @@ class _BusinessPartnerFormState extends State<_BusinessPartnerForm> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(context),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFB6C5DA),
-                          side: const BorderSide(color: Color(0x447F94B3)),
+                          foregroundColor: _secondaryTextColor(context),
+                          side: BorderSide(
+                            color: _isLightTheme(context)
+                                ? const Color(0xFFDCE4EF)
+                                : const Color(0x447F94B3),
+                          ),
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(13),
@@ -1347,7 +1550,7 @@ class _PartnerTypeOption extends StatelessWidget {
       _ => Icons.handyman_rounded,
     };
     return Material(
-      color: selected ? color.withValues(alpha: 0.15) : const Color(0xFF0A1426),
+      color: selected ? color.withValues(alpha: 0.15) : _logInsetColor(context),
       borderRadius: BorderRadius.circular(13),
       child: InkWell(
         onTap: onTap,
@@ -1358,7 +1561,9 @@ class _PartnerTypeOption extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(13),
             border: Border.all(
-              color: selected ? color.withValues(alpha: 0.75) : Colors.white12,
+              color: selected
+                  ? color.withValues(alpha: 0.75)
+                  : _logBorderColor(context),
             ),
           ),
           child: Row(
@@ -1369,7 +1574,11 @@ class _PartnerTypeOption extends StatelessWidget {
               Text(
                 type,
                 style: TextStyle(
-                  color: selected ? Colors.white : const Color(0xFFA8B6CC),
+                  color: selected
+                      ? _isLightTheme(context)
+                            ? _primaryTextColor(context)
+                            : Colors.white
+                      : _secondaryTextColor(context),
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                 ),
@@ -1398,7 +1607,7 @@ class _PartnerStatusOption extends StatelessWidget {
     final active = status == 'Activa';
     final color = active ? const Color(0xFF4AE3B5) : const Color(0xFFFF8999);
     return Material(
-      color: selected ? color.withValues(alpha: 0.13) : const Color(0xFF0A1426),
+      color: selected ? color.withValues(alpha: 0.13) : _logInsetColor(context),
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
@@ -1408,7 +1617,9 @@ class _PartnerStatusOption extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected ? color.withValues(alpha: 0.6) : Colors.white12,
+              color: selected
+                  ? color.withValues(alpha: 0.6)
+                  : _logBorderColor(context),
             ),
           ),
           child: Row(
@@ -1425,7 +1636,9 @@ class _PartnerStatusOption extends StatelessWidget {
               Text(
                 status,
                 style: TextStyle(
-                  color: selected ? Colors.white : const Color(0xFFA8B6CC),
+                  color: selected
+                      ? _primaryTextColor(context)
+                      : _secondaryTextColor(context),
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                 ),
@@ -1443,11 +1656,15 @@ class ConnectedExternalStaffPage extends StatefulWidget {
     required this.authService,
     required this.isAdmin,
     required this.canManage,
+    this.user,
+    this.appointment,
     super.key,
   });
   final AuthService authService;
   final bool isAdmin;
   final bool canManage;
+  final AuthenticatedUser? user;
+  final Map<String, dynamic>? appointment;
 
   @override
   State<ConnectedExternalStaffPage> createState() =>
@@ -1466,6 +1683,8 @@ class _ConnectedExternalStaffPageState
   @override
   void initState() {
     super.initState();
+    final partnerId = widget.appointment?['businessPartnerId'];
+    if (partnerId is num) _selectedPartnerId = partnerId.toInt();
     _load();
   }
 
@@ -1483,6 +1702,19 @@ class _ConnectedExternalStaffPageState
         setState(() {
           _staff = results[0];
           _partners = results[1];
+          if (_selectedPartnerId == null && widget.appointment != null) {
+            final appointmentCompany = '${widget.appointment!['company'] ?? ''}'
+                .trim()
+                .toLowerCase();
+            for (final partner in _partners) {
+              if ('${partner['name'] ?? ''}'.trim().toLowerCase() ==
+                  appointmentCompany) {
+                final id = partner['id'];
+                if (id is num) _selectedPartnerId = id.toInt();
+                break;
+              }
+            }
+          }
           _loading = false;
         });
       }
@@ -1553,6 +1785,85 @@ class _ConnectedExternalStaffPageState
     }
   }
 
+  Future<void> _sendQr(Map<String, dynamic> staff) async {
+    final appointment = widget.appointment;
+    final appointmentId = appointment?['id'];
+    if (appointmentId is! num) {
+      _showMessage(context, 'No se encontró la cita vinculada.', error: true);
+      return;
+    }
+    final email = '${staff['email'] ?? ''}'.trim();
+    if (email.isEmpty) return;
+    if (!await _confirmAction(
+      context,
+      title: 'Enviar pase QR',
+      message:
+          'Se enviará el pase de ${staff['fullName']} a $email. ¿Continuar?',
+      confirmLabel: 'Enviar QR',
+    )) {
+      return;
+    }
+    try {
+      final staffId = staff['id'];
+      if (staffId is! num) {
+        throw const AuthApiException(
+          'El identificador del empleado no es válido.',
+        );
+      }
+      await widget.authService.sendAppointmentQr(
+        appointmentId.toInt(),
+        employeeId: staffId.toInt(),
+      );
+      if (mounted) {
+        _showMessage(
+          context,
+          'El pase de ${staff['fullName']} se envió a $email.',
+          title: 'QR enviado',
+        );
+      }
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      const legacyContractorError =
+          'El envío por empleado solo está disponible para contratistas.';
+      if (error.message == legacyContractorError) {
+        _showMessage(
+          context,
+          'El servidor de QR aún usa la validación anterior. Es necesario desplegar la API actualizada para validar la empresa del empleado.',
+          error: true,
+        );
+        return;
+      }
+      _showMessage(context, error.message, error: true);
+    }
+  }
+
+  void _showQr(Map<String, dynamic> staff) {
+    final appointment = widget.appointment;
+    if (appointment == null) return;
+    showDialog<void>(
+      context: context,
+      builder: (_) =>
+          _AppointmentPassDialog(appointment: appointment, employee: staff),
+    );
+  }
+
+  bool _isAppointmentEmployee(Map<String, dynamic> staff) {
+    final appointment = widget.appointment;
+    if (appointment == null) return false;
+    final appointmentEmail = '${appointment['email'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    final staffEmail = '${staff['email'] ?? ''}'.trim().toLowerCase();
+    if (appointmentEmail.isNotEmpty && staffEmail.isNotEmpty) {
+      return appointmentEmail == staffEmail;
+    }
+    final appointmentName = '${appointment['visitor'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    final staffName = '${staff['fullName'] ?? ''}'.trim().toLowerCase();
+    return appointmentName.isNotEmpty && appointmentName == staffName;
+  }
+
   @override
   Widget build(BuildContext context) {
     final query = _query.toLowerCase();
@@ -1588,12 +1899,18 @@ class _ConnectedExternalStaffPageState
     return _ConnectedPage(
       title: 'Personal externo',
       subtitle: 'Empleados vinculados a contratistas y proveedores',
+      user: widget.user,
       trailing: IconButton(
         onPressed: _load,
         icon: const Icon(Icons.refresh_rounded, color: Colors.white),
       ),
       child: _loading || _error != null
-          ? _loadingOrError(loading: _loading, error: _error, onRetry: _load)
+          ? _loadingOrError(
+              context: context,
+              loading: _loading,
+              error: _error,
+              onRetry: _load,
+            )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
@@ -1702,6 +2019,9 @@ class _ConnectedExternalStaffPageState
                                     canManage: widget.canManage,
                                     onEdit: () => _edit(staff),
                                     onDelete: () => _delete(staff),
+                                    showQr: _isAppointmentEmployee(staff),
+                                    onShowQr: () => _showQr(staff),
+                                    onSendQr: () => _sendQr(staff),
                                   ),
                                 ),
                             ],
@@ -1750,11 +2070,14 @@ class _ExternalStaffDirectoryToolbar extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(15),
     decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF172844), Color(0xFF0C172B)],
-      ),
+      color: _isLightTheme(context) ? Colors.white : null,
+      gradient: _isLightTheme(context)
+          ? null
+          : const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF172844), Color(0xFF0C172B)],
+            ),
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: const Color(0x663B9DFF)),
       boxShadow: const [
@@ -1791,15 +2114,18 @@ class _ExternalStaffDirectoryToolbar extends StatelessWidget {
                 children: [
                   Text(
                     '$companyCount ${companyCount == 1 ? 'empresa' : 'empresas'}',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
                       fontSize: 17,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   Text(
                     '$totalPeople ${totalPeople == 1 ? 'persona registrada' : 'personas registradas'}',
-                    style: const TextStyle(color: _muted, fontSize: 11),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 11,
+                    ),
                   ),
                 ],
               ),
@@ -1808,6 +2134,7 @@ class _ExternalStaffDirectoryToolbar extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         _staffSearchField(
+          context: context,
           hint: 'Buscar empresa, empleado o contacto',
           onChanged: onQueryChanged,
         ),
@@ -1829,6 +2156,7 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
     final type = '${partner['type'] ?? 'Contratista'}';
     final color = _partnerTypeColor(type);
     final declaredCount = partner['employeeCount'];
@@ -1841,11 +2169,14 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
         child: Ink(
           padding: const EdgeInsets.all(15),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF172844), Color(0xFF0A1426)],
-            ),
+            color: isLight ? Colors.white : null,
+            gradient: isLight
+                ? null
+                : const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF172844), Color(0xFF0A1426)],
+                  ),
             borderRadius: BorderRadius.circular(19),
             border: Border.all(color: color.withValues(alpha: 0.38)),
             boxShadow: [
@@ -1885,7 +2216,9 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                       vertical: 7,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0A1426),
+                      color: isLight
+                          ? const Color(0xFFF2F7FD)
+                          : const Color(0xFF0A1426),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: const Color(0x333D9DFF)),
                     ),
@@ -1894,8 +2227,10 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                       children: [
                         Text(
                           '$staffCount',
-                          style: const TextStyle(
-                            color: Color(0xFF58ACFF),
+                          style: TextStyle(
+                            color: isLight
+                                ? const Color(0xFF1769AA)
+                                : const Color(0xFF58ACFF),
                             fontSize: 17,
                             height: 1,
                             fontWeight: FontWeight.w900,
@@ -1904,8 +2239,8 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                         const SizedBox(height: 4),
                         Text(
                           staffCount == 1 ? 'registrado' : 'registrados',
-                          style: const TextStyle(
-                            color: Color(0xFF9EADC3),
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
                             fontSize: 9,
                           ),
                         ),
@@ -1913,9 +2248,9 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                           const SizedBox(height: 2),
                           Text(
                             '$declaredCount contemplados',
-                            style: const TextStyle(
-                              color: Color(0xFF7487A3),
-                              fontSize: 8,
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
                             ),
                           ),
                         ],
@@ -1929,8 +2264,8 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                 '${partner['name'] ?? 'Empresa sin nombre'}',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: _primaryTextColor(context),
                   fontSize: 15,
                   height: 1.25,
                   fontWeight: FontWeight.w800,
@@ -1944,21 +2279,23 @@ class _ExternalCompanyStaffCard extends StatelessWidget {
                   '${partner['category']}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFA8B6CC),
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
                     fontSize: 11,
                   ),
                 ),
               ],
               const SizedBox(height: 13),
-              const Divider(height: 1, color: Color(0x223D9DFF)),
+              Divider(height: 1, color: _logBorderColor(context)),
               const SizedBox(height: 10),
               Row(
                 children: [
-                  const Text(
+                  Text(
                     'Ver empleados',
                     style: TextStyle(
-                      color: Color(0xFF7CCFFF),
+                      color: isLight
+                          ? const Color(0xFF1769AA)
+                          : const Color(0xFF7CCFFF),
                       fontSize: 12,
                       fontWeight: FontWeight.w800,
                     ),
@@ -1996,16 +2333,20 @@ class _ExternalCompanyStaffDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
     final type = '${partner['type'] ?? 'Contratista'}';
     final color = _partnerTypeColor(type);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF172844), Color(0xFF0C172B)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF172844), Color(0xFF0C172B)],
+              ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0x663B9DFF)),
       ),
@@ -2040,8 +2381,8 @@ class _ExternalCompanyStaffDetail extends StatelessWidget {
                       '${partner['name'] ?? 'Empresa'}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 15,
                         fontWeight: FontWeight.w800,
                       ),
@@ -2057,8 +2398,12 @@ class _ExternalCompanyStaffDetail extends StatelessWidget {
                 icon: const Icon(Icons.arrow_back_rounded, size: 17),
                 label: const Text('Empresas'),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFFB6C5DA),
-                  side: const BorderSide(color: Color(0x447F94B3)),
+                  foregroundColor: _secondaryTextColor(context),
+                  side: BorderSide(
+                    color: isLight
+                        ? const Color(0xFFDCE4EF)
+                        : const Color(0x447F94B3),
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -2068,7 +2413,7 @@ class _ExternalCompanyStaffDetail extends StatelessWidget {
                 DecoratedBox(
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
-                      colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                      colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                     ),
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -2089,6 +2434,7 @@ class _ExternalCompanyStaffDetail extends StatelessWidget {
           ),
           const SizedBox(height: 13),
           _staffSearchField(
+            context: context,
             hint: 'Buscar por nombre, teléfono o correo',
             onChanged: onQueryChanged,
           ),
@@ -2107,14 +2453,18 @@ class _StaffCountBadge extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
     decoration: BoxDecoration(
-      color: const Color(0xFF0A1426),
+      color: _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
       borderRadius: BorderRadius.circular(12),
       border: Border.all(color: const Color(0x333D9DFF)),
     ),
     child: Text(
       '$count ${count == 1 ? 'empleado' : 'empleados'}',
-      style: const TextStyle(
-        color: Color(0xFF68B7FF),
+      style: TextStyle(
+        color: _isLightTheme(context)
+            ? const Color(0xFF1769AA)
+            : const Color(0xFF68B7FF),
         fontSize: 11,
         fontWeight: FontWeight.w800,
       ),
@@ -2129,6 +2479,9 @@ class _ExternalEmployeeCard extends StatelessWidget {
     required this.canManage,
     required this.onEdit,
     required this.onDelete,
+    required this.showQr,
+    required this.onShowQr,
+    required this.onSendQr,
   });
 
   final Map<String, dynamic> staff;
@@ -2136,9 +2489,13 @@ class _ExternalEmployeeCard extends StatelessWidget {
   final bool canManage;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final bool showQr;
+  final VoidCallback onShowQr;
+  final VoidCallback onSendQr;
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
     final name = '${staff['fullName'] ?? 'Sin nombre'}';
     final phone = '${staff['phone'] ?? ''}'.trim();
     final email = '${staff['email'] ?? ''}'.trim();
@@ -2148,11 +2505,14 @@ class _ExternalEmployeeCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0C1628)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF17243D), Color(0xFF0C1628)],
+              ),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: color.withValues(alpha: 0.31)),
         boxShadow: const [
@@ -2172,9 +2532,12 @@ class _ExternalEmployeeCard extends StatelessWidget {
                 width: 45,
                 height: 45,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF183D62), Color(0xFF10243D)],
-                  ),
+                  gradient: isLight
+                      ? null
+                      : const LinearGradient(
+                          colors: [Color(0xFF183D62), Color(0xFF10243D)],
+                        ),
+                  color: isLight ? const Color(0xFFE9F2FC) : null,
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: const Color(0x554AA8FF)),
                 ),
@@ -2193,45 +2556,16 @@ class _ExternalEmployeeCard extends StatelessWidget {
                       name,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 14,
                         height: 1.2,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    _PartnerBadge(label: relation, color: color),
                   ],
                 ),
               ),
-              if (canManage)
-                PopupMenuButton<String>(
-                  tooltip: 'Acciones del empleado',
-                  color: const Color(0xFF15233B),
-                  icon: const Icon(Icons.more_vert_rounded, color: _muted),
-                  onSelected: (action) {
-                    if (action == 'edit') onEdit();
-                    if (action == 'delete') onDelete();
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: 'edit',
-                      child: _PartnerMenuItem(
-                        icon: Icons.edit_rounded,
-                        label: 'Editar',
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'delete',
-                      child: _PartnerMenuItem(
-                        icon: Icons.delete_outline_rounded,
-                        label: 'Eliminar',
-                        destructive: true,
-                      ),
-                    ),
-                  ],
-                ),
             ],
           ),
           const SizedBox(height: 12),
@@ -2239,6 +2573,12 @@ class _ExternalEmployeeCard extends StatelessWidget {
             label: 'Empresa',
             value: '${company['name'] ?? staff['companyName'] ?? '—'}',
             icon: Icons.apartment_rounded,
+          ),
+          const SizedBox(height: 8),
+          _PartnerDetailTile(
+            label: 'Tipo de vínculo',
+            value: relation,
+            icon: Icons.handshake_outlined,
           ),
           if (phone.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -2258,9 +2598,132 @@ class _ExternalEmployeeCard extends StatelessWidget {
           ],
           if (phone.isEmpty && email.isEmpty) ...[
             const SizedBox(height: 9),
-            const Text(
+            Text(
               'Sin datos de contacto',
-              style: TextStyle(color: Color(0xFF8290A8), fontSize: 11),
+              style: TextStyle(
+                color: _secondaryTextColor(context),
+                fontSize: 11,
+              ),
+            ),
+          ],
+          if (canManage || showQr) ...[
+            const SizedBox(height: 13),
+            Container(height: 1, color: Colors.white.withValues(alpha: 0.08)),
+            const SizedBox(height: 12),
+            Column(
+              children: [
+                if (showQr)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 42,
+                          child: OutlinedButton.icon(
+                            onPressed: onShowQr,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF83C7FF),
+                              side: const BorderSide(color: Color(0x554AA8FF)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            icon: const Icon(Icons.qr_code_2_rounded, size: 18),
+                            label: const Text(
+                              'Ver QR',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (canManage && email.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: SizedBox(
+                            height: 42,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    Color(0xFF087FFF),
+                                    Color(0xFF04BCEB),
+                                  ],
+                                ),
+                              ),
+                              child: FilledButton.icon(
+                                onPressed: onSendQr,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.transparent,
+                                  foregroundColor: Colors.white,
+                                ),
+                                icon: const Icon(Icons.send_rounded, size: 16),
+                                label: const Text(
+                                  'Enviar QR',
+                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                if (canManage && showQr) const SizedBox(height: 8),
+                if (canManage)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 42,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF087FFF), Color(0xFF04BCEB)],
+                              ),
+                            ),
+                            child: FilledButton.icon(
+                              onPressed: onEdit,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.transparent,
+                                foregroundColor: Colors.white,
+                              ),
+                              icon: const Icon(Icons.edit_rounded, size: 17),
+                              label: const Text(
+                                'Editar',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SizedBox(
+                          height: 42,
+                          child: OutlinedButton.icon(
+                            onPressed: onDelete,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFFFF7189),
+                              side: const BorderSide(color: Color(0x66FF7189)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            icon: const Icon(
+                              Icons.delete_outline_rounded,
+                              size: 18,
+                            ),
+                            label: const Text(
+                              'Eliminar',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
             ),
           ],
         ],
@@ -2288,7 +2751,9 @@ class _StaffEmptyState extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 30),
     decoration: BoxDecoration(
-      color: const Color(0xFF101D32).withValues(alpha: 0.72),
+      color: _isLightTheme(context)
+          ? Colors.white
+          : const Color(0xFF101D32).withValues(alpha: 0.72),
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: const Color(0x223D9DFF)),
     ),
@@ -2307,8 +2772,8 @@ class _StaffEmptyState extends StatelessWidget {
         Text(
           title,
           textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: _primaryTextColor(context),
             fontSize: 15,
             fontWeight: FontWeight.w800,
           ),
@@ -2337,18 +2802,21 @@ class _StaffEmptyState extends StatelessWidget {
 }
 
 Widget _staffSearchField({
+  required BuildContext context,
   required String hint,
   required ValueChanged<String> onChanged,
 }) => TextField(
   onChanged: onChanged,
-  style: const TextStyle(color: Colors.white, fontSize: 13),
+  style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
   decoration: InputDecoration(
     hintText: hint,
     hintStyle: const TextStyle(color: Color(0xFF8290A8), fontSize: 12),
     prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF55AAFF)),
     prefixIconConstraints: const BoxConstraints(minWidth: 46, minHeight: 46),
     filled: true,
-    fillColor: const Color(0xFF091426),
+    fillColor: _isLightTheme(context)
+        ? const Color(0xFFF2F7FD)
+        : const Color(0xFF091426),
     contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
     enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(14),
@@ -2371,8 +2839,10 @@ class _FormSectionLabel extends StatelessWidget {
     children: [
       Text(
         label,
-        style: const TextStyle(
-          color: Color(0xFF74C8D1),
+        style: TextStyle(
+          color: _isLightTheme(context)
+              ? const Color(0xFF167C92)
+              : const Color(0xFF74C8D1),
           fontSize: 10,
           fontWeight: FontWeight.w900,
           letterSpacing: 1.1,
@@ -2428,7 +2898,7 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
   Future<void> _selectPartner() async {
     final partnerId = await showModalBottomSheet<int>(
       context: context,
-      backgroundColor: const Color(0xFF101D32),
+      backgroundColor: _logDialogColor(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
@@ -2439,10 +2909,10 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'Seleccionar empresa',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: _primaryTextColor(context),
                   fontSize: 17,
                   fontWeight: FontWeight.w800,
                 ),
@@ -2459,14 +2929,17 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                   ),
                   title: Text(
                     '${partner['name']}',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
                       fontWeight: FontWeight.w700,
                     ),
                   ),
                   subtitle: Text(
                     '${partner['type']} · ${partner['category'] ?? 'Sin categoría'}',
-                    style: const TextStyle(color: _muted, fontSize: 11),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 11,
+                    ),
                   ),
                   trailing: partner['id'] == _partnerId
                       ? const Icon(
@@ -2496,23 +2969,26 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
     child: TextFormField(
       controller: controller,
       keyboardType: keyboardType,
-      style: const TextStyle(color: Colors.white, fontSize: 13),
+      style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
       validator: validator,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        labelStyle: const TextStyle(color: Color(0xFFA7B6CD), fontSize: 12),
-        hintStyle: const TextStyle(color: Color(0xFF687993), fontSize: 11),
+        labelStyle: TextStyle(
+          color: _secondaryTextColor(context),
+          fontSize: 12,
+        ),
+        hintStyle: TextStyle(color: _secondaryTextColor(context), fontSize: 11),
         prefixIcon: Icon(icon, color: const Color(0xFF6AB8FF), size: 18),
         filled: true,
-        fillColor: const Color(0xFF0A1426),
+        fillColor: _logInsetColor(context),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 13,
           vertical: 14,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(13),
-          borderSide: const BorderSide(color: Color(0x223D9DFF)),
+          borderSide: BorderSide(color: _logBorderColor(context)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(13),
@@ -2580,11 +3056,14 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
           maxHeight: MediaQuery.sizeOf(context).height * 0.88,
         ),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172844), Color(0xFF0A1426)],
-          ),
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF0A1426)],
+                ),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: const Color(0x663D9DFF)),
           boxShadow: const [
@@ -2625,16 +3104,19 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                             isEditing
                                 ? 'Editar personal externo'
                                 : 'Registrar personal externo',
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
                               fontSize: 17,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
                           const SizedBox(height: 3),
-                          const Text(
+                          Text(
                             'Datos de contacto y empresa vinculada',
-                            style: TextStyle(color: _muted, fontSize: 10),
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                            ),
                           ),
                         ],
                       ),
@@ -2643,12 +3125,12 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
-                      color: _muted,
+                      color: _secondaryTextColor(context),
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1, color: Color(0x223D9DFF)),
+              Divider(height: 1, color: _logBorderColor(context)),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(18, 15, 18, 8),
@@ -2680,7 +3162,7 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                             vertical: 12,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF0A1426),
+                            color: _logInsetColor(context),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(color: const Color(0x334AA8FF)),
                           ),
@@ -2700,10 +3182,10 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text(
+                                    Text(
                                       'Empresa contratista o proveedora',
                                       style: TextStyle(
-                                        color: Color(0xFF8797B0),
+                                        color: _secondaryTextColor(context),
                                         fontSize: 10,
                                       ),
                                     ),
@@ -2712,8 +3194,8 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                                       '${_selectedPartner['name']}',
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      style: TextStyle(
+                                        color: _primaryTextColor(context),
                                         fontSize: 12,
                                         fontWeight: FontWeight.w700,
                                       ),
@@ -2721,9 +3203,9 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                                   ],
                                 ),
                               ),
-                              const Icon(
+                              Icon(
                                 Icons.unfold_more_rounded,
-                                color: Color(0xFF91A4BF),
+                                color: _secondaryTextColor(context),
                               ),
                             ],
                           ),
@@ -2741,8 +3223,8 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(context),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFB6C5DA),
-                          side: const BorderSide(color: Color(0x447F94B3)),
+                          foregroundColor: _primaryTextColor(context),
+                          side: BorderSide(color: _logBorderColor(context)),
                           padding: const EdgeInsets.symmetric(vertical: 13),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(13),
@@ -2756,7 +3238,7 @@ class _ExternalStaffFormState extends State<_ExternalStaffForm> {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: const LinearGradient(
-                            colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                            colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                           ),
                           borderRadius: BorderRadius.circular(13),
                         ),
@@ -2803,11 +3285,15 @@ class ConnectedAppointmentsPage extends StatefulWidget {
     required this.authService,
     required this.isAdmin,
     required this.canManage,
+    required this.onSendPass,
+    this.user,
     super.key,
   });
   final AuthService authService;
   final bool isAdmin;
   final bool canManage;
+  final ValueChanged<Map<String, dynamic>> onSendPass;
+  final AuthenticatedUser? user;
   @override
   State<ConnectedAppointmentsPage> createState() =>
       _ConnectedAppointmentsPageState();
@@ -2821,38 +3307,84 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   String _query = '';
   bool _showAll = true;
   DateTime _selectedDate = DateTime.now();
+  late final _RealtimeRefreshCoordinator _realtime;
+  bool _loadInProgress = false;
+  bool _refreshQueued = false;
+
+  Future<void> _showAppointmentsForDate(DateTime date) async {
+    final dayAppointments =
+        _appointments
+            .where((item) => item['date'] == _dateString(date))
+            .toList()
+          ..sort(
+            (a, b) => '${a['time'] ?? ''}'.compareTo('${b['time'] ?? ''}'),
+          );
+    setState(() {
+      _selectedDate = date;
+      _showAll = false;
+    });
+    await showDialog<void>(
+      context: context,
+      builder: (context) =>
+          _AppointmentsDayDialog(date: date, appointments: dayAppointments),
+    );
+  }
 
   @override
   void initState() {
     super.initState();
     _load();
+    _realtime = _RealtimeRefreshCoordinator(
+      widget.authService,
+      () => _load(silent: true),
+    )..start();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final result = await Future.wait([
-        widget.authService.getAppointments(),
-        widget.authService.getBusinessPartners(),
-      ]);
-      if (mounted) {
-        setState(() {
-          _appointments = result[0];
-          _partners = result[1];
-          _loading = false;
-        });
-      }
-    } on AuthApiException catch (error) {
-      if (mounted) {
-        setState(() {
-          _error = error.message;
-          _loading = false;
-        });
-      }
+  @override
+  void dispose() {
+    _realtime.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (_loadInProgress) {
+      _refreshQueued = true;
+      return;
     }
+    _loadInProgress = true;
+    var showLoader = !silent;
+    do {
+      _refreshQueued = false;
+      if (mounted && showLoader) {
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+      }
+      try {
+        final result = await Future.wait([
+          widget.authService.getAppointments(),
+          widget.authService.getBusinessPartners(),
+        ]);
+        if (mounted) {
+          setState(() {
+            _appointments = result[0];
+            _partners = result[1];
+            _loading = false;
+            _error = null;
+          });
+        }
+      } on AuthApiException catch (error) {
+        if (mounted) {
+          setState(() {
+            _error = error.message;
+            _loading = false;
+          });
+        }
+      }
+      showLoader = false;
+    } while (_refreshQueued && mounted);
+    _loadInProgress = false;
   }
 
   Future<void> _edit([Map<String, dynamic>? appointment]) async {
@@ -2905,6 +3437,14 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   }
 
   Future<void> _delete(Map<String, dynamic> appointment) async {
+    if (appointment['status'] != 'Cancelada') {
+      _showMessage(
+        context,
+        'Primero cancela la cita para poder eliminarla.',
+        error: true,
+      );
+      return;
+    }
     if (!await _confirmAction(
       context,
       title: 'Eliminar cita cancelada',
@@ -2918,17 +3458,6 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
         appointment['id'] as int,
       );
       if (mounted) setState(() => _appointments = records);
-    } on AuthApiException catch (error) {
-      if (mounted) _showMessage(context, error.message, error: true);
-    }
-  }
-
-  Future<void> _sendQr(Map<String, dynamic> appointment) async {
-    try {
-      final message = await widget.authService.sendAppointmentQr(
-        appointment['id'] as int,
-      );
-      if (mounted) _showMessage(context, message);
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
@@ -2953,12 +3482,18 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
     return _ConnectedPage(
       title: 'Agenda de citas',
       subtitle: 'Citas registradas en el sistema',
+      user: widget.user,
       trailing: IconButton(
         onPressed: _load,
         icon: const Icon(Icons.refresh_rounded, color: Colors.white),
       ),
       child: _loading || _error != null
-          ? _loadingOrError(loading: _loading, error: _error, onRetry: _load)
+          ? _loadingOrError(
+              context: context,
+              loading: _loading,
+              error: _error,
+              onRetry: _load,
+            )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
@@ -2979,13 +3514,17 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                         setState(() => _query = value.trim()),
                   ),
                   const SizedBox(height: 12),
+                  _AppointmentsCalendar(
+                    appointments: _appointments,
+                    selectedDate: _selectedDate,
+                    onSelectDate: _showAppointmentsForDate,
+                  ),
+                  const SizedBox(height: 12),
                   if (appointments.isEmpty)
                     _AppointmentEmptyState(
                       showAll: _showAll,
                       selectedDate: _selectedDate,
                       query: _query,
-                      canManage: widget.canManage,
-                      onCreate: () => _edit(),
                     )
                   else
                     for (final item in appointments) ...[
@@ -2995,7 +3534,7 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                         onEdit: () => _edit(item),
                         onCancel: () => _cancel(item),
                         onDelete: () => _delete(item),
-                        onSendQr: () => _sendQr(item),
+                        onSendQr: () => widget.onSendPass(item),
                         onShowCode: () => showDialog<void>(
                           context: context,
                           builder: (_) =>
@@ -3007,6 +3546,498 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                 ],
               ),
             ),
+    );
+  }
+}
+
+class _AppointmentsCalendar extends StatefulWidget {
+  const _AppointmentsCalendar({
+    required this.appointments,
+    required this.selectedDate,
+    required this.onSelectDate,
+  });
+
+  final List<Map<String, dynamic>> appointments;
+  final DateTime selectedDate;
+  final ValueChanged<DateTime> onSelectDate;
+
+  @override
+  State<_AppointmentsCalendar> createState() => _AppointmentsCalendarState();
+}
+
+class _AppointmentsCalendarState extends State<_AppointmentsCalendar> {
+  late DateTime _visibleMonth = DateTime(
+    widget.selectedDate.year,
+    widget.selectedDate.month,
+  );
+
+  static const _months = [
+    'Enero',
+    'Febrero',
+    'Marzo',
+    'Abril',
+    'Mayo',
+    'Junio',
+    'Julio',
+    'Agosto',
+    'Septiembre',
+    'Octubre',
+    'Noviembre',
+    'Diciembre',
+  ];
+  static const _weekdays = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+
+  @override
+  void didUpdateWidget(covariant _AppointmentsCalendar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selectedDate = widget.selectedDate;
+    if (oldWidget.selectedDate.year != selectedDate.year ||
+        oldWidget.selectedDate.month != selectedDate.month) {
+      _visibleMonth = DateTime(selectedDate.year, selectedDate.month);
+    }
+  }
+
+  void _moveMonth(int offset) {
+    setState(() {
+      _visibleMonth = DateTime(
+        _visibleMonth.year,
+        _visibleMonth.month + offset,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
+    final firstWeekday = DateTime(
+      _visibleMonth.year,
+      _visibleMonth.month,
+    ).weekday;
+    final daysInMonth = DateTime(
+      _visibleMonth.year,
+      _visibleMonth.month + 1,
+      0,
+    ).day;
+    final appointmentCounts = <String, int>{};
+    for (final appointment in widget.appointments) {
+      final date = appointment['date'];
+      if (date is String &&
+          date.startsWith(
+            '${_visibleMonth.year.toString().padLeft(4, '0')}-'
+            '${_visibleMonth.month.toString().padLeft(2, '0')}-',
+          )) {
+        appointmentCounts.update(date, (count) => count + 1, ifAbsent: () => 1);
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(13, 12, 13, 13),
+      decoration: BoxDecoration(
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF172844), Color(0xFF0C172B)],
+              ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x663B9DFF)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.calendar_month_rounded,
+                color: Color(0xFF68B7FF),
+                size: 19,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${_months[_visibleMonth.month - 1]} ${_visibleMonth.year}',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              _CalendarMonthButton(
+                tooltip: 'Mes anterior',
+                icon: Icons.chevron_left_rounded,
+                onPressed: () => _moveMonth(-1),
+              ),
+              const SizedBox(width: 5),
+              _CalendarMonthButton(
+                tooltip: 'Mes siguiente',
+                icon: Icons.chevron_right_rounded,
+                onPressed: () => _moveMonth(1),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              for (var index = 0; index < _weekdays.length; index++)
+                Expanded(
+                  child: Center(
+                    child: Text(
+                      _weekdays[index],
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: ((firstWeekday - 1 + daysInMonth + 6) ~/ 7) * 7,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 7,
+              mainAxisSpacing: 4,
+              crossAxisSpacing: 3,
+              childAspectRatio: 1.15,
+            ),
+            itemBuilder: (context, index) {
+              final day = index - firstWeekday + 2;
+              if (day < 1 || day > daysInMonth) {
+                return const SizedBox.shrink();
+              }
+              final date = DateTime(
+                _visibleMonth.year,
+                _visibleMonth.month,
+                day,
+              );
+              final dateKey = _dateString(date);
+              final count = appointmentCounts[dateKey] ?? 0;
+              final selected = dateKey == _dateString(widget.selectedDate);
+              final today = dateKey == _dateString(DateTime.now());
+              return Semantics(
+                button: true,
+                label:
+                    '$day de ${_months[_visibleMonth.month - 1]}'
+                    '${count > 0 ? ', $count ${count == 1 ? 'cita' : 'citas'}' : ''}',
+                child: Material(
+                  color: selected
+                      ? const Color(0xFF168BFF)
+                      : count > 0
+                      ? const Color(0x2226B8E8)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(11),
+                  child: InkWell(
+                    key: ValueKey('appointment-calendar-day-$dateKey'),
+                    borderRadius: BorderRadius.circular(11),
+                    onTap: () => widget.onSelectDate(date),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(
+                          color: today && !selected
+                              ? const Color(0xFF68B7FF)
+                              : Colors.transparent,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '$day',
+                            style: TextStyle(
+                              color: selected
+                                  ? Colors.white
+                                  : count > 0
+                                  ? const Color(0xFFEAF6FF)
+                                  : _secondaryTextColor(context),
+                              fontSize: 11,
+                              fontWeight: count > 0 || selected
+                                  ? FontWeight.w800
+                                  : FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Container(
+                            width: 4,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: count > 0
+                                  ? selected
+                                        ? Colors.white
+                                        : const Color(0xFF48D5E8)
+                                  : Colors.transparent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 7),
+          Row(
+            children: [
+              Icon(Icons.circle, size: 7, color: Color(0xFF48D5E8)),
+              SizedBox(width: 6),
+              Text(
+                'Días con citas',
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
+                  fontSize: 10,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CalendarMonthButton extends StatelessWidget {
+  const _CalendarMonthButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    tooltip: tooltip,
+    visualDensity: VisualDensity.compact,
+    onPressed: onPressed,
+    icon: Icon(icon, color: const Color(0xFF9FCBFF), size: 22),
+  );
+}
+
+class _AppointmentsDayDialog extends StatelessWidget {
+  const _AppointmentsDayDialog({
+    required this.date,
+    required this.appointments,
+  });
+
+  final DateTime date;
+  final List<Map<String, dynamic>> appointments;
+
+  @override
+  Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
+    return Dialog(
+      backgroundColor: _panelColor(context),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(
+          color: isLight
+              ? const Color(0xFFD8E4F2)
+              : const Color(0xFF3B9DFF).withValues(alpha: 0.45),
+        ),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480, maxHeight: 620),
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF168BFF), Color(0xFF26B8E8)],
+                      ),
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: const Icon(
+                      Icons.event_available_rounded,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _displayDate(_dateString(date)),
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          '${appointments.length} ${appointments.length == 1 ? 'cita programada' : 'citas programadas'}',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Cerrar',
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      color: _secondaryTextColor(context),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              if (appointments.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: _logInsetColor(context),
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(color: _logBorderColor(context)),
+                  ),
+                  child: Text(
+                    'No hay citas programadas para este día.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 12,
+                    ),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: appointments.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 9),
+                    itemBuilder: (context, index) {
+                      final appointment = appointments[index];
+                      return Container(
+                        padding: const EdgeInsets.all(13),
+                        decoration: BoxDecoration(
+                          color: isLight ? const Color(0xFFF3F6FB) : null,
+                          gradient: isLight
+                              ? null
+                              : const LinearGradient(
+                                  colors: [
+                                    Color(0xFF172844),
+                                    Color(0xFF0C172B),
+                                  ],
+                                ),
+                          borderRadius: BorderRadius.circular(15),
+                          border: Border.all(color: _logBorderColor(context)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 42,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF168BFF)
+                                    .withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                              child: Text(
+                                '${appointment['time'] ?? '--:--'}',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: _isLightTheme(context)
+                                      ? const Color(0xFF1769AA)
+                                      : const Color(0xFF8ACBFF),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${appointment['visitor'] ?? 'Visitante'}',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _primaryTextColor(context),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '${appointment['company'] ?? 'Sin empresa'}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    'Anfitrión: ${appointment['host'] ?? 'Sin anfitrión'}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            _AppointmentStatusBadge(
+                              label: '${appointment['status'] ?? 'Pendiente'}',
+                              color: appointment['status'] == 'Cancelada'
+                                  ? const Color(0xFFFF7189)
+                                  : const Color(0xFFFFC56E),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _primaryTextColor(context),
+                    side: BorderSide(color: _logBorderColor(context)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('Cerrar'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -3053,11 +4084,14 @@ class _AppointmentsToolbar extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF172844), Color(0xFF0C172B)],
-      ),
+      color: _isLightTheme(context) ? Colors.white : null,
+      gradient: _isLightTheme(context)
+          ? null
+          : const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF172844), Color(0xFF0C172B)],
+            ),
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: const Color(0x663B9DFF)),
       boxShadow: const [
@@ -3095,8 +4129,8 @@ class _AppointmentsToolbar extends StatelessWidget {
                 children: [
                   Text(
                     '$activeCount citas activas',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
                     ),
@@ -3105,7 +4139,10 @@ class _AppointmentsToolbar extends StatelessWidget {
                     '$resultCount ${resultCount == 1 ? 'resultado' : 'resultados'} · ${showAll ? 'todas las fechas' : _displayDate(_dateString(selectedDate))}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: _muted, fontSize: 10),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 10,
+                    ),
                   ),
                 ],
               ),
@@ -3114,7 +4151,7 @@ class _AppointmentsToolbar extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
-                    colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                    colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                   ),
                   borderRadius: BorderRadius.circular(13),
                   boxShadow: const [
@@ -3168,7 +4205,9 @@ class _AppointmentsToolbar extends StatelessWidget {
         ),
         const SizedBox(height: 9),
         Material(
-          color: const Color(0xFF0A1426),
+          color: _isLightTheme(context)
+              ? const Color(0xFFF3F6FB)
+              : const Color(0xFF0A1426),
           borderRadius: BorderRadius.circular(14),
           child: InkWell(
             onTap: () => _pickDate(context),
@@ -3177,7 +4216,7 @@ class _AppointmentsToolbar extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0x293D9DFF)),
+                border: Border.all(color: _logBorderColor(context)),
               ),
               child: Row(
                 children: [
@@ -3191,10 +4230,10 @@ class _AppointmentsToolbar extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'FECHA SELECCIONADA',
                           style: TextStyle(
-                            color: Color(0xFF8292AA),
+                            color: _secondaryTextColor(context),
                             fontSize: 8,
                             letterSpacing: 0.7,
                             fontWeight: FontWeight.w800,
@@ -3203,8 +4242,8 @@ class _AppointmentsToolbar extends StatelessWidget {
                         const SizedBox(height: 3),
                         Text(
                           _displayDate(_dateString(selectedDate)),
-                          style: const TextStyle(
-                            color: Color(0xFFE0E9F7),
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
                             fontSize: 12,
                             fontWeight: FontWeight.w700,
                           ),
@@ -3212,9 +4251,9 @@ class _AppointmentsToolbar extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const Icon(
+                  Icon(
                     Icons.edit_calendar_rounded,
-                    color: Color(0xFF8292AA),
+                    color: _secondaryTextColor(context),
                     size: 18,
                   ),
                 ],
@@ -3225,16 +4264,21 @@ class _AppointmentsToolbar extends StatelessWidget {
         const SizedBox(height: 12),
         TextField(
           onChanged: onQueryChanged,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
+          style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
           decoration: InputDecoration(
             hintText: 'Buscar visitante, empresa, anfitrión o folio',
-            hintStyle: const TextStyle(color: Color(0xFF8290A8), fontSize: 11),
+            hintStyle: TextStyle(
+              color: _secondaryTextColor(context),
+              fontSize: 11,
+            ),
             prefixIcon: const Icon(
               Icons.search_rounded,
               color: Color(0xFF55AAFF),
             ),
             filled: true,
-            fillColor: const Color(0xFF091426),
+            fillColor: _isLightTheme(context)
+                ? const Color(0xFFF3F6FB)
+                : const Color(0xFF091426),
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 13,
               vertical: 13,
@@ -3271,6 +4315,8 @@ class _AgendaModeChip extends StatelessWidget {
   Widget build(BuildContext context) => Material(
     color: selected
         ? const Color(0xFF168BFF).withValues(alpha: 0.17)
+        : _isLightTheme(context)
+        ? const Color(0xFFF3F6FB)
         : const Color(0xFF0A1426),
     borderRadius: BorderRadius.circular(13),
     child: InkWell(
@@ -3283,6 +4329,8 @@ class _AgendaModeChip extends StatelessWidget {
           border: Border.all(
             color: selected
                 ? const Color(0xFF168BFF).withValues(alpha: 0.65)
+                : _isLightTheme(context)
+                ? const Color(0xFFDCE4EF)
                 : Colors.white12,
           ),
         ),
@@ -3294,13 +4342,15 @@ class _AgendaModeChip extends StatelessWidget {
               size: 15,
               color: selected
                   ? const Color(0xFF79C6FF)
-                  : const Color(0xFF91A2BA),
+                  : _secondaryTextColor(context),
             ),
             const SizedBox(width: 6),
             Text(
               label,
               style: TextStyle(
-                color: selected ? Colors.white : const Color(0xFFA8B6CC),
+                color: selected
+                    ? _primaryTextColor(context)
+                    : _secondaryTextColor(context),
                 fontSize: 11,
                 fontWeight: FontWeight.w800,
               ),
@@ -3317,15 +4367,11 @@ class _AppointmentEmptyState extends StatelessWidget {
     required this.showAll,
     required this.selectedDate,
     required this.query,
-    required this.canManage,
-    required this.onCreate,
   });
 
   final bool showAll;
   final DateTime selectedDate;
   final String query;
-  final bool canManage;
-  final VoidCallback onCreate;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -3378,14 +4424,6 @@ class _AppointmentEmptyState extends StatelessWidget {
             height: 1.45,
           ),
         ),
-        if (canManage && query.isEmpty) ...[
-          const SizedBox(height: 15),
-          FilledButton.icon(
-            onPressed: onCreate,
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text('Crear cita'),
-          ),
-        ],
       ],
     ),
   );
@@ -3446,7 +4484,7 @@ class _AppointmentFormState extends State<_AppointmentForm> {
   Future<void> _selectPartner() async {
     final id = await showModalBottomSheet<int>(
       context: context,
-      backgroundColor: const Color(0xFF101D32),
+      backgroundColor: _logDialogColor(context),
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
@@ -3473,10 +4511,10 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                   ),
                 ),
                 const SizedBox(height: 17),
-                const Text(
+                Text(
                   'Empresa o visitante',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: _primaryTextColor(context),
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
                   ),
@@ -3545,23 +4583,26 @@ class _AppointmentFormState extends State<_AppointmentForm> {
     child: TextFormField(
       controller: controller,
       keyboardType: keyboardType,
-      style: const TextStyle(color: Colors.white, fontSize: 13),
+      style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
       validator: validator,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        labelStyle: const TextStyle(color: Color(0xFFA7B6CD), fontSize: 12),
-        hintStyle: const TextStyle(color: Color(0xFF687993), fontSize: 11),
+        labelStyle: TextStyle(
+          color: _secondaryTextColor(context),
+          fontSize: 12,
+        ),
+        hintStyle: TextStyle(color: _secondaryTextColor(context), fontSize: 11),
         prefixIcon: Icon(icon, color: const Color(0xFF6AB8FF), size: 18),
         filled: true,
-        fillColor: const Color(0xFF0A1426),
+        fillColor: _logInsetColor(context),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 13,
           vertical: 14,
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(13),
-          borderSide: const BorderSide(color: Color(0x223D9DFF)),
+          borderSide: BorderSide(color: _logBorderColor(context)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(13),
@@ -3585,7 +4626,7 @@ class _AppointmentFormState extends State<_AppointmentForm> {
     required IconData icon,
     required VoidCallback onTap,
   }) => Material(
-    color: const Color(0xFF0A1426),
+    color: _logInsetColor(context),
     borderRadius: BorderRadius.circular(13),
     child: InkWell(
       onTap: onTap,
@@ -3594,7 +4635,7 @@ class _AppointmentFormState extends State<_AppointmentForm> {
         padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 11),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(13),
-          border: Border.all(color: const Color(0x293D9DFF)),
+          border: Border.all(color: _logBorderColor(context)),
         ),
         child: Row(
           children: [
@@ -3606,8 +4647,8 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                 children: [
                   Text(
                     label.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF8292AA),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
                       fontSize: 8,
                       letterSpacing: 0.6,
                       fontWeight: FontWeight.w800,
@@ -3616,8 +4657,8 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                   const SizedBox(height: 4),
                   Text(
                     value,
-                    style: const TextStyle(
-                      color: Color(0xFFE0E9F7),
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
                     ),
@@ -3643,11 +4684,14 @@ class _AppointmentFormState extends State<_AppointmentForm> {
           maxHeight: MediaQuery.sizeOf(context).height * 0.9,
         ),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172844), Color(0xFF091426)],
-          ),
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
           borderRadius: BorderRadius.circular(23),
           border: Border.all(color: const Color(0x663D9DFF)),
           boxShadow: const [
@@ -3689,16 +4733,19 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                         children: [
                           Text(
                             editing ? 'Editar cita' : 'Programar una cita',
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
                               fontSize: 18,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
                           const SizedBox(height: 4),
-                          const Text(
+                          Text(
                             'Datos de la visita y su anfitrión',
-                            style: TextStyle(color: _muted, fontSize: 10),
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                            ),
                           ),
                         ],
                       ),
@@ -3707,12 +4754,12 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
-                      color: _muted,
+                      color: _secondaryTextColor(context),
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1, color: Color(0x223D9DFF)),
+              Divider(height: 1, color: _logBorderColor(context)),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(18, 15, 18, 8),
@@ -3789,10 +4836,10 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                         ],
                       ),
                       const SizedBox(height: 5),
-                      const Text(
+                      Text(
                         'El pase QR se generará al guardar la cita.',
                         style: TextStyle(
-                          color: Color(0xFF8292AA),
+                          color: _secondaryTextColor(context),
                           fontSize: 10,
                         ),
                       ),
@@ -3808,8 +4855,8 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(context),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFB6C5DA),
-                          side: const BorderSide(color: Color(0x447F94B3)),
+                          foregroundColor: _primaryTextColor(context),
+                          side: BorderSide(color: _logBorderColor(context)),
                           padding: const EdgeInsets.symmetric(vertical: 13),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(13),
@@ -3823,7 +4870,7 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: const LinearGradient(
-                            colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                            colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                           ),
                           borderRadius: BorderRadius.circular(13),
                         ),
@@ -3892,7 +4939,7 @@ class _AppointmentPartnerOption extends StatelessWidget {
       child: Material(
         color: selected
             ? color.withValues(alpha: 0.12)
-            : const Color(0xFF0A1426),
+            : _logInsetColor(context),
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onTap,
@@ -3904,7 +4951,7 @@ class _AppointmentPartnerOption extends StatelessWidget {
               border: Border.all(
                 color: selected
                     ? color.withValues(alpha: 0.45)
-                    : const Color(0x293D9DFF),
+                    : _logBorderColor(context),
               ),
             ),
             child: Row(
@@ -3933,8 +4980,8 @@ class _AppointmentPartnerOption extends StatelessWidget {
                     children: [
                       Text(
                         selector ? 'EMPRESA O VISITANTE' : type,
-                        style: const TextStyle(
-                          color: Color(0xFF8292AA),
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
                           fontSize: 8,
                           letterSpacing: 0.6,
                           fontWeight: FontWeight.w800,
@@ -3945,8 +4992,8 @@ class _AppointmentPartnerOption extends StatelessWidget {
                         '${partner['name'] ?? 'Sin nombre'}',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xFFE0E9F7),
+                        style: TextStyle(
+                          color: _primaryTextColor(context),
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
                         ),
@@ -3955,9 +5002,9 @@ class _AppointmentPartnerOption extends StatelessWidget {
                   ),
                 ),
                 if (selector)
-                  const Icon(
+                  Icon(
                     Icons.expand_more_rounded,
-                    color: Color(0xFF91A4BF),
+                    color: _secondaryTextColor(context),
                   )
                 else if (selected)
                   Icon(Icons.check_circle_rounded, color: color, size: 18),
@@ -3986,6 +5033,7 @@ class _AppointmentRecordCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
     final status = '${item['status'] ?? 'Pendiente'}';
     final canceled = status == 'Cancelada';
     final withdrawn = status == 'Retirado';
@@ -4000,11 +5048,14 @@ class _AppointmentRecordCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0C1628)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF17243D), Color(0xFF0C1628)],
+              ),
         borderRadius: BorderRadius.circular(19),
         border: Border.all(color: statusColor.withValues(alpha: 0.25)),
         boxShadow: const [
@@ -4044,8 +5095,8 @@ class _AppointmentRecordCard extends StatelessWidget {
                       '${item['visitor'] ?? 'Visitante'}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 15,
                         height: 1.2,
                         fontWeight: FontWeight.w800,
@@ -4056,8 +5107,8 @@ class _AppointmentRecordCard extends StatelessWidget {
                       '${item['company'] ?? 'Sin empresa'}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF9FB2CD),
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
                         fontSize: 11,
                         height: 1.3,
                       ),
@@ -4102,7 +5153,7 @@ class _AppointmentRecordCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 13),
-          const Divider(height: 1, color: Color(0x223D9DFF)),
+          Divider(height: 1, color: _logBorderColor(context)),
           const SizedBox(height: 11),
           Wrap(
             spacing: 7,
@@ -4132,12 +5183,16 @@ class _AppointmentRecordCard extends StatelessWidget {
                   destructive: true,
                 ),
               ],
-              if (canManage && canceled)
+              if (canManage)
                 _AppointmentActionButton(
                   label: 'Eliminar',
                   icon: Icons.delete_outline_rounded,
                   onPressed: onDelete,
                   destructive: true,
+                  enabled: canceled,
+                  tooltip: canceled
+                      ? 'Eliminar cita cancelada'
+                      : 'Primero cancela la cita para poder eliminarla',
                 ),
             ],
           ),
@@ -4165,9 +5220,15 @@ class _AppointmentInfoTile extends StatelessWidget {
     constraints: const BoxConstraints(minHeight: 54),
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
     decoration: BoxDecoration(
-      color: const Color(0xFF0A1426),
+      color: _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
       borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      border: Border.all(
+        color: _isLightTheme(context)
+            ? const Color(0xFFDCE4EF)
+            : Colors.white.withValues(alpha: 0.07),
+      ),
     ),
     child: Row(
       mainAxisSize: MainAxisSize.min,
@@ -4184,8 +5245,8 @@ class _AppointmentInfoTile extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFF8292AA),
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
                   fontSize: 8,
                   letterSpacing: 0.55,
                   fontWeight: FontWeight.w800,
@@ -4196,8 +5257,8 @@ class _AppointmentInfoTile extends StatelessWidget {
                 value,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFFE0E9F7),
+                style: TextStyle(
+                  color: _primaryTextColor(context),
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
                 ),
@@ -4259,6 +5320,8 @@ class _AppointmentActionButton extends StatelessWidget {
     required this.onPressed,
     this.primary = false,
     this.destructive = false,
+    this.enabled = true,
+    this.tooltip,
   });
 
   final String label;
@@ -4266,6 +5329,8 @@ class _AppointmentActionButton extends StatelessWidget {
   final VoidCallback onPressed;
   final bool primary;
   final bool destructive;
+  final bool enabled;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -4273,7 +5338,7 @@ class _AppointmentActionButton extends StatelessWidget {
         ? const Color(0xFFFF8294)
         : const Color(0xFF8FC9FF);
     final button = OutlinedButton.icon(
-      onPressed: onPressed,
+      onPressed: enabled ? onPressed : null,
       icon: Icon(icon, size: 15),
       label: Text(label),
       style: OutlinedButton.styleFrom(
@@ -4292,16 +5357,20 @@ class _AppointmentActionButton extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
       ),
     );
-    if (!primary) return button;
+    if (!primary) {
+      return tooltip == null
+          ? button
+          : Tooltip(message: tooltip!, child: button);
+    }
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+          colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
         ),
         borderRadius: BorderRadius.circular(11),
       ),
       child: OutlinedButton.icon(
-        onPressed: onPressed,
+        onPressed: enabled ? onPressed : null,
         icon: Icon(icon, size: 15),
         label: Text(label),
         style: OutlinedButton.styleFrom(
@@ -4320,17 +5389,286 @@ class _AppointmentActionButton extends StatelessWidget {
   }
 }
 
-class _AppointmentPassDialog extends StatelessWidget {
-  const _AppointmentPassDialog({required this.appointment});
+class _AppointmentQrPrintableCard extends StatelessWidget {
+  const _AppointmentQrPrintableCard({
+    required this.name,
+    required this.referenceCode,
+    required this.qrData,
+  });
+
+  final String name;
+  final String referenceCode;
+  final String qrData;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: const Color(0xFFFCFCFD),
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: const Color(0xFF071A36), width: 3),
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: Stack(
+      children: [
+        Positioned.fill(child: CustomPaint(painter: _PassCardAccentPainter())),
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
+              const SizedBox(height: 4),
+              Image.asset(
+                'assets/images/cymez-pass-logo.png',
+                height: 126,
+                fit: BoxFit.contain,
+                semanticLabel: 'Logo CyMEZ',
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF071A36),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFFE21B2D), width: 3),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.person_rounded,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    const SizedBox(width: 9),
+                    Container(width: 2, height: 29, color: Colors.white70),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        name,
+                        textAlign: TextAlign.center,
+                        softWrap: true,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.08,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 9),
+              const Text(
+                'CÓDIGO DE REFERENCIA',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Color(0xFF071A36),
+                  fontSize: 11,
+                  letterSpacing: 0.7,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 5),
+              Container(
+                constraints: const BoxConstraints(minWidth: 150),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD20D1B),
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Text(
+                  referenceCode.isEmpty ? 'SIN REFERENCIA' : referenceCode,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    letterSpacing: 1.4,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(
+                          color: const Color(0xFF071A36),
+                          width: 3,
+                        ),
+                        borderRadius: BorderRadius.circular(17),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x33D20D1B),
+                            blurRadius: 0,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: QrImageView(
+                        data: qrData,
+                        semanticsLabel:
+                            'Código QR de $name · referencia $referenceCode',
+                        errorCorrectionLevel: QrErrorCorrectLevel.M,
+                        eyeStyle: const QrEyeStyle(color: Color(0xFF10243A)),
+                        dataModuleStyle: const QrDataModuleStyle(
+                          color: Color(0xFF10243A),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'ESCANEA EL CÓDIGO QR\nPARA REGISTRAR TU VISITA',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Color(0xFF071A36),
+                  fontSize: 9,
+                  height: 1.45,
+                  letterSpacing: 1.8,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 3),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _PassCardAccentPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final navy = Paint()..color = const Color(0xFF071A36);
+    final red = Paint()..color = const Color(0xFFE21B2D);
+    final pale = Paint()..color = const Color(0xFFE8ECF2);
+    final topLeft = Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width * .32, 0)
+      ..lineTo(0, size.height * .27)
+      ..close();
+    canvas.drawPath(topLeft, navy);
+    final topRed = Path()
+      ..moveTo(size.width * .27, 0)
+      ..lineTo(size.width * .36, 0)
+      ..lineTo(0, size.height * .34)
+      ..lineTo(0, size.height * .26)
+      ..close();
+    canvas.drawPath(topRed, red);
+    final bottomRight = Path()
+      ..moveTo(size.width, size.height * .72)
+      ..lineTo(size.width, size.height)
+      ..lineTo(size.width * .64, size.height)
+      ..close();
+    canvas.drawPath(bottomRight, navy);
+    final bottomRed = Path()
+      ..moveTo(size.width, size.height * .68)
+      ..lineTo(size.width, size.height * .75)
+      ..lineTo(size.width * .72, size.height)
+      ..lineTo(size.width * .64, size.height)
+      ..close();
+    canvas.drawPath(bottomRed, red);
+    final accent = Path()
+      ..moveTo(0, size.height * .29)
+      ..lineTo(size.width * .29, 0)
+      ..lineTo(size.width * .33, 0)
+      ..lineTo(0, size.height * .34)
+      ..close();
+    canvas.drawPath(accent, pale);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _AppointmentPassDialog extends StatefulWidget {
+  const _AppointmentPassDialog({required this.appointment, this.employee});
   final Map<String, dynamic> appointment;
+  final Map<String, dynamic>? employee;
+
+  @override
+  State<_AppointmentPassDialog> createState() => _AppointmentPassDialogState();
+}
+
+class _AppointmentPassDialogState extends State<_AppointmentPassDialog> {
+  final _qrBoundaryKey = GlobalKey();
+  bool _isDownloading = false;
+
+  Future<void> _downloadQr() async {
+    if (_isDownloading) return;
+    setState(() => _isDownloading = true);
+    try {
+      final renderObject = _qrBoundaryKey.currentContext?.findRenderObject();
+      if (renderObject is! RenderRepaintBoundary) {
+        throw StateError('No se pudo preparar la imagen del código QR.');
+      }
+      final image = await renderObject.toImage(pixelRatio: 3);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (byteData == null) {
+        throw StateError('No se pudo convertir el código QR a PNG.');
+      }
+      final personName =
+          '${widget.employee?['fullName'] ?? widget.appointment['visitor'] ?? 'visita'}';
+      final fileName = personName
+          .trim()
+          .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+          .replaceAll(RegExp(r'^-+|-+$'), '');
+      await Gal.putImageBytes(
+        byteData.buffer.asUint8List(),
+        name: 'pase-qr-${fileName.isEmpty ? 'visita' : fileName}',
+      );
+      if (mounted) {
+        _showMessage(context, 'Código QR descargado en la galería.');
+      }
+    } on PlatformException catch (error) {
+      debugPrint('No se pudo guardar el pase QR: ${error.message}');
+      if (mounted) {
+        _showMessage(
+          context,
+          'No fue posible guardar el código QR.',
+          error: true,
+        );
+      }
+    } catch (error) {
+      debugPrint('No se pudo generar el PNG del pase QR: $error');
+      if (mounted) {
+        _showMessage(
+          context,
+          'No fue posible guardar el código QR.',
+          error: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isDownloading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final appointment = widget.appointment;
+    final employee = widget.employee;
     final payload = <String, Object?>{
       'type': 'visitas-appointment',
       'id': appointment['id'],
+      if (employee != null) 'externalStaffId': employee['id'],
       'referenceCode': appointment['referenceCode'],
-      'visitor': appointment['visitor'],
+      'visitor': employee?['fullName'] ?? appointment['visitor'],
       'company': appointment['company'],
       'host': appointment['host'],
       'date': appointment['date'],
@@ -4345,11 +5683,14 @@ class _AppointmentPassDialog extends StatelessWidget {
           maxHeight: MediaQuery.sizeOf(context).height * 0.9,
         ),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172844), Color(0xFF091426)],
-          ),
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
           borderRadius: BorderRadius.circular(23),
           border: Border.all(color: const Color(0x663D9DFF)),
           boxShadow: const [
@@ -4409,87 +5750,54 @@ class _AppointmentPassDialog extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 13),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(17),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x33168BFF),
-                      blurRadius: 18,
-                      spreadRadius: 1,
-                    ),
-                  ],
+              SizedBox(
+                width: (MediaQuery.sizeOf(context).width - 80).clamp(
+                  240.0,
+                  360.0,
                 ),
-                child: QrImageView(
-                  data: jsonEncode(payload),
-                  size: 220,
-                  errorCorrectionLevel: QrErrorCorrectLevel.M,
-                  eyeStyle: const QrEyeStyle(color: Color(0xFF10243A)),
-                  dataModuleStyle: const QrDataModuleStyle(
-                    color: Color(0xFF10243A),
+                child: AspectRatio(
+                  aspectRatio: 0.56,
+                  child: RepaintBoundary(
+                    key: _qrBoundaryKey,
+                    child: _AppointmentQrPrintableCard(
+                      name:
+                          '${employee?['fullName'] ?? appointment['visitor'] ?? 'Visitante'}',
+                      referenceCode: '${appointment['referenceCode'] ?? ''}',
+                      qrData: jsonEncode(payload),
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
-              Container(
+              const SizedBox(height: 13),
+              SizedBox(
                 width: double.infinity,
-                padding: const EdgeInsets.all(13),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0A1426),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0x293D9DFF)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${appointment['visitor'] ?? ''}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                      ),
+                child: FilledButton.icon(
+                  onPressed: _isDownloading ? null : _downloadQr,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF087FFF),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(13),
                     ),
-                    const SizedBox(height: 5),
-                    Text(
-                      '${appointment['company'] ?? ''}',
-                      style: const TextStyle(color: _muted, fontSize: 11),
-                    ),
-                    const SizedBox(height: 9),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        _AppointmentStatusBadge(
-                          label:
-                              '${_displayDate(appointment['date'])} · ${appointment['time'] ?? ''}',
-                          color: const Color(0xFF68B7FF),
-                        ),
-                        if ('${appointment['host'] ?? ''}'.isNotEmpty)
-                          _AppointmentStatusBadge(
-                            label: 'Anfitrión: ${appointment['host']}',
-                            color: const Color(0xFF4AE3B5),
+                  ),
+                  icon: _isDownloading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
                           ),
-                      ],
-                    ),
-                    if ('${appointment['referenceCode'] ?? ''}'.isNotEmpty) ...[
-                      const SizedBox(height: 9),
-                      Text(
-                        'FOLIO  ${appointment['referenceCode']}',
-                        style: const TextStyle(
-                          color: Color(0xFF70B9FF),
-                          fontSize: 10,
-                          letterSpacing: 0.5,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ],
-                  ],
+                        )
+                      : const Icon(Icons.download_rounded),
+                  label: Text(
+                    _isDownloading ? 'Guardando PNG...' : 'Descargar PNG',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                 ),
               ),
-              const SizedBox(height: 13),
+              const SizedBox(height: 8),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton(
@@ -4517,10 +5825,12 @@ class ConnectedDailyLogbookPage extends StatefulWidget {
   const ConnectedDailyLogbookPage({
     required this.authService,
     required this.isAdmin,
+    this.user,
     super.key,
   });
   final AuthService authService;
   final bool isAdmin;
+  final AuthenticatedUser? user;
   @override
   State<ConnectedDailyLogbookPage> createState() =>
       _ConnectedDailyLogbookPageState();
@@ -4528,76 +5838,679 @@ class ConnectedDailyLogbookPage extends StatefulWidget {
 
 class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   Timer? _searchDebounce;
-  DateTime _date = DateTime.now();
+  DateTime _fromDate = DateTime.now();
+  DateTime _toDate = DateTime.now();
   String _query = '';
   String _event = '';
+  String _category = '';
+  String _host = '';
   int _page = 1;
+  int _recentPage = 1;
+  int _appointmentPage = 1;
   bool _loading = true;
   String? _error;
   Map<String, dynamic> _data = {};
   List<Map<String, dynamic>> _appointments = [];
+  String _appointmentQuery = '';
+  bool _filtersExpanded = false;
+  late final _RealtimeRefreshCoordinator _realtime;
+  bool _loadInProgress = false;
+  bool _refreshQueued = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _realtime = _RealtimeRefreshCoordinator(
+      widget.authService,
+      () => _load(silent: true),
+    )..start();
   }
 
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _realtime.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    final date = _dateString(_date);
-    try {
-      final result = await Future.wait([
-        widget.authService.getDailyLog(
-          from: date,
-          to: date,
-          query: _query,
-          event: _event,
-          page: _page,
-        ),
-        widget.authService.getAppointments(),
-      ]);
-      if (mounted) {
-        setState(() {
-          _data = result[0] as Map<String, dynamic>;
-          _appointments = result[1] as List<Map<String, dynamic>>;
-          _loading = false;
-        });
-      }
-    } on AuthApiException catch (error) {
-      if (mounted) {
-        setState(() {
-          _error = error.message;
-          _loading = false;
-        });
-      }
+  Future<void> _load({bool silent = false}) async {
+    if (_loadInProgress) {
+      _refreshQueued = true;
+      return;
     }
+    _loadInProgress = true;
+    var showLoader = !silent;
+    do {
+      _refreshQueued = false;
+      if (mounted && showLoader) {
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+      }
+      try {
+        final result = await Future.wait([
+          widget.authService.getDailyLog(
+            from: _dateString(_fromDate),
+            to: _dateString(_toDate),
+            query: _query,
+            event: _event,
+            category: _category,
+            host: _host,
+            page: _page,
+            pageSize: 5,
+            recentPage: _recentPage,
+            recentPageSize: 5,
+          ),
+          widget.authService.getAppointments(),
+        ]);
+        if (mounted) {
+          setState(() {
+            _data = result[0] as Map<String, dynamic>;
+            _appointments = result[1] as List<Map<String, dynamic>>;
+            _loading = false;
+            _error = null;
+          });
+        }
+      } on AuthApiException catch (error) {
+        if (mounted) {
+          setState(() {
+            _error = error.message;
+            _loading = false;
+          });
+        }
+      }
+      showLoader = false;
+    } while (_refreshQueued && mounted);
+    _loadInProgress = false;
+  }
+
+  List<Map<String, dynamic>> get _todaysAppointments {
+    final today = _dateString(DateTime.now());
+    return _appointments.where((item) {
+        final date = item['date']?.toString();
+        return date != null &&
+            date.startsWith(today) &&
+            item['status'] != 'Cancelada' &&
+            item['status'] != 'Retirado';
+      }).toList()
+      ..sort((a, b) => '${a['time'] ?? ''}'.compareTo('${b['time'] ?? ''}'));
+  }
+
+  List<Map<String, dynamic>> get _filteredQuickAppointments {
+    final query = _appointmentQuery.trim().toLowerCase();
+    final filtered = _todaysAppointments.where((item) {
+      return query.isEmpty ||
+          '${item['visitor'] ?? ''} ${item['company'] ?? ''}'
+              .toLowerCase()
+              .contains(query);
+    }).toList();
+    return filtered.skip((_appointmentPage - 1) * 5).take(5).toList();
+  }
+
+  int get _filteredAppointmentPages {
+    final query = _appointmentQuery.trim().toLowerCase();
+    final count = _todaysAppointments.where((item) {
+      return query.isEmpty ||
+          '${item['visitor'] ?? ''} ${item['company'] ?? ''}'
+              .toLowerCase()
+              .contains(query);
+    }).length;
+    return (count / 5).ceil().clamp(1, 999999);
+  }
+
+  int get _activeFilterCount =>
+      (_event.isEmpty ? 0 : 1) +
+      (_category.isEmpty ? 0 : 1) +
+      (_host.isEmpty ? 0 : 1);
+
+  void _clearFilters() {
+    setState(() {
+      _event = '';
+      _category = '';
+      _host = '';
+      _page = 1;
+      _recentPage = 1;
+    });
+    _load();
+  }
+
+  Future<void> _pickDate({required bool start}) async {
+    final selectedDate = start ? _fromDate : _toDate;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      helpText: start
+          ? 'Selecciona la fecha inicial'
+          : 'Selecciona la fecha final',
+    );
+    if (date == null || !mounted) return;
+    if ((start && date.isAfter(_toDate)) ||
+        (!start && date.isBefore(_fromDate))) {
+      _showMessage(
+        context,
+        'El rango de fechas seleccionado no es válido.',
+        error: true,
+      );
+      return;
+    }
+    setState(() {
+      if (start) {
+        _fromDate = date;
+      } else {
+        _toDate = date;
+      }
+      _page = 1;
+      _recentPage = 1;
+    });
+    await _load();
+  }
+
+  Future<void> _showHistory() async {
+    final today = DateTime.now();
+    setState(() {
+      _fromDate = DateTime(today.year, today.month, today.day - 29);
+      _toDate = today;
+      _page = 1;
+      _recentPage = 1;
+    });
+    await _load();
   }
 
   Future<void> _register() async {
-    final result = await showDialog<Map<String, Object?>>(
-      context: context,
-      builder: (_) =>
-          _DailyLogEntryForm(appointments: _appointments, date: _date),
-    );
-    if (result == null) return;
     try {
+      final options = await Future.wait([
+        widget.authService.getExternalStaff(),
+        widget.authService.getGeneralVisitors(),
+      ]);
+      if (!mounted) return;
+      final result = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => _DailyLogEntryForm(
+          staff: options[0],
+          visitors: options[1],
+          date: DateTime.now(),
+        ),
+      );
+      if (result == null) return;
       await widget.authService.createDailyLogEntry(result);
       if (!mounted) return;
-      _showMessage(context, 'Movimiento registrado.');
+      _showMessage(context, 'Llegada registrada correctamente.');
+      setState(() {
+        _fromDate = DateTime.now();
+        _toDate = DateTime.now();
+        _page = 1;
+        _recentPage = 1;
+      });
       await _load();
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
+  }
+
+  Future<void> _recordMovement({
+    required String event,
+    required String person,
+    int? appointmentId,
+    int? externalStaffId,
+    int? visitorRecordId,
+    int? sourceEntryId,
+    String details = '',
+  }) async {
+    final now = DateTime.now();
+    try {
+      await widget.authService.createDailyLogEntry({
+        'event': event,
+        'date': _dateString(now),
+        'time':
+            '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+        'personName': person,
+        'details': details.trim(),
+        'appointmentId': appointmentId,
+        'externalStaffId': externalStaffId,
+        'visitorRecordId': visitorRecordId,
+        'sourceEntryId': sourceEntryId,
+      });
+      if (!mounted) return;
+      _showMessage(
+        context,
+        '$person: ${event == 'Ingreso'
+            ? 'entrada'
+            : event == 'Retiro'
+            ? 'salida'
+            : 'llegada'} registrada.',
+      );
+      setState(() {
+        _fromDate = now;
+        _toDate = now;
+        _page = 1;
+        _recentPage = 1;
+      });
+      await _load();
+    } on AuthApiException catch (error) {
+      if (mounted) _showMessage(context, error.message, error: true);
+    }
+  }
+
+  Future<void> _openAppointment(
+    Map<String, dynamic> appointment, {
+    int? externalStaffId,
+  }) async {
+    final result = await showDialog<Map<String, Object?>>(
+      context: context,
+      builder: (context) => _AppointmentReceptionDialog(
+        appointment: appointment,
+        authService: widget.authService,
+        externalStaffId: externalStaffId,
+      ),
+    );
+    if (result == null || !mounted) return;
+    await _recordMovement(
+      event: result['event'] as String,
+      person: result['person'] as String,
+      appointmentId: appointment['id'] as int?,
+      externalStaffId: result['externalStaffId'] as int?,
+      visitorRecordId: appointment['visitorRecordId'] as int?,
+    );
+  }
+
+  Future<void> _openVisitorRegistration(
+    Map<String, dynamic> registration,
+  ) async {
+    bool? isInside;
+    final items = (registration['items'] as List? ?? const []);
+    if (registration['authorizationStatus'] == 'Autorizada' && items.isEmpty) {
+      try {
+        final today = _dateString(DateTime.now());
+        final data = await widget.authService.getDailyLog(
+          from: today,
+          to: today,
+          query: '${registration['visitorName'] ?? ''}',
+          pageSize: 100,
+          recentPageSize: 5,
+        );
+        final visitorRecordId = registration['visitorRecordId'];
+        final movements =
+            (data['entries'] as List? ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .where((entry) => entry['visitorRecordId'] == visitorRecordId)
+                .toList()
+              ..sort((a, b) {
+                final aTimestamp = '${a['date'] ?? ''} ${a['time'] ?? ''}';
+                final bTimestamp = '${b['date'] ?? ''} ${b['time'] ?? ''}';
+                final timestampOrder = bTimestamp.compareTo(aTimestamp);
+                if (timestampOrder != 0) return timestampOrder;
+                final aId = a['id'] is num ? (a['id'] as num).toInt() : 0;
+                final bId = b['id'] is num ? (b['id'] as num).toInt() : 0;
+                return bId.compareTo(aId);
+              });
+        isInside = movements.firstOrNull?['event'] == 'Ingreso';
+      } on AuthApiException catch (error) {
+        if (!mounted) return;
+        _showMessage(context, error.message, error: true);
+      }
+    }
+    if (!mounted) return;
+    final changed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _VisitorRegistrationReceptionDialog(
+        registration: registration,
+        authService: widget.authService,
+        isAdmin: widget.isAdmin,
+        isInside: isInside,
+      ),
+    );
+    if (changed == true && mounted) await _load();
+  }
+
+  Future<void> _lookupCode(String value) async {
+    final code = value.trim();
+    if (code.isEmpty) return;
+    String? registrationLookupError;
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(code);
+    } on FormatException {
+      decoded = null;
+    }
+    final referenceCode =
+        decoded is Map && decoded['type'] == 'visitas-appointment'
+        ? decoded['referenceCode']?.toString()
+        : code;
+    final appointmentId =
+        decoded is Map && decoded['type'] == 'visitas-appointment'
+        ? decoded['id']
+        : null;
+    final externalStaffId =
+        decoded is Map && decoded['type'] == 'visitas-appointment'
+        ? decoded['externalStaffId']
+        : null;
+    if (decoded is! Map || decoded['type'] != 'visitas-appointment') {
+      try {
+        final registrations = await widget.authService
+            .getVisitorKioskRegistrations();
+        final registration = registrations
+            .where((item) => item['folio']?.toString() == referenceCode)
+            .firstOrNull;
+        if (registration != null) {
+          await _openVisitorRegistration(registration);
+          return;
+        }
+      } on AuthApiException catch (error) {
+        registrationLookupError = error.message;
+      }
+    }
+    final appointment = _todaysAppointments.where((item) {
+      return (appointmentId is num && item['id'] == appointmentId) ||
+          item['referenceCode']?.toString() == referenceCode;
+    }).firstOrNull;
+    if (appointment != null) {
+      await _openAppointment(
+        appointment,
+        externalStaffId: externalStaffId is num
+            ? externalStaffId.toInt()
+            : null,
+      );
+      return;
+    }
+    if (mounted) {
+      _showMessage(
+        context,
+        registrationLookupError ??
+            'Verifica el folio o vuelve a escanear el pase de visita.',
+        error: true,
+        title: registrationLookupError == null
+            ? 'Código no encontrado'
+            : 'No se pudo verificar el código',
+      );
+    }
+  }
+
+  Future<void> _enterCode() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        final isLight = _isLightTheme(context);
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 22,
+            vertical: 24,
+          ),
+          backgroundColor: Colors.transparent,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 430),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: _panelColor(context),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: isLight
+                    ? const Color(0xFFD8E4F2)
+                    : const Color(0x554AA8FF),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isLight ? 0.12 : 0.36),
+                  blurRadius: 28,
+                  offset: const Offset(0, 15),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF087FFF), Color(0xFF18B7D8)],
+                        ),
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: const Icon(
+                        Icons.confirmation_number_rounded,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'BITÁCORA DIARIA',
+                            style: TextStyle(
+                              color: isLight
+                                  ? const Color(0xFF167C92)
+                                  : const Color(0xFF73CDE0),
+                              fontSize: 9,
+                              letterSpacing: 1.1,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Buscar visita',
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Cerrar',
+                      onPressed: () => Navigator.pop(context),
+                      icon: Icon(
+                        Icons.close_rounded,
+                        color: _secondaryTextColor(context),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 15),
+                Text(
+                  'Ingresa el código de referencia o folio para localizar el registro.',
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  maxLength: 8,
+                  keyboardType: TextInputType.number,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 5,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Código de referencia',
+                    hintText: '00000000',
+                    labelStyle: TextStyle(color: _secondaryTextColor(context)),
+                    hintStyle: TextStyle(
+                      color: _secondaryTextColor(context).withValues(alpha: .5),
+                      letterSpacing: 4,
+                    ),
+                    counterStyle: TextStyle(
+                      color: _secondaryTextColor(context),
+                    ),
+                    filled: true,
+                    fillColor: _logInsetColor(context),
+                    prefixIcon: const Icon(
+                      Icons.tag_rounded,
+                      color: Color(0xFF168BFF),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: _logBorderColor(context)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(
+                        color: Color(0xFF168BFF),
+                        width: 1.4,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _primaryTextColor(context),
+                          side: BorderSide(color: _logBorderColor(context)),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(13),
+                          ),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: () =>
+                            Navigator.pop(context, controller.text.trim()),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF087FFF),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(13),
+                          ),
+                        ),
+                        icon: const Icon(Icons.search_rounded, size: 18),
+                        label: const Text('Buscar'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    controller.dispose();
+    if (value != null) await _lookupCode(value);
+  }
+
+  Future<void> _scanQr() async {
+    final value = await showDialog<String>(
+      context: context,
+      builder: (_) => const _DailyLogQrScanner(),
+    );
+    if (value != null) await _lookupCode(value);
+  }
+
+  Future<void> _openEntry(Map<String, dynamic> entry) async {
+    final visitorRecordId = entry['visitorRecordId'];
+    if (visitorRecordId is num) {
+      try {
+        final registrations = await widget.authService
+            .getVisitorKioskRegistrations();
+        final registration = registrations
+            .where((item) => item['visitorRecordId'] == visitorRecordId)
+            .firstOrNull;
+        if (registration != null) {
+          await _openVisitorRegistration(registration);
+          return;
+        }
+      } on AuthApiException catch (error) {
+        if (!mounted) return;
+        _showMessage(context, error.message, error: true);
+        return;
+      }
+    }
+    if (!mounted) return;
+    final appointmentId = entry['appointmentId'];
+    final appointment = appointmentId is num
+        ? _appointments.where((item) => item['id'] == appointmentId).firstOrNull
+        : null;
+    final event = await showDialog<String>(
+      context: context,
+      builder: (context) =>
+          _DailyLogEntryDetailDialog(entry: entry, appointment: appointment),
+    );
+    if (event == null || !mounted) return;
+    await _recordMovement(
+      event: event,
+      person: '${entry['person'] ?? 'Visitante'}',
+      appointmentId: appointmentId is num ? appointmentId.toInt() : null,
+      externalStaffId: entry['externalStaffId'] is num
+          ? (entry['externalStaffId'] as num).toInt()
+          : null,
+      visitorRecordId: visitorRecordId is num ? visitorRecordId.toInt() : null,
+      sourceEntryId: entry['id'] is num ? (entry['id'] as num).toInt() : null,
+    );
+  }
+
+  Future<void> _openEntryQr(Map<String, dynamic> entry) async {
+    final appointmentId = entry['appointmentId'];
+    final appointment = appointmentId is num
+        ? _appointments.where((item) => item['id'] == appointmentId).firstOrNull
+        : null;
+    if (appointment == null) {
+      _showMessage(
+        context,
+        'Este movimiento no está vinculado a una cita.',
+        error: true,
+      );
+      return;
+    }
+    final qrData = jsonEncode({
+      'type': 'visitas-appointment',
+      'id': appointment['id'],
+      if (entry['externalStaffId'] is num)
+        'externalStaffId': (entry['externalStaffId'] as num).toInt(),
+      'referenceCode': appointment['referenceCode'],
+    });
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: _panelColor(context),
+        title: Text(
+          'Pase de ${entry['person'] ?? 'visita'}',
+          style: TextStyle(color: _primaryTextColor(context)),
+        ),
+        content: Container(
+          padding: const EdgeInsets.all(8),
+          color: Colors.white,
+          child: QrImageView(
+            data: qrData,
+            size: 220,
+            semanticsLabel: 'Código QR de la cita',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _delete(Map<String, dynamic> entry) async {
@@ -4634,85 +6547,372 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
     final entries = (_data['entries'] as List? ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();
+    final recentEntries = (_data['recentEntries'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
     final summary = _data['summary'] as Map<String, dynamic>? ?? const {};
     final pages = (_data['pages'] as num?)?.toInt() ?? 1;
+    final recentPages = (_data['recentPages'] as num?)?.toInt() ?? 1;
+    final total = (_data['total'] as num?)?.toInt() ?? entries.length;
+    final recentTotal =
+        (_data['recentTotal'] as num?)?.toInt() ?? recentEntries.length;
+    final hosts = (_data['hosts'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
     return _ConnectedPage(
       title: 'Bitácora diaria',
-      subtitle: 'Movimientos consultados desde el registro central',
+      subtitle: 'Control de llegadas, entradas y salidas',
+      user: widget.user,
       trailing: IconButton(
-        onPressed: _load,
-        icon: const Icon(Icons.refresh_rounded, color: Colors.white),
+        tooltip: 'Actualizar bitácora',
+        onPressed: _loading ? null : _load,
+        icon: Icon(
+          Icons.refresh_rounded,
+          color: _isLightTheme(context)
+              ? const Color(0xFF52657D)
+              : Colors.white,
+        ),
       ),
       child: _loading || _error != null
-          ? _loadingOrError(loading: _loading, error: _error, onRetry: _load)
+          ? _loadingOrError(
+              context: context,
+              loading: _loading,
+              error: _error,
+              onRetry: _load,
+            )
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
                 children: [
-                  _panel(
+                  _logbookPanel(
+                    context: context,
                     child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    Color(0xFF087FFF),
+                                    Color(0xFF00B8F4),
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.flash_on_rounded,
+                                color: Colors.white,
+                                size: 19,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Registro rápido',
+                                style: TextStyle(
+                                  color: _primaryTextColor(context),
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Escanear código QR',
+                              onPressed: _scanQr,
+                              icon: const Icon(
+                                Icons.qr_code_scanner_rounded,
+                                color: Color(0xFF8ACBFF),
+                              ),
+                            ),
+                          ],
+                        ),
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            final buttons = [
+                              OutlinedButton.icon(
+                                onPressed: _enterCode,
+                                icon: const Icon(Icons.pin_rounded, size: 17),
+                                label: const Text('Introducir código'),
+                                style: _logOutlinedButtonStyle(
+                                  context,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 12,
+                                  ),
+                                ),
+                              ),
+                              FilledButton.icon(
+                                onPressed: _register,
+                                icon: const Icon(Icons.add_rounded, size: 17),
+                                label: const Text('Nuevo registro'),
+                                style: _logPrimaryButtonStyle(
+                                  context,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 12,
+                                  ),
+                                ),
+                              ),
+                            ];
+                            if (constraints.maxWidth < 390) {
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  buttons[0],
+                                  const SizedBox(height: 8),
+                                  buttons[1],
+                                ],
+                              );
+                            }
+                            return Row(
+                              children: [
+                                Expanded(child: buttons[0]),
+                                const SizedBox(width: 8),
+                                Expanded(child: buttons[1]),
+                              ],
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          onChanged: (value) => setState(() {
+                            _appointmentQuery = value;
+                            _appointmentPage = 1;
+                          }),
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 13,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'Buscar cita de hoy por nombre o empresa',
+                            hintStyle: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 11,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.search_rounded,
+                              color: Color(0xFF68B7FF),
+                            ),
+                            filled: true,
+                            fillColor: _isLightTheme(context)
+                                ? const Color(0xFFF3F6FB)
+                                : const Color(0xFF091426),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(13),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${_todaysAppointments.length} citas activas para hoy',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 11,
+                          ),
+                        ),
+                        if (_filteredQuickAppointments.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Text(
+                              'No hay citas que coincidan. Para visitas sin cita usa Nuevo registro.',
+                              style: TextStyle(
+                                color: _secondaryTextColor(context),
+                                fontSize: 12,
+                              ),
+                            ),
+                          )
+                        else ...[
+                          const SizedBox(height: 8),
+                          for (final appointment
+                              in _filteredQuickAppointments) ...[
+                            _QuickAppointmentTile(
+                              appointment: appointment,
+                              onTap: () => _openAppointment(appointment),
+                            ),
+                            const SizedBox(height: 7),
+                          ],
+                          if (_filteredAppointmentPages > 1)
+                            _DailyLogPagination(
+                              label: 'Citas',
+                              total: _todaysAppointments.length,
+                              page: _appointmentPage,
+                              pages: _filteredAppointmentPages,
+                              onPrevious: _appointmentPage > 1
+                                  ? () => setState(() => _appointmentPage--)
+                                  : null,
+                              onNext:
+                                  _appointmentPage < _filteredAppointmentPages
+                                  ? () => setState(() => _appointmentPage++)
+                                  : null,
+                            ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _logbookPanel(
+                    context: context,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.calendar_month_rounded,
+                              color: Color(0xFF68B7FF),
+                              size: 19,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Periodo y resumen',
+                                style: TextStyle(
+                                  color: _primaryTextColor(context),
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: _showHistory,
+                              icon: const Icon(Icons.history_rounded, size: 16),
+                              label: const Text('30 días'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: _isLightTheme(context)
+                                    ? const Color(0xFF1769AA)
+                                    : const Color(0xFF8ACBFF),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
                         Row(
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  final date = await showDatePicker(
-                                    context: context,
-                                    initialDate: _date,
-                                    firstDate: DateTime(2020),
-                                    lastDate: DateTime(2100),
-                                  );
-                                  if (date != null) {
-                                    setState(() {
-                                      _date = date;
-                                      _page = 1;
-                                    });
-                                  }
-                                  if (date != null) _load();
-                                },
+                                onPressed: () => _pickDate(start: true),
                                 icon: const Icon(Icons.calendar_today_rounded),
-                                label: Text(
-                                  _displayDate(_date.toIso8601String()),
+                                label: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      'DESDE',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        letterSpacing: .6,
+                                      ),
+                                    ),
+                                    Text(
+                                      _displayDate(_dateString(_fromDate)),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                                style: _logOutlinedButtonStyle(
+                                  context,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 10,
+                                  ),
                                 ),
                               ),
                             ),
                             const SizedBox(width: 8),
-                            FilledButton.icon(
-                              onPressed: _register,
-                              icon: const Icon(Icons.add_rounded),
-                              label: const Text('Registrar'),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => _pickDate(start: false),
+                                icon: const Icon(Icons.event_rounded),
+                                label: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      'HASTA',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        letterSpacing: .6,
+                                      ),
+                                    ),
+                                    Text(
+                                      _displayDate(_dateString(_toDate)),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                                style: _logOutlinedButtonStyle(
+                                  context,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 10,
+                                  ),
+                                ),
+                              ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
+                        const SizedBox(height: 12),
+                        GridView.count(
+                          crossAxisCount: 2,
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          mainAxisSpacing: 7,
+                          crossAxisSpacing: 7,
+                          childAspectRatio: 2.65,
                           children: [
                             _LogMetric(
                               label: 'Movimientos',
                               value: '${summary['movementCount'] ?? 0}',
+                              icon: Icons.swap_horiz_rounded,
+                              accent: const Color(0xFF168BFF),
                             ),
                             _LogMetric(
                               label: 'Dentro ahora',
                               value: '${summary['insideNow'] ?? 0}',
+                              icon: Icons.groups_rounded,
+                              accent: const Color(0xFF00C8D7),
                             ),
                             _LogMetric(
                               label: 'Pendientes',
                               value: '${summary['pendingArrivals'] ?? 0}',
+                              icon: Icons.schedule_rounded,
+                              accent: const Color(0xFFFFB547),
+                            ),
+                            _LogMetric(
+                              label: 'Salidas',
+                              value: '${summary['exits'] ?? 0}',
+                              icon: Icons.logout_rounded,
+                              accent: const Color(0xFFFF536D),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 10),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _logbookPanel(
+                    context: context,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                         _searchBox(
+                          context: context,
                           hint: 'Buscar persona, empresa, anfitrión o folio',
                           maxLength: 180,
                           onChanged: (value) {
                             setState(() {
                               _query = value;
                               _page = 1;
+                              _recentPage = 1;
                             });
                             _searchDebounce?.cancel();
                             _searchDebounce = Timer(
@@ -4721,112 +6921,280 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
                             );
                           },
                         ),
-                        const SizedBox(height: 8),
-                        DropdownButtonFormField<String>(
-                          initialValue: _event,
-                          dropdownColor: _panelBackground,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: const InputDecoration(
-                            labelText: 'Tipo de movimiento',
-                            labelStyle: TextStyle(color: _muted),
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: '', child: Text('Todos')),
-                            DropdownMenuItem(
-                              value: 'Llegada',
-                              child: Text('Llegada'),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF087FFF)
+                                    .withValues(alpha: .16),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: const Color(0x66087FFF),
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.tune_rounded,
+                                color: Color(0xFF78BFFF),
+                                size: 18,
+                              ),
                             ),
-                            DropdownMenuItem(
-                              value: 'Ingreso',
-                              child: Text('Ingreso'),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Filtrar registros',
+                                    style: TextStyle(
+                                      color: _primaryTextColor(context),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  Text(
+                                    _activeFilterCount == 0
+                                        ? 'Tipo de movimiento, categoría y anfitrión'
+                                        : '$_activeFilterCount filtros aplicados',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            DropdownMenuItem(
-                              value: 'Retiro',
-                              child: Text('Retiro'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'Observaciones',
-                              child: Text('Observaciones'),
+                            if (_activeFilterCount > 0)
+                              IconButton(
+                                tooltip: 'Limpiar filtros',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _clearFilters,
+                                icon: const Icon(
+                                  Icons.filter_alt_off_rounded,
+                                  size: 17,
+                                ),
+                                color: const Color(0xFFFF7189),
+                              ),
+                            IconButton(
+                              tooltip: _filtersExpanded
+                                  ? 'Ocultar filtros'
+                                  : 'Mostrar filtros',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => setState(
+                                () => _filtersExpanded = !_filtersExpanded,
+                              ),
+                              icon: Icon(
+                                _filtersExpanded
+                                    ? Icons.expand_less_rounded
+                                    : Icons.expand_more_rounded,
+                                color: const Color(0xFF8ACBFF),
+                              ),
                             ),
                           ],
-                          onChanged: (value) {
-                            setState(() {
-                              _event = value ?? '';
-                              _page = 1;
-                            });
-                            _load();
-                          },
                         ),
+                        if (_filtersExpanded) ...[
+                          const SizedBox(height: 15),
+                          const Divider(color: Color(0x332D83C7), height: 1),
+                          const SizedBox(height: 13),
+                          Text(
+                            'TIPO DE MOVIMIENTO',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final option in const [
+                                ('', 'Todos'),
+                                ('Llegada', 'Llegadas'),
+                                ('Ingreso', 'Entradas'),
+                                ('Retiro', 'Salidas'),
+                                ('Observaciones', 'Observaciones'),
+                              ])
+                                _LogFilterChip(
+                                  label: option.$2,
+                                  selected: _event == option.$1,
+                                  onTap: () {
+                                    setState(() {
+                                      _event = option.$1;
+                                      _page = 1;
+                                      _recentPage = 1;
+                                    });
+                                    _load();
+                                  },
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'CATEGORÍA',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final option in const [
+                                ('', 'Todas'),
+                                ('Visitante', 'Visitantes'),
+                                ('Contratista', 'Contratistas'),
+                                ('Proveedor', 'Proveedores'),
+                              ])
+                                _LogFilterChip(
+                                  label: option.$2,
+                                  selected: _category == option.$1,
+                                  onTap: () {
+                                    setState(() {
+                                      _category = option.$1;
+                                      _page = 1;
+                                      _recentPage = 1;
+                                    });
+                                    _load();
+                                  },
+                                ),
+                            ],
+                          ),
+                          if (hosts.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              'ANFITRIÓN',
+                              style: TextStyle(
+                                color: _secondaryTextColor(context),
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            const SizedBox(height: 7),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                _LogFilterChip(
+                                  label: 'Todos',
+                                  selected: _host.isEmpty,
+                                  onTap: () {
+                                    setState(() {
+                                      _host = '';
+                                      _page = 1;
+                                    });
+                                    _load();
+                                  },
+                                ),
+                                for (final host in hosts)
+                                  _LogFilterChip(
+                                    label: host,
+                                    selected: _host == host,
+                                    onTap: () {
+                                      setState(() {
+                                        _host = host;
+                                        _page = 1;
+                                      });
+                                      _load();
+                                    },
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ],
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 20),
+                  _DailyLogSectionHeading(
+                    kicker: 'REGISTRO OPERATIVO',
+                    title: 'Movimientos del periodo',
+                    count: '$total ${total == 1 ? 'registro' : 'registros'}',
+                  ),
+                  const SizedBox(height: 14),
                   if (entries.isEmpty)
                     const _EmptyRecords(
-                      message: 'No hay movimientos para este día.',
+                      message: 'No hay movimientos para este periodo.',
                     )
                   else
                     for (final entry in entries) ...[
-                      _recordTile(
-                        title:
-                            '${entry['person'] ?? ''} · ${entry['event'] ?? ''}',
-                        subtitle:
-                            '${entry['time'] ?? ''} · ${entry['company'] ?? ''}\n${entry['details'] ?? ''}\nRegistró: ${entry['actorName'] ?? ''}',
-                        icon: switch (entry['event']) {
-                          'Ingreso' => Icons.login_rounded,
-                          'Retiro' => Icons.logout_rounded,
-                          'Llegada' => Icons.call_received_rounded,
-                          _ => Icons.notes_rounded,
-                        },
-                        actions: [
-                          if (widget.isAdmin)
-                            IconButton(
-                              tooltip: 'Eliminar movimiento',
-                              onPressed: () => _delete(entry),
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                color: Color(0xFFFF647C),
-                              ),
-                            ),
-                        ],
+                      _DailyLogMovementCard(
+                        entry: entry,
+                        onTap: () => _openEntry(entry),
+                        onQr: () => _openEntryQr(entry),
+                        onDelete: widget.isAdmin ? () => _delete(entry) : null,
                       ),
                       const SizedBox(height: 9),
                     ],
-                  if (pages > 1)
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          tooltip: 'Página anterior',
-                          onPressed: _page > 1
-                              ? () {
-                                  setState(() => _page--);
-                                  _load();
-                                }
-                              : null,
-                          icon: const Icon(
-                            Icons.chevron_left_rounded,
-                            color: Colors.white,
-                          ),
-                        ),
-                        Text(
-                          '$_page de $pages',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        IconButton(
-                          tooltip: 'Página siguiente',
-                          onPressed: _page < pages
-                              ? () {
-                                  setState(() => _page++);
-                                  _load();
-                                }
-                              : null,
-                          icon: const Icon(
-                            Icons.chevron_right_rounded,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
+                  if (entries.isNotEmpty)
+                    _DailyLogPagination(
+                      label: 'Movimientos',
+                      total: total,
+                      page: _page,
+                      pages: pages,
+                      onPrevious: _page > 1
+                          ? () {
+                              setState(() => _page--);
+                              _load();
+                            }
+                          : null,
+                      onNext: _page < pages
+                          ? () {
+                              setState(() => _page++);
+                              _load();
+                            }
+                          : null,
+                    ),
+                  const SizedBox(height: 12),
+                  _DailyLogSectionHeading(
+                    kicker: 'EN TIEMPO REAL',
+                    title: 'Actividad reciente',
+                    count: '$recentTotal movimientos',
+                  ),
+                  const SizedBox(height: 8),
+                  if (recentEntries.isEmpty)
+                    const _EmptyRecords(
+                      message: 'Aún no hay movimientos recientes.',
+                    )
+                  else
+                    for (final entry in recentEntries) ...[
+                      _DailyLogMovementCard(
+                        entry: entry,
+                        onTap: () => _openEntry(entry),
+                        onQr: () => _openEntryQr(entry),
+                        onDelete: null,
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  if (recentPages > 1)
+                    _DailyLogPagination(
+                      label: 'Actividad reciente',
+                      total: recentTotal,
+                      page: _recentPage,
+                      pages: recentPages,
+                      onPrevious: _recentPage > 1
+                          ? () {
+                              setState(() => _recentPage--);
+                              _load();
+                            }
+                          : null,
+                      onNext: _recentPage < recentPages
+                          ? () {
+                              setState(() => _recentPage++);
+                              _load();
+                            }
+                          : null,
                     ),
                 ],
               ),
@@ -4835,41 +7203,656 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   }
 }
 
-class _LogMetric extends StatelessWidget {
-  const _LogMetric({required this.label, required this.value});
-  final String label, value;
+class _LogFilterChip extends StatelessWidget {
+  const _LogFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-    decoration: BoxDecoration(
-      color: const Color(0x22168BFF),
-      borderRadius: BorderRadius.circular(10),
-    ),
-    child: Text(
-      '$label: $value',
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    borderRadius: BorderRadius.circular(12),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: selected
+              ? const LinearGradient(
+                  colors: [Color(0xFF087FFF), Color(0xFF00A8E8)],
+                )
+              : null,
+          color: selected ? null : _logInsetColor(context),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? const Color(0xFF40B8FF) : const Color(0x333D9DFF),
+          ),
+          boxShadow: selected
+              ? const [
+                  BoxShadow(
+                    color: Color(0x330087FF),
+                    blurRadius: 9,
+                    offset: Offset(0, 3),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : _secondaryTextColor(context),
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
       ),
     ),
   );
 }
 
+class _DailyLogSectionHeading extends StatelessWidget {
+  const _DailyLogSectionHeading({
+    required this.kicker,
+    required this.title,
+    required this.count,
+  });
+
+  final String kicker;
+  final String title;
+  final String count;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(13, 12, 13, 12),
+    decoration: BoxDecoration(
+      color: _isLightTheme(context) ? Colors.white : null,
+      gradient: _isLightTheme(context)
+          ? null
+          : const LinearGradient(
+              colors: [Color(0xFF172844), Color(0xFF0C172B)],
+            ),
+      borderRadius: BorderRadius.circular(15),
+      border: Border.all(color: const Color(0x443B9DFF)),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                kicker,
+                style: const TextStyle(
+                  color: Color(0xFF68B7FF),
+                  fontSize: 9,
+                  letterSpacing: 1.1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                title,
+                style: TextStyle(
+                  color: _primaryTextColor(context),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFF168BFF).withValues(alpha: .13),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0x443B9DFF)),
+          ),
+          child: Text(
+            count,
+            style: TextStyle(
+              color: _isLightTheme(context)
+                  ? const Color(0xFF1769AA)
+                  : const Color(0xFF9FCBFF),
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _DailyLogPagination extends StatelessWidget {
+  const _DailyLogPagination({
+    required this.label,
+    required this.total,
+    required this.page,
+    required this.pages,
+    required this.onPrevious,
+    required this.onNext,
+  });
+
+  final String label;
+  final int total;
+  final int page;
+  final int pages;
+  final VoidCallback? onPrevious;
+  final VoidCallback? onNext;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(top: 5),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(
+      color: _logDialogColor(context),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: const Color(0x293D9DFF)),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            '$label: $total',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: _secondaryTextColor(context), fontSize: 10),
+          ),
+        ),
+        IconButton(
+          tooltip: 'Página anterior',
+          visualDensity: VisualDensity.compact,
+          onPressed: onPrevious,
+          icon: Icon(
+            Icons.chevron_left_rounded,
+            color: _isLightTheme(context)
+                ? const Color(0xFF1769AA)
+                : const Color(0xFF9FCBFF),
+          ),
+        ),
+        Text(
+          '$page de $pages',
+          style: TextStyle(
+            color: _primaryTextColor(context),
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Página siguiente',
+          visualDensity: VisualDensity.compact,
+          onPressed: onNext,
+          icon: Icon(
+            Icons.chevron_right_rounded,
+            color: _isLightTheme(context)
+                ? const Color(0xFF1769AA)
+                : const Color(0xFF9FCBFF),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _QuickAppointmentTile extends StatelessWidget {
+  const _QuickAppointmentTile({required this.appointment, required this.onTap});
+
+  final Map<String, dynamic> appointment;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: _isLightTheme(context)
+        ? const Color(0xFFF3F6FB)
+        : const Color(0xFF0A1426),
+    borderRadius: BorderRadius.circular(14),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0x333B9DFF)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 43,
+              height: 43,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFF168BFF).withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${appointment['time'] ?? '--:--'}',
+                style: const TextStyle(
+                  color: Color(0xFF8ACBFF),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${appointment['visitor'] ?? 'Visitante'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${appointment['company'] ?? 'Sin empresa'} · ${appointment['host'] ?? 'Sin anfitrión'}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: _isLightTheme(context)
+                  ? const Color(0xFF1769AA)
+                  : const Color(0xFF8ACBFF),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _DailyLogMovementCard extends StatelessWidget {
+  const _DailyLogMovementCard({
+    required this.entry,
+    required this.onTap,
+    required this.onQr,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> entry;
+  final VoidCallback onTap;
+  final VoidCallback onQr;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
+    final event = '${entry['event'] ?? 'Observaciones'}';
+    final accent = switch (event) {
+      'Ingreso' => const Color(0xFF60C6FF),
+      'Retiro' => const Color(0xFFFF7189),
+      'Llegada' => const Color(0xFF54D6B2),
+      _ => const Color(0xFF8ACBFF),
+    };
+    final reference = '${entry['details'] ?? ''}'.contains('Folio ')
+        ? '${entry['details']}'.split('Folio ').last.split(' ').first
+        : '';
+    final appointmentId = entry['appointmentId'];
+    return Material(
+      color: isLight ? Colors.white : const Color(0xFF111D35),
+      borderRadius: BorderRadius.circular(17),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(17),
+        child: Container(
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(17),
+            border: Border.all(color: accent.withValues(alpha: .32)),
+            color: isLight ? Colors.white : null,
+            gradient: isLight
+                ? null
+                : const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF17243D), Color(0xFF0C1628)],
+                  ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: .15),
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Icon(
+                      switch (event) {
+                        'Ingreso' => Icons.login_rounded,
+                        'Retiro' => Icons.logout_rounded,
+                        'Llegada' => Icons.call_received_rounded,
+                        _ => Icons.notes_rounded,
+                      },
+                      color: accent,
+                      size: 19,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${entry['person'] ?? 'Visitante'}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${entry['company'] ?? 'Público general'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: .12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: accent.withValues(alpha: .38)),
+                    ),
+                    child: Text(
+                      event == 'Ingreso'
+                          ? 'Entrada'
+                          : event == 'Retiro'
+                          ? 'Salida'
+                          : event,
+                      style: TextStyle(
+                        color: accent,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 7,
+                runSpacing: 6,
+                children: [
+                  _LogInfoBadge(
+                    icon: Icons.schedule_rounded,
+                    label: '${entry['date'] ?? ''} · ${entry['time'] ?? ''}',
+                  ),
+                  _LogInfoBadge(
+                    icon: Icons.person_outline_rounded,
+                    label: 'Anfitrión: ${entry['host'] ?? 'N/A'}',
+                  ),
+                  if (reference.isNotEmpty)
+                    _LogInfoBadge(
+                      icon: Icons.confirmation_number_outlined,
+                      label: 'Folio $reference',
+                    ),
+                ],
+              ),
+              if ('${entry['details'] ?? ''}'.isNotEmpty) ...[
+                const SizedBox(height: 7),
+                Text(
+                  '${entry['details']}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Registró: ${entry['actorName'] ?? 'Sin registro'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+                  if (appointmentId is num)
+                    IconButton(
+                      tooltip: 'Ver QR de visita',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onQr,
+                      icon: const Icon(
+                        Icons.qr_code_2_rounded,
+                        color: Color(0xFF8ACBFF),
+                        size: 20,
+                      ),
+                    ),
+                  if (onDelete != null)
+                    IconButton(
+                      tooltip: 'Eliminar movimiento',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onDelete,
+                      icon: const Icon(
+                        Icons.delete_outline_rounded,
+                        color: Color(0xFFFF7189),
+                        size: 20,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogInfoBadge extends StatelessWidget {
+  const _LogInfoBadge({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+    decoration: BoxDecoration(
+      color: _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
+      borderRadius: BorderRadius.circular(9),
+      border: Border.all(color: const Color(0x223D9DFF)),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 12, color: const Color(0xFF68B7FF)),
+        const SizedBox(width: 5),
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: _secondaryTextColor(context), fontSize: 9),
+        ),
+      ],
+    ),
+  );
+}
+
+class _LogMetric extends StatelessWidget {
+  const _LogMetric({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.accent,
+  });
+
+  final String label, value;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+    decoration: BoxDecoration(
+      color: _isLightTheme(context) ? const Color(0xFFF3F7FC) : null,
+      gradient: _isLightTheme(context)
+          ? null
+          : const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF142B49), Color(0xFF0D1D33)],
+            ),
+      borderRadius: BorderRadius.circular(13),
+      border: Border.all(color: accent.withValues(alpha: .42)),
+      boxShadow: [
+        BoxShadow(
+          color: accent.withValues(alpha: .09),
+          blurRadius: 10,
+          offset: const Offset(0, 3),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        Container(
+          key: ValueKey('log-metric-icon-$label'),
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: .15),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: accent, size: 19),
+        ),
+        const SizedBox(width: 9),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: TextStyle(
+                  color: _primaryTextColor(context),
+                  fontSize: 17,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                  shadows: [
+                    Shadow(color: accent.withValues(alpha: .45), blurRadius: 9),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _DailyLogEntryForm extends StatefulWidget {
-  const _DailyLogEntryForm({required this.appointments, required this.date});
-  final List<Map<String, dynamic>> appointments;
+  const _DailyLogEntryForm({
+    required this.staff,
+    required this.visitors,
+    required this.date,
+  });
+  final List<Map<String, dynamic>> staff;
+  final List<Map<String, dynamic>> visitors;
   final DateTime date;
   @override
   State<_DailyLogEntryForm> createState() => _DailyLogEntryFormState();
 }
 
 class _DailyLogEntryFormState extends State<_DailyLogEntryForm> {
-  final _formKey = GlobalKey<FormState>();
   final _person = TextEditingController();
   final _details = TextEditingController();
-  String _event = 'Llegada';
-  int? _appointmentId;
+  String _kind = 'Externo';
+  Map<String, dynamic>? _selectedStaff;
+  Map<String, dynamic>? _selectedVisitor;
+
+  String get _selectedPerson => _kind == 'Externo'
+      ? '${_selectedStaff?['fullName'] ?? ''}'
+      : _kind == 'Visitante'
+      ? '${_selectedVisitor?['fullName'] ?? ''}'
+      : _person.text.trim();
+
+  Future<void> _selectRecord(
+    List<Map<String, dynamic>> options, {
+    required bool staff,
+  }) async {
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _LogRecordPicker(
+        title: staff ? 'Personal externo' : 'Visitante registrado',
+        subtitle: staff
+            ? 'Selecciona a la persona que llega'
+            : 'Selecciona a la persona visitante',
+        records: options,
+        companyKey: staff ? 'companyName' : null,
+        metaKey: staff ? 'relationshipType' : 'phone',
+      ),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      if (staff) {
+        _selectedStaff = selected;
+      } else {
+        _selectedVisitor = selected;
+      }
+    });
+  }
+
   @override
   void dispose() {
     _person.dispose();
@@ -4878,122 +7861,1919 @@ class _DailyLogEntryFormState extends State<_DailyLogEntryForm> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    backgroundColor: _panelBackground,
-    title: const Text(
-      'Registrar movimiento',
-      style: TextStyle(color: Colors.white),
-    ),
-    content: SizedBox(
-      width: 440,
-      child: Form(
-        key: _formKey,
+  Widget build(BuildContext context) {
+    final selectedRecord = _kind == 'Externo'
+        ? _selectedStaff
+        : _selectedVisitor;
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 450),
+        decoration: BoxDecoration(
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: const Color(0x663D9DFF)),
+        ),
         child: SingleChildScrollView(
+          padding: const EdgeInsets.all(18),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              DropdownButtonFormField<String>(
-                initialValue: _event,
-                dropdownColor: _panelBackground,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Movimiento',
-                  labelStyle: TextStyle(color: _muted),
-                ),
-                items: const ['Llegada', 'Ingreso', 'Retiro', 'Observaciones']
-                    .map((v) => DropdownMenuItem(value: v, child: Text(v)))
-                    .toList(),
-                onChanged: (value) => setState(() => _event = value ?? _event),
+              const _LogDialogHeader(
+                icon: Icons.how_to_reg_rounded,
+                title: 'Registrar llegada',
+                subtitle: 'Captura una visita sin cita programada.',
               ),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<int?>(
-                initialValue: _appointmentId,
-                dropdownColor: _panelBackground,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Vincular cita (opcional)',
-                  labelStyle: TextStyle(color: _muted),
+              const SizedBox(height: 16),
+              Text(
+                '¿A quién vas a registrar?',
+                style: TextStyle(
+                  color: _primaryTextColor(context),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
                 ),
-                items: [
-                  const DropdownMenuItem<int?>(
-                    value: null,
-                    child: Text('Registro manual'),
-                  ),
-                  ...widget.appointments
-                      .where(
-                        (a) =>
-                            a['status'] != 'Cancelada' &&
-                            a['status'] != 'Retirado',
-                      )
-                      .map(
-                        (a) => DropdownMenuItem<int?>(
-                          value: a['id'] as int,
-                          child: Text(
-                            '${a['visitor']} · ${a['date']}',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
+              ),
+              const SizedBox(height: 9),
+              Wrap(
+                spacing: 7,
+                runSpacing: 7,
+                children: [
+                  for (final option in const [
+                    ('Externo', Icons.badge_outlined),
+                    ('Visitante', Icons.person_outline_rounded),
+                    ('Manual', Icons.edit_note_rounded),
+                  ])
+                    _LogChoiceChip(
+                      label: option.$1,
+                      icon: option.$2,
+                      selected: _kind == option.$1,
+                      onTap: () => setState(() {
+                        _kind = option.$1;
+                        _selectedStaff = null;
+                        _selectedVisitor = null;
+                      }),
+                    ),
                 ],
-                onChanged: (value) => setState(() => _appointmentId = value),
               ),
-              if (_appointmentId == null)
+              const SizedBox(height: 12),
+              if (_kind == 'Externo')
+                _LogRecordSelector(
+                  icon: Icons.engineering_outlined,
+                  title: _selectedStaff == null
+                      ? 'Elegir personal externo'
+                      : '${_selectedStaff!['fullName']}',
+                  subtitle: _selectedStaff == null
+                      ? '${widget.staff.length} personas disponibles'
+                      : '${_selectedStaff!['companyName'] ?? 'Empresa externa'} · ${_selectedStaff!['relationshipType'] ?? 'Contratista'}',
+                  onTap: widget.staff.isEmpty
+                      ? null
+                      : () => _selectRecord(widget.staff, staff: true),
+                )
+              else if (_kind == 'Visitante')
+                _LogRecordSelector(
+                  icon: Icons.person_search_rounded,
+                  title: _selectedVisitor == null
+                      ? 'Elegir visitante registrado'
+                      : '${_selectedVisitor!['fullName']}',
+                  subtitle: _selectedVisitor == null
+                      ? '${widget.visitors.length} personas disponibles'
+                      : '${_selectedVisitor!['phone'] ?? 'Sin teléfono'} · Público general',
+                  onTap: widget.visitors.isEmpty
+                      ? null
+                      : () => _selectRecord(widget.visitors, staff: false),
+                )
+              else
+                _LogTextField(
+                  controller: _person,
+                  label: 'Nombre de la persona',
+                  hint: 'Escribe el nombre completo',
+                  icon: Icons.person_outline_rounded,
+                  onChanged: (_) => setState(() {}),
+                ),
+              if (selectedRecord == null &&
+                  _kind != 'Manual' &&
+                  (_kind == 'Externo' ? widget.staff : widget.visitors).isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: TextFormField(
-                    controller: _person,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre de la persona',
-                      labelStyle: TextStyle(color: _muted),
+                  child: Text(
+                    'No hay registros disponibles. Usa captura manual para continuar.',
+                    style: const TextStyle(
+                      color: Color(0xFFFFC078),
+                      fontSize: 11,
                     ),
-                    validator: (value) => value == null || value.trim().isEmpty
-                        ? 'Indica el nombre o vincula una cita'
-                        : null,
                   ),
                 ),
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: TextField(
-                  controller: _details,
-                  maxLines: 3,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Observaciones',
-                    labelStyle: TextStyle(color: _muted),
+              const SizedBox(height: 11),
+              _LogTextField(
+                controller: _details,
+                label: 'Motivo o notas',
+                hint: 'Agrega un detalle para recepción (opcional)',
+                icon: Icons.notes_rounded,
+                maxLines: 3,
+              ),
+              const SizedBox(height: 11),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(11),
+                decoration: BoxDecoration(
+                  color: _logInsetColor(context),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(color: const Color(0x293D9DFF)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      color: Color(0xFF68B7FF),
+                      size: 18,
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Este registro crea una llegada; la entrada se confirma por separado.',
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 15),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: _logOutlinedButtonStyle(context),
+                      child: const Text('Cancelar'),
+                    ),
                   ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed: _selectedPerson.isEmpty
+                          ? null
+                          : () {
+                              final now = TimeOfDay.now();
+                              Navigator.pop(context, <String, Object?>{
+                                'event': 'Llegada',
+                                'date': _dateString(widget.date),
+                                'time':
+                                    '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+                                'personName': _selectedPerson,
+                                'details': _details.text.trim(),
+                                'appointmentId': null,
+                                'externalStaffId': _kind == 'Externo'
+                                    ? (_selectedStaff?['id'])
+                                    : null,
+                                'visitorRecordId': _kind == 'Visitante'
+                                    ? (_selectedVisitor?['id'])
+                                    : null,
+                                'sourceEntryId': null,
+                              });
+                            },
+                      icon: const Icon(Icons.check_rounded, size: 18),
+                      label: const Text('Registrar'),
+                      style: _logPrimaryButtonStyle(context),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LogDialogHeader extends StatelessWidget {
+  const _LogDialogHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          color: const Color(0xFF168BFF).withValues(alpha: .15),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Icon(icon, color: const Color(0xFF73BEFF)),
+      ),
+      const SizedBox(width: 11),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                color: _primaryTextColor(context),
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              subtitle,
+              style: TextStyle(
+                color: _secondaryTextColor(context),
+                fontSize: 10,
+              ),
+            ),
+          ],
+        ),
+      ),
+      IconButton(
+        tooltip: 'Cerrar',
+        onPressed: () => Navigator.pop(context),
+        icon: Icon(Icons.close_rounded, color: _secondaryTextColor(context)),
+      ),
+    ],
+  );
+}
+
+class _LogChoiceChip extends StatelessWidget {
+  const _LogChoiceChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? colors.primary : _logInsetColor(context),
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: selected ? colors.primary : const Color(0x333D9DFF),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 15,
+                color: selected
+                    ? colors.onPrimary
+                    : _isLightTheme(context)
+                    ? const Color(0xFF1769AA)
+                    : const Color(0xFFB4DFFF),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected
+                      ? colors.onPrimary
+                      : _primaryTextColor(context),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
             ],
           ),
         ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancelar'),
+    );
+  }
+}
+
+class _LogRecordSelector extends StatelessWidget {
+  const _LogRecordSelector({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: _logInsetColor(context),
+    borderRadius: BorderRadius.circular(14),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0x443D9DFF)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFF69B8FF)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, color: Color(0xFF8ACBFF)),
+          ],
+        ),
       ),
-      FilledButton(
-        onPressed: () {
-          if (!_formKey.currentState!.validate()) return;
-          final now = TimeOfDay.now();
-          Navigator.pop(context, <String, Object?>{
-            'event': _event,
-            'date': _dateString(widget.date),
-            'time':
-                '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
-            'personName': _person.text.trim(),
-            'details': _details.text.trim(),
-            'appointmentId': _appointmentId,
-            'externalStaffId': null,
-            'visitorRecordId': null,
-            'sourceEntryId': null,
-          });
-        },
-        child: const Text('Guardar movimiento'),
+    ),
+  );
+}
+
+class _LogTextField extends StatelessWidget {
+  const _LogTextField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.icon,
+    this.maxLines = 1,
+    this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final IconData icon;
+  final int maxLines;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: TextStyle(
+          color: _secondaryTextColor(context),
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 6),
+      TextField(
+        controller: controller,
+        onChanged: onChanged,
+        maxLines: maxLines,
+        style: TextStyle(color: _primaryTextColor(context), fontSize: 12),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: TextStyle(
+            color: _secondaryTextColor(context),
+            fontSize: 11,
+          ),
+          prefixIcon: Icon(icon, color: const Color(0xFF68B7FF), size: 19),
+          filled: true,
+          fillColor: _logInsetColor(context),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 12,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(13),
+            borderSide: BorderSide(color: _logBorderColor(context)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(13),
+            borderSide: BorderSide(color: _logBorderColor(context)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(13),
+            borderSide: const BorderSide(color: Color(0xFF4AA8FF)),
+          ),
+        ),
       ),
     ],
+  );
+}
+
+class _LogRecordPicker extends StatefulWidget {
+  const _LogRecordPicker({
+    required this.title,
+    required this.subtitle,
+    required this.records,
+    required this.companyKey,
+    required this.metaKey,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<Map<String, dynamic>> records;
+  final String? companyKey;
+  final String? metaKey;
+
+  @override
+  State<_LogRecordPicker> createState() => _LogRecordPickerState();
+}
+
+class _LogRecordPickerState extends State<_LogRecordPicker> {
+  String _query = '';
+  late final TextEditingController _queryController = TextEditingController(
+    text: _query,
+  );
+
+  @override
+  void dispose() {
+    _queryController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final filtered = widget.records.where((record) {
+      final name = '${record['fullName'] ?? ''}';
+      final company = widget.companyKey == null
+          ? ''
+          : '${record[widget.companyKey] ?? ''}';
+      return '$name $company'.toLowerCase().contains(query);
+    }).toList();
+    return SafeArea(
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * .78,
+        ),
+        decoration: BoxDecoration(
+          color: _logDialogColor(context),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(17, 15, 17, 10),
+              child: _LogDialogHeader(
+                icon: Icons.people_alt_outlined,
+                title: widget.title,
+                subtitle: widget.subtitle,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _LogTextField(
+                controller: _queryController,
+                label: 'Buscar persona',
+                hint: 'Nombre o empresa',
+                icon: Icons.search_rounded,
+                onChanged: (value) => setState(() => _query = value),
+              ),
+            ),
+            const SizedBox(height: 9),
+            Flexible(
+              child: filtered.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.all(22),
+                      child: Text(
+                        'No hay personas que coincidan.',
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
+                          fontSize: 12,
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 7),
+                      itemBuilder: (context, index) {
+                        final record = filtered[index];
+                        return _LogRecordSelector(
+                          icon: Icons.person_outline_rounded,
+                          title: '${record['fullName'] ?? 'Sin nombre'}',
+                          subtitle:
+                              '${widget.companyKey == null ? '' : '${record[widget.companyKey] ?? ''} · '}${widget.metaKey == null ? '' : record[widget.metaKey] ?? ''}',
+                          onTap: () => Navigator.pop(context, record),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AppointmentReceptionDialog extends StatefulWidget {
+  const _AppointmentReceptionDialog({
+    required this.appointment,
+    required this.authService,
+    this.externalStaffId,
+  });
+
+  final Map<String, dynamic> appointment;
+  final AuthService authService;
+  final int? externalStaffId;
+
+  @override
+  State<_AppointmentReceptionDialog> createState() =>
+      _AppointmentReceptionDialogState();
+}
+
+class _AppointmentReceptionDialogState
+    extends State<_AppointmentReceptionDialog> {
+  bool _loading = false;
+  String? _error;
+  List<Map<String, dynamic>> _employees = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.appointment['id'];
+    if (widget.appointment['businessPartnerId'] is num && id is num) {
+      _loadEmployees(id.toInt());
+    }
+  }
+
+  Future<void> _loadEmployees(int appointmentId) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final employees = await widget.authService.getAppointmentEmployees(
+        appointmentId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _employees = employees;
+        _loading = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.message;
+        _loading = false;
+      });
+    }
+  }
+
+  String? _eventForStatus(String status) => switch (status) {
+    'Pendiente' => 'Llegada',
+    'En proceso' => 'Ingreso',
+    'Dentro' => 'Retiro',
+    _ => null,
+  };
+
+  String _actionLabel(String event) => switch (event) {
+    'Llegada' => 'Registrar llegada',
+    'Ingreso' => 'Dar entrada',
+    'Retiro' => 'Registrar salida',
+    _ => 'Registrar movimiento',
+  };
+
+  bool _canEnter() =>
+      widget.appointment['equipmentChecklistRequired'] != true ||
+      widget.appointment['equipmentEntryChecklistComplete'] == true;
+
+  List<Map<String, dynamic>> get _visibleEmployees {
+    final staffId = widget.externalStaffId;
+    if (staffId == null) return _employees;
+    return _employees.where((employee) => employee['id'] == staffId).toList();
+  }
+
+  Widget _movementAction({
+    required String status,
+    required String person,
+    int? externalStaffId,
+  }) {
+    final event = _eventForStatus(status);
+    if (event == null) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(
+          color: _logInsetColor(context),
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Text(
+          status == 'Retirado' ? 'Visita concluida' : status,
+          style: TextStyle(color: _secondaryTextColor(context), fontSize: 9),
+        ),
+      );
+    }
+    final blocked = event == 'Ingreso' && !_canEnter();
+    return FilledButton(
+      onPressed: blocked
+          ? null
+          : () => Navigator.pop(context, <String, Object?>{
+              'event': event,
+              'person': person,
+              'externalStaffId': externalStaffId,
+            }),
+      style: _logPrimaryButtonStyle(
+        context,
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+      ),
+      child: Text(
+        _actionLabel(event),
+        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appointment = widget.appointment;
+    final appointmentStatus = '${appointment['status'] ?? 'Pendiente'}';
+    final partner = appointment['businessPartnerId'] is num;
+    final title = partner
+        ? '${appointment['company'] ?? 'Empresa externa'}'
+        : '${appointment['visitor'] ?? 'Visitante'}';
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * .86,
+        ),
+        decoration: BoxDecoration(
+          color: _logDialogColor(context),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: _logBorderColor(context)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(
+                alpha: _isLightTheme(context) ? .08 : .4,
+              ),
+              blurRadius: 28,
+              offset: const Offset(0, 14),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(height: 4, color: const Color(0xFFE32636)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 11, 8, 10),
+              child: _LogDialogHeader(
+                icon: Icons.event_available_rounded,
+                title: 'Cita programada',
+                subtitle:
+                    '${appointment['date'] ?? ''} · ${appointment['time'] ?? ''}',
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(15, 13, 15, 15),
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: _logInsetColor(context),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: _logBorderColor(context)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              partner
+                                  ? Icons.business_rounded
+                                  : Icons.person_rounded,
+                              color: const Color(0xFF71BFFF),
+                              size: 20,
+                            ),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: TextStyle(
+                                  color: _primaryTextColor(context),
+                                  fontSize: 15,
+                                  height: 1.2,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            _AppointmentStatusBadge(
+                              label: appointmentStatus,
+                              color: appointmentStatus == 'Cancelada'
+                                  ? const Color(0xFFFF7189)
+                                  : const Color(0xFF65C8A6),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 11),
+                        Divider(height: 1, color: _logBorderColor(context)),
+                        const SizedBox(height: 9),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.person_outline_rounded,
+                              color: _secondaryTextColor(context),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 7),
+                            Expanded(
+                              child: Text(
+                                'Anfitrión: ${appointment['host'] ?? 'Sin asignar'}',
+                                style: TextStyle(
+                                  color: _secondaryTextColor(context),
+                                  fontSize: 11,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if ('${appointment['reason'] ?? ''}'.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.notes_rounded,
+                                color: _secondaryTextColor(context),
+                                size: 16,
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  'Motivo: ${appointment['reason']}',
+                                  style: TextStyle(
+                                    color: _secondaryTextColor(context),
+                                    fontSize: 11,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (partner) ...[
+                    const SizedBox(height: 13),
+                    Text(
+                      'PERSONAL EXTERNO',
+                      style: TextStyle(
+                        color: _isLightTheme(context)
+                            ? const Color(0xFF1769AA)
+                            : const Color(0xFF78BFFF),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    if (_loading)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    else if (_error != null)
+                      Container(
+                        padding: const EdgeInsets.all(11),
+                        decoration: BoxDecoration(
+                          color: const Color(0x33FF7189),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: Text(
+                          'No se pudo cargar el personal: $_error',
+                          style: const TextStyle(
+                            color: Color(0xFFFFA1B2),
+                            fontSize: 10,
+                          ),
+                        ),
+                      )
+                    else if (_visibleEmployees.isEmpty)
+                      Text(
+                        'No encontramos a esa persona entre el personal asociado a la cita.',
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
+                          fontSize: 11,
+                        ),
+                      )
+                    else
+                      for (final employee in _visibleEmployees) ...[
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 7),
+                          padding: const EdgeInsets.all(11),
+                          decoration: BoxDecoration(
+                            color: _logInsetColor(context),
+                            borderRadius: BorderRadius.circular(13),
+                            border: Border.all(color: _logBorderColor(context)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 34,
+                                    height: 34,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF168BFF)
+                                          .withValues(alpha: .14),
+                                      borderRadius: BorderRadius.circular(11),
+                                    ),
+                                    child: const Icon(
+                                      Icons.person_outline_rounded,
+                                      color: Color(0xFF78BFFF),
+                                      size: 19,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 9),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${employee['fullName'] ?? 'Personal externo'}',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: _primaryTextColor(context),
+                                            fontSize: 12,
+                                            height: 1.2,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          '${employee['status'] ?? 'Pendiente'}',
+                                          style: TextStyle(
+                                            color: _secondaryTextColor(context),
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              SizedBox(
+                                width: double.infinity,
+                                child: _movementAction(
+                                  status:
+                                      '${employee['status'] ?? 'Pendiente'}',
+                                  person: '${employee['fullName'] ?? title}',
+                                  externalStaffId: employee['id'] is num
+                                      ? (employee['id'] as num).toInt()
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    if (appointment['equipmentChecklistRequired'] == true &&
+                        !_canEnter())
+                      Container(
+                        margin: const EdgeInsets.only(top: 5),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0x33FFC078),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const Text(
+                          'Completa el checklist de equipo de la cita antes de registrar la entrada.',
+                          style: TextStyle(
+                            color: Color(0xFFFFD29A),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                  ] else ...[
+                    const SizedBox(height: 13),
+                    _movementAction(
+                      status: appointmentStatus,
+                      person: '${appointment['visitor'] ?? 'Visitante'}',
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DailyLogEntryDetailDialog extends StatelessWidget {
+  const _DailyLogEntryDetailDialog({required this.entry, this.appointment});
+
+  final Map<String, dynamic> entry;
+  final Map<String, dynamic>? appointment;
+
+  @override
+  Widget build(BuildContext context) {
+    final event = '${entry['event'] ?? ''}';
+    final nextEvent = event == 'Llegada'
+        ? 'Ingreso'
+        : event == 'Ingreso'
+        ? 'Retiro'
+        : null;
+    final actionText = nextEvent == 'Ingreso'
+        ? 'Dar entrada'
+        : nextEvent == 'Retiro'
+        ? 'Registrar salida'
+        : 'Cerrar';
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 430),
+        padding: const EdgeInsets.all(17),
+        decoration: BoxDecoration(
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: const Color(0x663D9DFF)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _LogDialogHeader(
+              icon: Icons.fact_check_outlined,
+              title: 'Detalle del movimiento',
+              subtitle: 'Consulta la visita y registra el siguiente paso.',
+            ),
+            const SizedBox(height: 13),
+            _DailyLogMovementCard(
+              entry: entry,
+              onTap: () {},
+              onQr: () {},
+              onDelete: null,
+            ),
+            if (appointment != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Cita · ${appointment!['date'] ?? ''} · ${appointment!['time'] ?? ''}',
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
+                  fontSize: 10,
+                ),
+              ),
+            ],
+            const SizedBox(height: 13),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: _logOutlinedButtonStyle(context),
+                    child: const Text('Cerrar'),
+                  ),
+                ),
+                if (nextEvent != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed: () => Navigator.pop(context, nextEvent),
+                      icon: Icon(
+                        nextEvent == 'Ingreso'
+                            ? Icons.login_rounded
+                            : Icons.logout_rounded,
+                        size: 17,
+                      ),
+                      label: Text(actionText),
+                      style: _logPrimaryButtonStyle(context),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DailyLogQrScanner extends StatefulWidget {
+  const _DailyLogQrScanner();
+
+  @override
+  State<_DailyLogQrScanner> createState() => _DailyLogQrScannerState();
+}
+
+class _DailyLogQrScannerState extends State<_DailyLogQrScanner> {
+  bool _handled = false;
+
+  @override
+  Widget build(BuildContext context) => Dialog(
+    backgroundColor: Colors.transparent,
+    insetPadding: const EdgeInsets.all(18),
+    child: Container(
+      constraints: const BoxConstraints(maxWidth: 480, maxHeight: 620),
+      decoration: BoxDecoration(
+        color: _logDialogColor(context),
+        borderRadius: BorderRadius.circular(23),
+        border: Border.all(color: _logBorderColor(context)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 9),
+            child: _LogDialogHeader(
+              icon: Icons.qr_code_scanner_rounded,
+              title: 'Escanear pase',
+              subtitle: 'Centra el código QR dentro del recuadro.',
+            ),
+          ),
+          Flexible(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                MobileScanner(
+                  onDetect: (capture) {
+                    if (_handled) return;
+                    final value = capture.barcodes
+                        .map((barcode) => barcode.rawValue)
+                        .whereType<String>()
+                        .firstOrNull;
+                    if (value == null || value.isEmpty) return;
+                    _handled = true;
+                    Navigator.pop(context, value);
+                  },
+                ),
+                IgnorePointer(
+                  child: Container(
+                    width: 235,
+                    height: 235,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: const Color(0xFF75C4FF),
+                        width: 3,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: _logOutlinedButtonStyle(context),
+                child: const Text('Cancelar escaneo'),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _VisitorRegistrationReceptionDialog extends StatefulWidget {
+  const _VisitorRegistrationReceptionDialog({
+    required this.registration,
+    required this.authService,
+    required this.isAdmin,
+    required this.isInside,
+  });
+
+  final Map<String, dynamic> registration;
+  final AuthService authService;
+  final bool isAdmin;
+  final bool? isInside;
+
+  @override
+  State<_VisitorRegistrationReceptionDialog> createState() =>
+      _VisitorRegistrationReceptionDialogState();
+}
+
+class _VisitorRegistrationReceptionDialogState
+    extends State<_VisitorRegistrationReceptionDialog> {
+  bool _busy = false;
+
+  Map<String, dynamic> get _registration => widget.registration;
+  List<Map<String, dynamic>> get _items =>
+      (_registration['items'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  bool get _readOnly {
+    if (widget.isAdmin) return false;
+    final createdAt = '${_registration['createdAt'] ?? ''}';
+    return !createdAt.startsWith(_dateString(DateTime.now()));
+  }
+
+  Future<void> _process(String action) async {
+    List<Map<String, Object?>>? items;
+    if (action == 'complete-entry-checklist' ||
+        action == 'complete-exit-checklist') {
+      final retainedIds = <int>{};
+      for (final inspection
+          in (_registration['inspections'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()) {
+        if (inspection['phase'] != 'Entrada') continue;
+        for (final item
+            in (inspection['items'] as List? ?? const [])
+                .whereType<Map<String, dynamic>>()) {
+          if (item['keepAtReception'] == true && item['itemId'] is num) {
+            retainedIds.add((item['itemId'] as num).toInt());
+          }
+        }
+      }
+      items = await showDialog<List<Map<String, Object?>>>(
+        context: context,
+        builder: (_) => _VisitorChecklistDialog(
+          title: action == 'complete-entry-checklist'
+              ? 'Checklist de entrada'
+              : 'Checklist de salida',
+          phase: action == 'complete-entry-checklist' ? 'Entrada' : 'Salida',
+          items: _items,
+          retainedIds: retainedIds,
+        ),
+      );
+      if (items == null || !mounted) return;
+    } else if (action == 'reject') {
+      final confirmed = await _confirmAction(
+        context,
+        title: 'Rechazar visita',
+        message:
+            '¿Rechazar el registro de ${_registration['visitorName'] ?? 'esta persona'}?',
+        confirmLabel: 'Rechazar',
+      );
+      if (!confirmed || !mounted) return;
+    }
+
+    final id = _registration['id'];
+    if (id is! num || id <= 0) {
+      _showMessage(
+        context,
+        'El registro seleccionado no es válido.',
+        error: true,
+      );
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await widget.authService.updateVisitorKioskRegistration(
+        id.toInt(),
+        action: action,
+        items: items,
+      );
+      if (!mounted) return;
+      final successMessage = switch (action) {
+        'authorize' => 'Visita autorizada.',
+        'reject' => 'Registro rechazado.',
+        'complete-entry-checklist' => 'Checklist de entrada completado.',
+        _ => 'Checklist de salida completado.',
+      };
+      _showMessage(context, successMessage);
+      Navigator.pop(context, true);
+    } on AuthApiException catch (error) {
+      if (mounted) {
+        setState(() => _busy = false);
+        _showMessage(context, error.message, error: true);
+      }
+    }
+  }
+
+  Future<void> _recordExit() async {
+    final visitorRecordId = _registration['visitorRecordId'];
+    if (visitorRecordId is! num || visitorRecordId <= 0) {
+      _showMessage(
+        context,
+        'El registro de visitante no es válido.',
+        error: true,
+      );
+      return;
+    }
+    final now = DateTime.now();
+    setState(() => _busy = true);
+    try {
+      await widget.authService.createDailyLogEntry({
+        'event': 'Retiro',
+        'date': _dateString(now),
+        'time':
+            '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+        'personName': '${_registration['visitorName'] ?? 'Visitante'}',
+        'details':
+            'Registro manual · Folio ${_registration['folio'] ?? ''} · Salida registrada',
+        'appointmentId': null,
+        'externalStaffId': null,
+        'visitorRecordId': visitorRecordId.toInt(),
+        'sourceEntryId': null,
+      });
+      if (!mounted) return;
+      _showMessage(context, 'Salida registrada correctamente.');
+      Navigator.pop(context, true);
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _showMessage(context, error.message, error: true);
+    }
+  }
+
+  Widget _actionButton({
+    required String label,
+    required IconData icon,
+    required Color color,
+    required VoidCallback? onPressed,
+    bool primary = false,
+  }) => primary
+      ? FilledButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon, size: 17),
+          label: Text(label),
+          style:
+              _logPrimaryButtonStyle(
+                context,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 11,
+                ),
+              ).copyWith(
+                textStyle: const WidgetStatePropertyAll(
+                  TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+                ),
+              ),
+        )
+      : OutlinedButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon, size: 17),
+          label: Text(label),
+          style:
+              _logOutlinedButtonStyle(
+                context,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 11,
+                ),
+              ).copyWith(
+                foregroundColor: WidgetStatePropertyAll(color),
+                side: WidgetStatePropertyAll(
+                  BorderSide(color: color.withValues(alpha: .55)),
+                ),
+                textStyle: const WidgetStatePropertyAll(
+                  TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+                ),
+              ),
+        );
+
+  @override
+  Widget build(BuildContext context) {
+    final authorization =
+        '${_registration['authorizationStatus'] ?? 'Pendiente'}';
+    final entryComplete = _registration['entryChecklistComplete'] == true;
+    final exitComplete = _registration['exitChecklistComplete'] == true;
+    final hasItems = _items.isNotEmpty;
+    final isPending = authorization == 'Pendiente';
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * .9,
+        ),
+        decoration: BoxDecoration(
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: const Color(0x663D9DFF)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 11, 8, 8),
+              child: _LogDialogHeader(
+                icon: Icons.how_to_reg_rounded,
+                title: 'Registro de visitante',
+                subtitle: 'Folio ${_registration['folio'] ?? 'Sin folio'}',
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(13),
+                    decoration: BoxDecoration(
+                      color: _logInsetColor(context),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0x333D9DFF)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${_registration['visitorName'] ?? 'Visitante'}',
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        _LogInfoBadge(
+                          icon: Icons.business_outlined,
+                          label:
+                              '${_registration['companyName'] ?? 'Sin empresa'}',
+                        ),
+                        const SizedBox(height: 6),
+                        _LogInfoBadge(
+                          icon: Icons.badge_outlined,
+                          label:
+                              'Identificación: ${_registration['identificationType'] ?? 'No indicada'}',
+                        ),
+                        const SizedBox(height: 6),
+                        _LogInfoBadge(
+                          icon: Icons.flag_outlined,
+                          label: 'Estado: $authorization',
+                        ),
+                        if ('${_registration['visitReason'] ?? ''}'
+                            .isNotEmpty) ...[
+                          const SizedBox(height: 9),
+                          Text(
+                            'Motivo: ${_registration['visitReason']}',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (_readOnly) ...[
+                    const SizedBox(height: 9),
+                    const _LogNotice(
+                      text: 'Registro histórico: solo Administración puede realizar cambios.',
+                      color: Color(0xFFFFC078),
+                    ),
+                  ],
+                  if (_items.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'EQUIPO Y HERRAMIENTAS DECLARADOS',
+                      style: TextStyle(
+                        color: _isLightTheme(context)
+                            ? const Color(0xFF1769AA)
+                            : const Color(0xFF68B7FF),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    for (final item in _items)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: _logInsetColor(context),
+                          borderRadius: BorderRadius.circular(11),
+                          border: Border.all(color: const Color(0x223D9DFF)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              item['type'] == 'Herramienta'
+                                  ? Icons.handyman_outlined
+                                  : Icons.devices_other_rounded,
+                              color: const Color(0xFF68B7FF),
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${item['description'] ?? 'Artículo'}',
+                                    style: TextStyle(
+                                      color: _primaryTextColor(context),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${item['brand'] ?? ''} ${item['model'] ?? ''} · Cantidad ${item['quantity'] ?? 1}',
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                  if ('${item['serialNumber'] ?? ''}'
+                                      .isNotEmpty)
+                                    Text(
+                                      'Serie: ${item['serialNumber']}',
+                                      style: TextStyle(
+                                        color: _secondaryTextColor(context),
+                                        fontSize: 9,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                  if (!_readOnly &&
+                      authorization == 'Autorizada' &&
+                      hasItems) ...[
+                    const SizedBox(height: 9),
+                    if (!entryComplete)
+                      _actionButton(
+                        label: 'Revisar entrada',
+                        icon: Icons.login_rounded,
+                        color: const Color(0xFF168BFF),
+                        primary: true,
+                        onPressed: _busy
+                            ? null
+                            : () => _process('complete-entry-checklist'),
+                      ),
+                    if (entryComplete && !exitComplete)
+                      _actionButton(
+                        label: 'Revisar salida',
+                        icon: Icons.logout_rounded,
+                        color: const Color(0xFFFF536D),
+                        onPressed: _busy
+                            ? null
+                            : () => _process('complete-exit-checklist'),
+                      ),
+                    if (entryComplete && !exitComplete)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 5),
+                        child: Text(
+                          'La salida se registra al completar el checklist.',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 9,
+                          ),
+                        ),
+                      ),
+                  ],
+                  if (!_readOnly &&
+                      authorization == 'Autorizada' &&
+                      !hasItems) ...[
+                    const SizedBox(height: 9),
+                    if (widget.isInside == true)
+                      _actionButton(
+                        label: 'Registrar salida',
+                        icon: Icons.logout_rounded,
+                        color: const Color(0xFFFF536D),
+                        onPressed: _busy ? null : _recordExit,
+                      )
+                    else
+                      _LogNotice(
+                        text: widget.isInside == false
+                            ? 'No hay una entrada activa para este visitante hoy.'
+                            : 'No se pudo confirmar su estado actual; revisa la bitácora antes de registrar la salida.',
+                        color: const Color(0xFFFFC078),
+                      ),
+                  ],
+                  if (_registration['audit'] is List &&
+                      (_registration['audit'] as List).isNotEmpty) ...[
+                    const SizedBox(height: 13),
+                    Text(
+                      'HISTORIAL',
+                      style: TextStyle(
+                        color: _isLightTheme(context)
+                            ? const Color(0xFF1769AA)
+                            : const Color(0xFF68B7FF),
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final event
+                        in (_registration['audit'] as List)
+                            .whereType<Map<String, dynamic>>()
+                            .take(5))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Text(
+                          '${event['action'] ?? 'Actualización'} · ${event['actorName'] ?? 'Recepción'} · ${event['createdAt'] ?? ''}',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 9,
+                          ),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+            if (isPending && !_readOnly)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _actionButton(
+                        label: 'Rechazar',
+                        icon: Icons.block_rounded,
+                        color: const Color(0xFFFF7189),
+                        onPressed: _busy ? null : () => _process('reject'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: _actionButton(
+                        label: 'Autorizar visita',
+                        icon: Icons.verified_rounded,
+                        color: const Color(0xFF168BFF),
+                        primary: true,
+                        onPressed: _busy ? null : () => _process('authorize'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : () => Navigator.pop(context),
+                    style: _logOutlinedButtonStyle(context),
+                    child: Text(_busy ? 'Procesando...' : 'Cerrar'),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LogNotice extends StatelessWidget {
+  const _LogNotice({required this.text, required this.color});
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(10),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .12),
+      borderRadius: BorderRadius.circular(11),
+      border: Border.all(color: color.withValues(alpha: .35)),
+    ),
+    child: Text(
+      text,
+      style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700),
+    ),
+  );
+}
+
+class _VisitorChecklistDialog extends StatefulWidget {
+  const _VisitorChecklistDialog({
+    required this.title,
+    required this.phase,
+    required this.items,
+    required this.retainedIds,
+  });
+
+  final String title;
+  final String phase;
+  final List<Map<String, dynamic>> items;
+  final Set<int> retainedIds;
+
+  @override
+  State<_VisitorChecklistDialog> createState() =>
+      _VisitorChecklistDialogState();
+}
+
+class _VisitorChecklistDialogState extends State<_VisitorChecklistDialog> {
+  late final List<bool> _checked;
+  late final List<bool> _kept;
+  late final List<bool> _returned;
+  late final List<String> _results;
+  late final List<TextEditingController> _notes;
+
+  @override
+  void initState() {
+    super.initState();
+    _checked = List.filled(widget.items.length, false);
+    _kept = List.filled(widget.items.length, false);
+    _returned = List.filled(widget.items.length, false);
+    _results = List.filled(widget.items.length, 'Coincide');
+    _notes = List.generate(widget.items.length, (_) => TextEditingController());
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _notes) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  bool get _complete => _checked.every((value) => value);
+
+  @override
+  Widget build(BuildContext context) => Dialog(
+    backgroundColor: Colors.transparent,
+    insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+    child: Container(
+      constraints: BoxConstraints(
+        maxWidth: 480,
+        maxHeight: MediaQuery.sizeOf(context).height * .9,
+      ),
+      decoration: BoxDecoration(
+        color: _isLightTheme(context) ? Colors.white : null,
+        gradient: _isLightTheme(context)
+            ? null
+            : const LinearGradient(
+                colors: [Color(0xFF172844), Color(0xFF091426)],
+              ),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0x663D9DFF)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(15, 11, 8, 8),
+            child: _LogDialogHeader(
+              icon: widget.phase == 'Entrada'
+                  ? Icons.login_rounded
+                  : Icons.logout_rounded,
+              title: widget.title,
+              subtitle: 'Confirma cada artículo para continuar.',
+            ),
+          ),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              itemCount: widget.items.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                final item = widget.items[index];
+                final itemId = item['id'] is num
+                    ? (item['id'] as num).toInt()
+                    : 0;
+                final canReturn =
+                    widget.phase == 'Salida' &&
+                    widget.retainedIds.contains(itemId);
+                return Container(
+                  padding: const EdgeInsets.all(11),
+                  decoration: BoxDecoration(
+                    color: _logInsetColor(context),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(color: const Color(0x333D9DFF)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${item['description'] ?? 'Artículo'} · ${item['quantity'] ?? 1}',
+                              style: TextStyle(
+                                color: _primaryTextColor(context),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          Checkbox(
+                            value: _checked[index],
+                            activeColor: const Color(0xFF168BFF),
+                            onChanged: (value) => setState(
+                              () => _checked[index] = value ?? false,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        '${item['brand'] ?? ''} ${item['model'] ?? ''} · Serie ${item['serialNumber'] ?? 'N/A'}',
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
+                          fontSize: 9,
+                        ),
+                      ),
+                      const SizedBox(height: 7),
+                      Wrap(
+                        spacing: 5,
+                        runSpacing: 5,
+                        children: [
+                          for (final result in const [
+                            'Coincide',
+                            'Faltante',
+                            'Dañado',
+                          ])
+                            _LogChoiceChip(
+                              label: result,
+                              icon: result == 'Coincide'
+                                  ? Icons.check_circle_outline_rounded
+                                  : result == 'Faltante'
+                                  ? Icons.help_outline_rounded
+                                  : Icons.warning_amber_rounded,
+                              selected: _results[index] == result,
+                              onTap: () =>
+                                  setState(() => _results[index] = result),
+                            ),
+                        ],
+                      ),
+                      if (widget.phase == 'Entrada')
+                        CheckboxListTile(
+                          value: _kept[index],
+                          onChanged: (value) =>
+                              setState(() => _kept[index] = value ?? false),
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: const Color(0xFF168BFF),
+                          title: Text(
+                            'Resguardar en recepción',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                            ),
+                          ),
+                        )
+                      else if (canReturn)
+                        CheckboxListTile(
+                          value: _returned[index],
+                          onChanged: (value) =>
+                              setState(() => _returned[index] = value ?? false),
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          contentPadding: EdgeInsets.zero,
+                          activeColor: const Color(0xFF168BFF),
+                          title: Text(
+                            'Devolver artículo resguardado',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 3),
+                      TextField(
+                        controller: _notes[index],
+                        maxLength: 1000,
+                        style: TextStyle(
+                          color: _primaryTextColor(context),
+                          fontSize: 10,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: 'Observación opcional',
+                          hintStyle: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 10,
+                          ),
+                          counterText: '',
+                          isDense: true,
+                          filled: true,
+                          fillColor: _logInsetColor(context),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: _logOutlinedButtonStyle(context),
+                    child: const Text('Cancelar'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: FilledButton.icon(
+                    onPressed: _complete
+                        ? () => Navigator.pop(
+                            context,
+                            List<Map<String, Object?>>.generate(
+                              widget.items.length,
+                              (index) => {
+                                'itemId': (widget.items[index]['id'] as num)
+                                    .toInt(),
+                                'result': _results[index],
+                                'notes': _notes[index].text.trim(),
+                                'checked': true,
+                                'keepAtReception': _kept[index],
+                                'returnedToVisitor': _returned[index],
+                              },
+                            ),
+                          )
+                        : null,
+                    icon: const Icon(Icons.fact_check_rounded, size: 17),
+                    label: const Text('Completar revisión'),
+                    style: _logPrimaryButtonStyle(context),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
   );
 }
 
@@ -5002,11 +9782,13 @@ class ConnectedEquipmentPage extends StatefulWidget {
     required this.authService,
     required this.isAdmin,
     required this.canManage,
+    this.user,
     super.key,
   });
   final AuthService authService;
   final bool isAdmin;
   final bool canManage;
+  final AuthenticatedUser? user;
   @override
   State<ConnectedEquipmentPage> createState() => _ConnectedEquipmentPageState();
 }
@@ -5019,6 +9801,9 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
   String? _error;
   String _query = '';
   int _page = 1;
+  int _pages = 1;
+  int _total = 0;
+  int _pageSize = 5;
 
   @override
   void initState() {
@@ -5038,13 +9823,24 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
       _error = null;
     });
     try {
-      final values = await Future.wait([
+      final values = await Future.wait<Object>([
         widget.authService.getEquipmentDeclarations(query: _query, page: _page),
         widget.authService.getEquipmentOptions(),
       ]);
+      var declarationsPage = values[0] as EquipmentDeclarationsPage;
+      if (_page > declarationsPage.pages) {
+        declarationsPage = await widget.authService.getEquipmentDeclarations(
+          query: _query,
+          page: declarationsPage.pages,
+        );
+      }
       if (mounted) {
         setState(() {
-          _declarations = values[0] as List<Map<String, dynamic>>;
+          _declarations = declarationsPage.declarations;
+          _pages = declarationsPage.pages;
+          _total = declarationsPage.total;
+          _pageSize = declarationsPage.pageSize;
+          _page = declarationsPage.page;
           _options = values[1] as Map<String, dynamic>;
           _loading = false;
         });
@@ -5089,47 +9885,74 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
         result,
       );
       if (!mounted) return;
+      final token = created['token'];
+      if (token is! String || token.isEmpty) {
+        throw const AuthApiException('El servidor no generó un enlace válido.');
+      }
+      final responseLink = created['url'];
+      final declarationLink = responseLink is String && responseLink.isNotEmpty
+          ? responseLink
+          : widget.authService.equipmentDeclarationUrl(token);
       await showDialog<void>(
         context: context,
         builder: (_) => AlertDialog(
-          backgroundColor: _panelBackground,
-          title: const Text(
+          backgroundColor: _panelColor(context),
+          surfaceTintColor: Colors.transparent,
+          icon: const Icon(Icons.link_rounded, size: 28),
+          iconColor: const Color(0xFF168BFF),
+          title: Text(
             'Enlace generado',
-            style: TextStyle(color: Colors.white),
+            style: TextStyle(
+              color: _primaryTextColor(context),
+              fontWeight: FontWeight.w800,
+            ),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Declaración #${created['id']} para ${created['personName'] ?? ''}. Comparte este token con la persona:',
-                style: const TextStyle(color: _muted),
+                'Declaración #${created['id']} para ${created['personName'] ?? ''}. Comparte este enlace con la persona:',
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
+                  height: 1.4,
+                ),
               ),
               const SizedBox(height: 12),
-              SelectableText(
-                '${created['token'] ?? ''}',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _logInsetColor(context),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(color: _logBorderColor(context)),
+                ),
+                child: SelectableText(
+                  declarationLink,
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 'Vigencia: ${created['expiresInDays'] ?? 30} días',
-                style: const TextStyle(color: _muted, fontSize: 12),
+                style: TextStyle(
+                  color: _secondaryTextColor(context),
+                  fontSize: 12,
+                ),
               ),
             ],
           ),
           actions: [
             TextButton(
               onPressed: () async {
-                await Clipboard.setData(
-                  ClipboardData(text: '${created['token'] ?? ''}'),
-                );
+                await Clipboard.setData(ClipboardData(text: declarationLink));
                 if (!mounted) return;
                 Navigator.pop(context);
               },
-              child: const Text('Copiar token'),
+              child: const Text('Copiar enlace'),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context),
@@ -5170,6 +9993,9 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
   }
 
   Future<void> _delete(Map<String, dynamic> item) async {
+    final canDelete =
+        widget.isAdmin || (widget.canManage && item['status'] == 'Pendiente');
+    if (!canDelete) return;
     if (!await _confirmAction(
       context,
       title: 'Eliminar declaración',
@@ -5190,20 +10016,25 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
   Widget build(BuildContext context) => _ConnectedPage(
     title: 'Equipo y herramientas',
     subtitle: 'Declaraciones e inspecciones registradas',
+    user: widget.user,
     trailing: IconButton(
       onPressed: _load,
       icon: const Icon(Icons.refresh_rounded, color: Colors.white),
     ),
     child: _loading || _error != null
-        ? _loadingOrError(loading: _loading, error: _error, onRetry: _load)
+        ? _loadingOrError(
+            context: context,
+            loading: _loading,
+            error: _error,
+            onRetry: _load,
+          )
         : RefreshIndicator(
             onRefresh: _load,
             child: ListView(
               padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
               children: [
                 _EquipmentDeclarationsToolbar(
-                  count: _declarations.length,
-                  page: _page,
+                  count: _total,
                   canManage: widget.canManage,
                   onCreate: _create,
                   onQueryChanged: (value) {
@@ -5217,18 +10048,6 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
                       _load,
                     );
                   },
-                  onPreviousPage: _page > 1
-                      ? () {
-                          setState(() => _page--);
-                          _load();
-                        }
-                      : null,
-                  onNextPage: _declarations.length >= 7
-                      ? () {
-                          setState(() => _page++);
-                          _load();
-                        }
-                      : null,
                 ),
                 const SizedBox(height: 12),
                 if (_declarations.isEmpty)
@@ -5239,12 +10058,35 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
                   for (final item in _declarations) ...[
                     _EquipmentDeclarationCard(
                       declaration: item,
-                      canDelete: widget.isAdmin,
+                      canDelete:
+                          widget.isAdmin ||
+                          (widget.canManage && item['status'] == 'Pendiente'),
                       onOpen: () => _open(item),
                       onDelete: () => _delete(item),
                     ),
                     const SizedBox(height: 9),
                   ],
+                if (_pages > 1) ...[
+                  const SizedBox(height: 5),
+                  _EquipmentDeclarationsPagination(
+                    page: _page,
+                    pages: _pages,
+                    pageSize: _pageSize,
+                    total: _total,
+                    onPreviousPage: _page > 1
+                        ? () {
+                            setState(() => _page--);
+                            _load();
+                          }
+                        : null,
+                    onNextPage: _page < _pages
+                        ? () {
+                            setState(() => _page++);
+                            _load();
+                          }
+                        : null,
+                  ),
+                ],
               ],
             ),
           ),
@@ -5254,31 +10096,28 @@ class _ConnectedEquipmentPageState extends State<ConnectedEquipmentPage> {
 class _EquipmentDeclarationsToolbar extends StatelessWidget {
   const _EquipmentDeclarationsToolbar({
     required this.count,
-    required this.page,
     required this.canManage,
     required this.onCreate,
     required this.onQueryChanged,
-    required this.onPreviousPage,
-    required this.onNextPage,
   });
 
   final int count;
-  final int page;
   final bool canManage;
   final VoidCallback onCreate;
   final ValueChanged<String> onQueryChanged;
-  final VoidCallback? onPreviousPage;
-  final VoidCallback? onNextPage;
 
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF172844), Color(0xFF0C172B)],
-      ),
+      color: _isLightTheme(context) ? Colors.white : null,
+      gradient: _isLightTheme(context)
+          ? null
+          : const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF172844), Color(0xFF0C172B)],
+            ),
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: const Color(0x663B9DFF)),
       boxShadow: const [
@@ -5315,15 +10154,18 @@ class _EquipmentDeclarationsToolbar extends StatelessWidget {
                 children: [
                   Text(
                     '$count ${count == 1 ? 'declaración' : 'declaraciones'}',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
                       fontSize: 16,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   Text(
-                    'Historial · página $page',
-                    style: const TextStyle(color: _muted, fontSize: 11),
+                    'Declaraciones e inspecciones',
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 11,
+                    ),
                   ),
                 ],
               ),
@@ -5332,7 +10174,7 @@ class _EquipmentDeclarationsToolbar extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
-                    colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                    colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                   ),
                   borderRadius: BorderRadius.circular(13),
                   boxShadow: const [
@@ -5366,17 +10208,22 @@ class _EquipmentDeclarationsToolbar extends StatelessWidget {
         TextField(
           maxLength: 180,
           onChanged: onQueryChanged,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
+          style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
           decoration: InputDecoration(
             counterText: '',
             hintText: 'Buscar persona o empresa',
-            hintStyle: const TextStyle(color: Color(0xFF8290A8), fontSize: 12),
+            hintStyle: TextStyle(
+              color: _secondaryTextColor(context),
+              fontSize: 12,
+            ),
             prefixIcon: const Icon(
               Icons.search_rounded,
               color: Color(0xFF55AAFF),
             ),
             filled: true,
-            fillColor: const Color(0xFF091426),
+            fillColor: _isLightTheme(context)
+                ? const Color(0xFFF3F6FB)
+                : const Color(0xFF091426),
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 14,
               vertical: 14,
@@ -5391,35 +10238,92 @@ class _EquipmentDeclarationsToolbar extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 7),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            IconButton(
-              tooltip: 'Página anterior',
-              onPressed: onPreviousPage,
-              icon: const Icon(Icons.chevron_left_rounded),
-              color: Colors.white,
-            ),
-            Text(
-              'Página $page',
-              style: const TextStyle(
-                color: Color(0xFFC1CDE0),
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            IconButton(
-              tooltip: 'Página siguiente',
-              onPressed: onNextPage,
-              icon: const Icon(Icons.chevron_right_rounded),
-              color: Colors.white,
-            ),
-          ],
-        ),
       ],
     ),
   );
+}
+
+class _EquipmentDeclarationsPagination extends StatelessWidget {
+  const _EquipmentDeclarationsPagination({
+    required this.page,
+    required this.pages,
+    required this.pageSize,
+    required this.total,
+    required this.onPreviousPage,
+    required this.onNextPage,
+  });
+
+  final int page;
+  final int pages;
+  final int pageSize;
+  final int total;
+  final VoidCallback? onPreviousPage;
+  final VoidCallback? onNextPage;
+
+  @override
+  Widget build(BuildContext context) {
+    final firstRecord = (page - 1) * pageSize + 1;
+    final lastRecord = (page * pageSize).clamp(0, total);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: _isLightTheme(context)
+            ? Colors.white
+            : const Color(0xFF111D35).withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(
+          color: _isLightTheme(context)
+              ? const Color(0xFFDCE4EF)
+              : const Color(0x333D9DFF),
+        ),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Registros anteriores',
+            onPressed: onPreviousPage,
+            icon: const Icon(Icons.chevron_left_rounded),
+            color: _isLightTheme(context)
+                ? const Color(0xFF1769AA)
+                : const Color(0xFF8BCBFF),
+            disabledColor: _secondaryTextColor(context),
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Text(
+                  'Página $page de $pages',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Registros $firstRecord–$lastRecord de $total',
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Más registros',
+            onPressed: onNextPage,
+            icon: const Icon(Icons.chevron_right_rounded),
+            color: _isLightTheme(context)
+                ? const Color(0xFF1769AA)
+                : const Color(0xFF8BCBFF),
+            disabledColor: _secondaryTextColor(context),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _EquipmentDeclarationCard extends StatelessWidget {
@@ -5460,13 +10364,20 @@ class _EquipmentDeclarationCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0C1628)],
-        ),
+        color: _isLightTheme(context) ? Colors.white : null,
+        gradient: _isLightTheme(context)
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF17243D), Color(0xFF0C1628)],
+              ),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0x443D9DFF)),
+        border: Border.all(
+          color: _isLightTheme(context)
+              ? const Color(0xFFDCE4EF)
+              : const Color(0x443D9DFF),
+        ),
         boxShadow: const [
           BoxShadow(
             color: Color(0x18000000),
@@ -5504,8 +10415,8 @@ class _EquipmentDeclarationCard extends StatelessWidget {
                       '${declaration['personName'] ?? 'Persona sin nombre'}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 15,
                         height: 1.2,
                         fontWeight: FontWeight.w800,
@@ -5516,8 +10427,8 @@ class _EquipmentDeclarationCard extends StatelessWidget {
                       '${declaration['companyName'] ?? 'Empresa sin nombre'}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF9FB2CD),
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
                         fontSize: 11,
                         height: 1.3,
                       ),
@@ -5525,25 +10436,6 @@ class _EquipmentDeclarationCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (canDelete)
-                PopupMenuButton<String>(
-                  tooltip: 'Acciones de declaración',
-                  color: const Color(0xFF15233B),
-                  icon: const Icon(Icons.more_vert_rounded, color: _muted),
-                  onSelected: (value) {
-                    if (value == 'delete') onDelete();
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(
-                      value: 'delete',
-                      child: _PartnerMenuItem(
-                        icon: Icons.delete_outline_rounded,
-                        label: 'Eliminar',
-                        destructive: true,
-                      ),
-                    ),
-                  ],
-                ),
             ],
           ),
           const SizedBox(height: 13),
@@ -5594,29 +10486,64 @@ class _EquipmentDeclarationCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 13),
-          SizedBox(
-            width: double.infinity,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
-                ),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: FilledButton.icon(
-                onPressed: onOpen,
-                icon: const Icon(Icons.fact_check_rounded, size: 18),
-                label: const Text('Abrir declaración'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.transparent,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(
+          Row(
+            children: [
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
+                    ),
                     borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: FilledButton.icon(
+                    onPressed: onOpen,
+                    icon: const Icon(Icons.fact_check_rounded, size: 18),
+                    label: const Text('Abrir declaración'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            ),
+              if (canDelete) ...[
+                const SizedBox(width: 9),
+                Expanded(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
+                      ),
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: FilledButton.icon(
+                      onPressed: onDelete,
+                      icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                      label: const Text('Eliminar'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.transparent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ],
       ),
@@ -5643,9 +10570,15 @@ class _EquipmentInfoPill extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
     decoration: BoxDecoration(
-      color: const Color(0xFF0A1426),
+      color: _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
       borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      border: Border.all(
+        color: _isLightTheme(context)
+            ? const Color(0xFFDCE4EF)
+            : Colors.white.withValues(alpha: 0.07),
+      ),
     ),
     child: Row(
       mainAxisSize: MainAxisSize.min,
@@ -5657,8 +10590,8 @@ class _EquipmentInfoPill extends StatelessWidget {
           children: [
             Text(
               label.toUpperCase(),
-              style: const TextStyle(
-                color: Color(0xFF8292AA),
+              style: TextStyle(
+                color: _secondaryTextColor(context),
                 fontSize: 8,
                 letterSpacing: 0.6,
                 fontWeight: FontWeight.w800,
@@ -5670,8 +10603,8 @@ class _EquipmentInfoPill extends StatelessWidget {
               children: [
                 Text(
                   value,
-                  style: const TextStyle(
-                    color: Color(0xFFE0E9F7),
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
                     fontSize: 10,
                     fontWeight: FontWeight.w700,
                   ),
@@ -5744,8 +10677,8 @@ class _EquipmentCheckStatus extends StatelessWidget {
                   'VERIFICACIÓN DE ${label.toUpperCase()}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFF8292AA),
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
                     fontSize: 8,
                     letterSpacing: 0.3,
                     fontWeight: FontWeight.w800,
@@ -5826,7 +10759,9 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
     required Color color,
   }) => showModalBottomSheet<int>(
     context: context,
-    backgroundColor: const Color(0xFF101D32),
+    backgroundColor: _isLightTheme(context)
+        ? Colors.white
+        : const Color(0xFF101D32),
     isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
@@ -5847,7 +10782,9 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                   width: 38,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: Colors.white24,
+                    color: _isLightTheme(context)
+                        ? const Color(0xFFDCE4EF)
+                        : Colors.white24,
                     borderRadius: BorderRadius.circular(4),
                   ),
                 ),
@@ -5855,8 +10792,8 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
               const SizedBox(height: 17),
               Text(
                 title,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: _primaryTextColor(context),
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                 ),
@@ -5938,10 +10875,9 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
     if (id == null && _staffId == null) return;
     setState(() {
       _staffId = id;
+      if (id != null) _appointmentId = null;
       final selected = _findById(options, id);
-      if (selected != null) {
-        _name.text = '${selected['fullName'] ?? ''}';
-      }
+      if (selected != null) _name.text = '${selected['fullName'] ?? ''}';
     });
   }
 
@@ -5965,8 +10901,9 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
     if (id == null && _appointmentId == null) return;
     setState(() {
       _appointmentId = id;
+      if (id != null) _staffId = null;
       final selected = _findById(options, id);
-      if (selected != null && _staffId == null) {
+      if (selected != null) {
         _name.text = '${selected['visitor'] ?? selected['visitorName'] ?? ''}';
       }
     });
@@ -5988,7 +10925,9 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
-          color: const Color(0xFF0A1426),
+          color: _isLightTheme(context)
+              ? const Color(0xFFF3F6FB)
+              : const Color(0xFF0A1426),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: selected
@@ -6014,8 +10953,8 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                 children: [
                   Text(
                     label.toUpperCase(),
-                    style: const TextStyle(
-                      color: Color(0xFF8292AA),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
                       fontSize: 9,
                       letterSpacing: 0.7,
                       fontWeight: FontWeight.w800,
@@ -6028,8 +10967,8 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: selected
-                          ? const Color(0xFFE0E9F7)
-                          : const Color(0xFF8290A8),
+                          ? _primaryTextColor(context)
+                          : _secondaryTextColor(context),
                       fontSize: 12,
                       fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                     ),
@@ -6040,7 +10979,7 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
             const SizedBox(width: 6),
             Icon(
               Icons.expand_more_rounded,
-              color: const Color(0xFF8292AA),
+              color: _secondaryTextColor(context),
               size: 21,
             ),
           ],
@@ -6051,22 +10990,24 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
 
   Widget _personNameField() => TextFormField(
     controller: _name,
-    style: const TextStyle(color: Colors.white, fontSize: 13),
+    style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
     validator: (value) => value == null || value.trim().isEmpty
         ? 'Escribe el nombre de la persona'
         : null,
     decoration: InputDecoration(
       labelText: 'Nombre de la persona',
       hintText: 'Nombre y apellidos',
-      labelStyle: const TextStyle(color: Color(0xFFA7B6CD), fontSize: 12),
-      hintStyle: const TextStyle(color: Color(0xFF687993), fontSize: 11),
+      labelStyle: TextStyle(color: _secondaryTextColor(context), fontSize: 12),
+      hintStyle: TextStyle(color: _secondaryTextColor(context), fontSize: 11),
       prefixIcon: const Icon(
         Icons.badge_outlined,
         color: Color(0xFF6AB8FF),
         size: 19,
       ),
       filled: true,
-      fillColor: const Color(0xFF0A1426),
+      fillColor: _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
       contentPadding: const EdgeInsets.symmetric(horizontal: 13, vertical: 14),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
@@ -6104,11 +11045,14 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
           maxHeight: MediaQuery.sizeOf(context).height * 0.9,
         ),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF172844), Color(0xFF091426)],
-          ),
+          color: _isLightTheme(context) ? Colors.white : null,
+          gradient: _isLightTheme(context)
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
           borderRadius: BorderRadius.circular(23),
           border: Border.all(color: const Color(0x663D9DFF)),
           boxShadow: const [
@@ -6144,14 +11088,14 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             'Crear declaración de equipo',
                             style: TextStyle(
-                              color: Colors.white,
+                              color: _primaryTextColor(context),
                               fontSize: 17,
                               fontWeight: FontWeight.w800,
                             ),
@@ -6159,7 +11103,10 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                           SizedBox(height: 4),
                           Text(
                             'Vincula la empresa, la cita y la persona.',
-                            style: TextStyle(color: _muted, fontSize: 10),
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                            ),
                           ),
                         ],
                       ),
@@ -6168,12 +11115,17 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.pop(context),
                       icon: const Icon(Icons.close_rounded),
-                      color: _muted,
+                      color: _secondaryTextColor(context),
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1, color: Color(0x223D9DFF)),
+              Divider(
+                height: 1,
+                color: _isLightTheme(context)
+                    ? const Color(0xFFDCE4EF)
+                    : const Color(0x223D9DFF),
+              ),
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(18, 15, 18, 8),
@@ -6231,8 +11183,8 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                       child: OutlinedButton(
                         onPressed: () => Navigator.pop(context),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFFB6C5DA),
-                          side: const BorderSide(color: Color(0x447F94B3)),
+                          foregroundColor: _primaryTextColor(context),
+                          side: BorderSide(color: _logBorderColor(context)),
                           padding: const EdgeInsets.symmetric(vertical: 13),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(13),
@@ -6246,7 +11198,7 @@ class _EquipmentDeclarationFormState extends State<_EquipmentDeclarationForm> {
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: const LinearGradient(
-                            colors: [Color(0xFF168BFF), Color(0xFFFF3155)],
+                            colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
                           ),
                           borderRadius: BorderRadius.circular(13),
                           boxShadow: const [
@@ -6312,7 +11264,11 @@ class _EquipmentOptionTile extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(bottom: 7),
     child: Material(
-      color: selected ? color.withValues(alpha: 0.13) : const Color(0xFF0A1426),
+      color: selected
+          ? color.withValues(alpha: 0.13)
+          : _isLightTheme(context)
+          ? const Color(0xFFF3F6FB)
+          : const Color(0xFF0A1426),
       borderRadius: BorderRadius.circular(13),
       child: InkWell(
         onTap: onTap,
@@ -6322,7 +11278,11 @@ class _EquipmentOptionTile extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(13),
             border: Border.all(
-              color: selected ? color.withValues(alpha: 0.42) : Colors.white10,
+              color: selected
+                  ? color.withValues(alpha: 0.42)
+                  : _isLightTheme(context)
+                  ? const Color(0xFFDCE4EF)
+                  : Colors.white10,
             ),
           ),
           child: Row(
@@ -6337,8 +11297,8 @@ class _EquipmentOptionTile extends StatelessWidget {
                       title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
@@ -6348,8 +11308,8 @@ class _EquipmentOptionTile extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF8797B0),
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
                         fontSize: 10,
                       ),
                     ),
@@ -6396,108 +11356,386 @@ class _EquipmentDeclarationDetailState
       (i) => i['phase'] == 'Salida' && i['status'] == 'Completada',
     );
     final canInspect = widget.declaration['status'] == 'Enviada';
-    return AlertDialog(
-      backgroundColor: _panelBackground,
-      title: Text(
-        '${widget.declaration['personName'] ?? 'Declaración'}',
-        style: const TextStyle(color: Colors.white),
-      ),
-      content: SizedBox(
-        width: 520,
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${widget.declaration['companyName'] ?? ''} · ${widget.declaration['status'] ?? ''}',
-                style: const TextStyle(color: _muted),
-              ),
-              const SizedBox(height: 12),
-              if (items.isEmpty)
-                const Text(
-                  'La persona aún no envía sus artículos.',
-                  style: TextStyle(color: _muted),
-                ),
-              for (final item in items)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _panel(
-                    padding: const EdgeInsets.all(10),
-                    child: Text(
-                      '${item['itemType'] ?? ''} · ${item['quantity'] ?? 0} × ${item['product'] ?? ''}\n${item['brand'] ?? ''} · ${item['model'] ?? ''} · Serie: ${item['serialNumber'] ?? ''} · ${item['color'] ?? ''}\n${item['notes'] ?? ''}',
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
+    final status = '${widget.declaration['status'] ?? 'Pendiente'}';
+    final statusColor = status == 'Enviada'
+        ? const Color(0xFF18A889)
+        : status == 'Pendiente'
+        ? const Color(0xFFE0A437)
+        : const Color(0xFF168BFF);
+    final isLight = _isLightTheme(context);
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 540,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.88,
+        ),
+        decoration: BoxDecoration(
+          color: _panelColor(context),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isLight ? const Color(0xFFD8E4F2) : const Color(0x554AA8FF),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isLight ? 0.12 : 0.36),
+              blurRadius: 28,
+              offset: const Offset(0, 15),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 17, 10, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF087FFF), Color(0xFF18B7D8)],
+                      ),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    child: const Icon(
+                      Icons.inventory_2_rounded,
+                      color: Colors.white,
                     ),
                   ),
-                ),
-              const SizedBox(height: 8),
-              Text(
-                'Entrada: ${entryDone ? 'Completada' : 'Pendiente'} · Salida: ${exitDone ? 'Completada' : 'Pendiente'}',
-                style: const TextStyle(color: _muted),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'DECLARACIÓN DE EQUIPO',
+                          style: TextStyle(
+                            color: isLight
+                                ? const Color(0xFF167C92)
+                                : const Color(0xFF73CDE0),
+                            fontSize: 9,
+                            letterSpacing: 1,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${widget.declaration['personName'] ?? 'Declaración'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: statusColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(30),
+                      border: Border.all(
+                        color: statusColor.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Text(
+                      status,
+                      style: TextStyle(
+                        color: statusColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  IconButton(
+                    tooltip: 'Cerrar',
+                    onPressed: () => Navigator.pop(context, false),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      color: _secondaryTextColor(context),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.business_rounded,
+                    size: 17,
+                    color: _secondaryTextColor(context),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      '${widget.declaration['companyName'] ?? 'Empresa sin nombre'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${items.length} ${items.length == 1 ? 'artículo' : 'artículos'}',
+                    style: TextStyle(
+                      color: _primaryTextColor(context),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (items.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: _logInsetColor(context),
+                          borderRadius: BorderRadius.circular(15),
+                          border: Border.all(color: _logBorderColor(context)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.hourglass_empty_rounded,
+                              color: Color(0xFFE0A437),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'La persona aún no envía sus artículos.',
+                                style: TextStyle(
+                                  color: _secondaryTextColor(context),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    for (var index = 0; index < items.length; index++)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _panel(
+                          context: context,
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 31,
+                                height: 31,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF168BFF)
+                                      .withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  '${index + 1}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF168BFF),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  '${items[index]['itemType'] ?? ''} · ${items[index]['quantity'] ?? 0} × ${items[index]['product'] ?? ''}\n${items[index]['brand'] ?? ''} · ${items[index]['model'] ?? ''} · Serie: ${items[index]['serialNumber'] ?? ''} · ${items[index]['color'] ?? ''}\n${items[index]['notes'] ?? ''}',
+                                  style: TextStyle(
+                                    color: _primaryTextColor(context),
+                                    fontSize: 12,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _logInsetColor(context),
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: Row(
+                        children: [
+                          _inspectionStatus(
+                            context,
+                            'Entrada',
+                            entryDone,
+                            Icons.login_rounded,
+                          ),
+                          const SizedBox(width: 10),
+                          Container(
+                            width: 1,
+                            height: 30,
+                            color: _logBorderColor(context),
+                          ),
+                          const SizedBox(width: 10),
+                          _inspectionStatus(
+                            context,
+                            'Salida',
+                            exitDone,
+                            Icons.logout_rounded,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 11, 16, 14),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (status == 'Pendiente')
+                    OutlinedButton.icon(
+                      onPressed: _saving ? null : _regenerateLink,
+                      icon: const Icon(Icons.link_rounded, size: 17),
+                      label: const Text('Renovar enlace'),
+                    ),
+                  if (status == 'Pendiente')
+                    OutlinedButton.icon(
+                      onPressed: _saving ? null : _revokeLink,
+                      icon: const Icon(Icons.link_off_rounded, size: 17),
+                      label: const Text('Revocar'),
+                    ),
+                  if (canInspect && !entryDone)
+                    FilledButton.icon(
+                      onPressed: _saving
+                          ? null
+                          : () => _inspect('entrada', items),
+                      icon: const Icon(Icons.login_rounded, size: 17),
+                      label: const Text('Verificar entrada'),
+                    ),
+                  if (canInspect && entryDone && !exitDone)
+                    FilledButton.icon(
+                      onPressed: _saving
+                          ? null
+                          : () => _inspect('salida', items),
+                      icon: const Icon(Icons.logout_rounded, size: 17),
+                      label: const Text('Verificar salida'),
+                    ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cerrar'),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
-      actions: [
-        if (widget.declaration['status'] == 'Pendiente')
-          TextButton.icon(
-            onPressed: _saving ? null : _regenerateLink,
-            icon: const Icon(Icons.link_rounded),
-            label: const Text('Renovar enlace'),
+    );
+  }
+
+  Widget _inspectionStatus(
+    BuildContext context,
+    String label,
+    bool complete,
+    IconData icon,
+  ) {
+    final color = complete ? const Color(0xFF18A889) : const Color(0xFFE0A437);
+    return Expanded(
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: color),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 8,
+                    letterSpacing: 0.6,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  complete ? 'Completada' : 'Pendiente',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
           ),
-        if (widget.declaration['status'] == 'Pendiente')
-          TextButton.icon(
-            onPressed: _saving ? null : _revokeLink,
-            icon: const Icon(Icons.link_off_rounded),
-            label: const Text('Revocar enlace'),
-          ),
-        if (canInspect && !entryDone)
-          FilledButton.tonal(
-            onPressed: _saving ? null : () => _inspect('entrada', items),
-            child: const Text('Verificar entrada'),
-          ),
-        if (canInspect && entryDone && !exitDone)
-          FilledButton.tonal(
-            onPressed: _saving ? null : () => _inspect('salida', items),
-            child: const Text('Verificar salida'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Cerrar'),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
   Future<void> _regenerateLink() async {
     try {
-      final token = await widget.authService.createEquipmentDeclarationLink(
+      final link = await widget.authService.createEquipmentDeclarationLink(
         widget.declaration['id'] as int,
       );
       if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          backgroundColor: _panelBackground,
-          title: const Text(
+          backgroundColor: _panelColor(dialogContext),
+          title: Text(
             'Enlace renovado',
-            style: TextStyle(color: Colors.white),
+            style: TextStyle(color: _primaryTextColor(dialogContext)),
           ),
           content: SelectableText(
-            token,
-            style: const TextStyle(
-              color: Colors.white,
+            link,
+            style: TextStyle(
+              color: _primaryTextColor(dialogContext),
               fontWeight: FontWeight.w700,
             ),
           ),
           actions: [
             TextButton(
               onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: token));
+                await Clipboard.setData(ClipboardData(text: link));
                 if (dialogContext.mounted) Navigator.pop(dialogContext);
               },
-              child: const Text('Copiar token'),
+              child: const Text('Copiar enlace'),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(dialogContext),

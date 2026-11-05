@@ -1556,9 +1556,11 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Panel'), findsNothing);
-    expect(find.text('Inicio'), findsWidgets);
-    expect(find.text('Agenda de hoy'), findsOneWidget);
-    expect(find.text('Actividad reciente'), findsOneWidget);
+    expect(find.text('Inicio'), findsNothing);
+    expect(find.text('Agenda de citas de hoy'), findsOneWidget);
+    expect(find.text('Registros del periodo'), findsOneWidget);
+    expect(find.text('Composición de movimientos'), findsOneWidget);
+    expect(find.text('Tendencia diaria'), findsOneWidget);
     expect(find.byIcon(Icons.menu_rounded), findsOneWidget);
     expect(find.byIcon(Icons.person_outline_rounded), findsOneWidget);
     await tester.tap(find.byIcon(Icons.person_outline_rounded));
@@ -1582,11 +1584,11 @@ void main() {
       const Offset(0, -300),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Acceso corporativo'), findsOneWidget);
+    expect(find.text('Bitácora diaria'), findsOneWidget);
     await tester.tapAt(const Offset(350, 300));
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Ver bitácora'), 300);
-    expect(find.text('Ver bitácora'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Ver toda la bitácora  →'), 300);
+    expect(find.text('Ver toda la bitácora  →'), findsOneWidget);
   });
 
   testWidgets('Departamentos y accesos de bitácora caben en móvil', (
@@ -1663,12 +1665,31 @@ void main() {
       250,
       scrollable: drawerScrollable,
     );
+    await tester.drag(drawerScrollable, const Offset(0, -140));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Bitácora diaria'));
     await tester.tap(find.text('Bitácora diaria'));
     await tester.pumpAndSettle();
 
     expect(find.text('Bitácora diaria'), findsOneWidget);
-    expect(find.text('Registrar'), findsOneWidget);
-    expect(find.text('Persona API página 1 · Llegada'), findsOneWidget);
+    expect(find.text('Nuevo registro'), findsOneWidget);
+    final pageScrollable = find
+        .descendant(
+          of: find.byType(RefreshIndicator),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollable &&
+                widget.axisDirection == AxisDirection.down,
+          ),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('Persona API página 1'),
+      220,
+      scrollable: pageScrollable,
+    );
+    expect(find.text('Persona API página 1'), findsOneWidget);
+    expect(find.text('Llegada'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -1697,19 +1718,60 @@ void main() {
       250,
       scrollable: drawerScrollable,
     );
+    await tester.drag(drawerScrollable, const Offset(0, -180));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Bitácora diaria'));
     await tester.tap(find.text('Bitácora diaria'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Movimientos: 4'), findsOneWidget);
-    expect(find.text('Dentro ahora: 2'), findsOneWidget);
-    expect(find.text('Pendientes: 1'), findsOneWidget);
-    expect(find.text('Persona API página 1 · Llegada'), findsOneWidget);
+    final contentScrollable = find
+        .descendant(
+          of: find.byType(RefreshIndicator),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollable &&
+                widget.axisDirection == AxisDirection.down,
+          ),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('Movimientos'),
+      220,
+      scrollable: contentScrollable,
+    );
+    expect(find.text('Movimientos'), findsOneWidget);
+    expect(find.text('4'), findsWidgets);
+    expect(find.text('Dentro ahora'), findsOneWidget);
+    expect(find.text('2'), findsWidgets);
+    expect(find.text('Pendientes'), findsOneWidget);
+    expect(find.text('1'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey('log-metric-icon-Movimientos')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('log-metric-icon-Dentro ahora')),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.text('Persona API página 1'),
+      220,
+      scrollable: contentScrollable,
+    );
+    expect(find.text('Persona API página 1'), findsOneWidget);
+    expect(find.text('Llegada'), findsWidgets);
+    await tester.scrollUntilVisible(
+      find.text('1 de 2'),
+      220,
+      scrollable: contentScrollable,
+    );
     expect(find.text('1 de 2'), findsOneWidget);
     await tester.ensureVisible(find.byTooltip('Página siguiente'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Página siguiente'));
     await tester.pumpAndSettle();
-    expect(find.text('Persona API página 2 · Llegada'), findsOneWidget);
+    expect(find.text('Persona API página 2'), findsWidgets);
+    expect(find.text('Llegada'), findsWidgets);
     expect(find.text('2 de 2'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -1758,6 +1820,22 @@ http.Response? _homeDashboardResponse(http.Request request) {
         'page': page,
         'pageSize': 1,
         'pages': 2,
+      }),
+      200,
+    );
+  }
+  if (request.url.path == '/api/daily-log/stats') {
+    return http.Response(
+      jsonEncode({
+        'stats': [
+          {
+            'date': '2026-11-04',
+            'arrivals': 2,
+            'entries': 1,
+            'exits': 0,
+            'observations': 1,
+          },
+        ],
       }),
       200,
     );

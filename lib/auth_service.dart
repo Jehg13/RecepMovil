@@ -8,6 +8,8 @@ import 'package:http/http.dart' as http;
 
 import 'src/web_http_client_stub.dart'
     if (dart.library.js_interop) 'src/web_http_client.dart';
+import 'src/web_realtime_client_stub.dart'
+    if (dart.library.js_interop) 'src/web_realtime_client.dart';
 
 const _sessionCookieName = 'visitas_session';
 const _sessionCookieStorageKey = 'reception_session_cookie';
@@ -242,32 +244,44 @@ class HostAccountOption {
 
 class DashboardAppointment {
   const DashboardAppointment({
+    required this.id,
     required this.date,
     required this.time,
     required this.visitor,
+    required this.company,
+    required this.host,
     required this.status,
     required this.equipmentChecklistRequired,
   });
 
+  final int id;
   final String date;
   final String time;
   final String visitor;
+  final String company;
+  final String host;
   final String status;
   final bool equipmentChecklistRequired;
 
   factory DashboardAppointment.fromJson(Object? value) {
     if (value is! Map<String, dynamic> ||
+        value['id'] is! num ||
         value['date'] is! String ||
         value['time'] is! String ||
         value['visitor'] is! String ||
+        value['company'] is! String ||
+        value['host'] is! String ||
         value['status'] is! String ||
         value['equipmentChecklistRequired'] is! bool) {
       throw const AuthApiException('La respuesta de citas no es válida.');
     }
     return DashboardAppointment(
+      id: (value['id'] as num).toInt(),
       date: value['date'] as String,
       time: value['time'] as String,
       visitor: value['visitor'] as String,
+      company: value['company'] as String,
+      host: value['host'] as String,
       status: value['status'] as String,
       equipmentChecklistRequired: value['equipmentChecklistRequired'] as bool,
     );
@@ -280,19 +294,25 @@ class DashboardLogEntry {
     required this.time,
     required this.event,
     required this.person,
+    required this.details,
+    required this.company,
   });
 
   final String date;
   final String time;
   final String event;
   final String person;
+  final String details;
+  final String company;
 
   factory DashboardLogEntry.fromJson(Object? value) {
     if (value is! Map<String, dynamic> ||
         value['date'] is! String ||
         value['time'] is! String ||
         value['event'] is! String ||
-        value['person'] is! String) {
+        value['person'] is! String ||
+        (value['details'] != null && value['details'] is! String) ||
+        (value['company'] != null && value['company'] is! String)) {
       throw const AuthApiException('La respuesta de bitácora no es válida.');
     }
     return DashboardLogEntry(
@@ -300,6 +320,45 @@ class DashboardLogEntry {
       time: value['time'] as String,
       event: value['event'] as String,
       person: value['person'] as String,
+      details: value['details'] as String? ?? '',
+      company: value['company'] as String? ?? '',
+    );
+  }
+}
+
+class DashboardDailyActivity {
+  const DashboardDailyActivity({
+    required this.date,
+    required this.arrivals,
+    required this.entries,
+    required this.exits,
+    required this.observations,
+  });
+
+  final String date;
+  final int arrivals;
+  final int entries;
+  final int exits;
+  final int observations;
+
+  factory DashboardDailyActivity.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['date'] is! String ||
+        DateTime.tryParse(value['date'] as String) == null ||
+        value['arrivals'] is! num ||
+        value['entries'] is! num ||
+        value['exits'] is! num ||
+        value['observations'] is! num) {
+      throw const AuthApiException(
+        'La respuesta de estadísticas de Inicio no es válida.',
+      );
+    }
+    return DashboardDailyActivity(
+      date: value['date'] as String,
+      arrivals: (value['arrivals'] as num).toInt(),
+      entries: (value['entries'] as num).toInt(),
+      exits: (value['exits'] as num).toInt(),
+      observations: (value['observations'] as num).toInt(),
     );
   }
 }
@@ -310,12 +369,14 @@ class DashboardData {
     required this.insideNow,
     required this.pendingArrivals,
     required this.recentEntries,
+    required this.dailyActivity,
   });
 
   final List<DashboardAppointment> appointments;
   final int insideNow;
   final int pendingArrivals;
   final List<DashboardLogEntry> recentEntries;
+  final List<DashboardDailyActivity> dailyActivity;
 }
 
 class AuthApiException implements Exception {
@@ -326,6 +387,8 @@ class AuthApiException implements Exception {
   @override
   String toString() => message;
 }
+
+enum RealtimeEvent { connected, update, disconnected }
 
 abstract interface class SessionCookieStorage {
   Future<String?> read();
@@ -348,6 +411,22 @@ class SecureSessionCookieStorage implements SessionCookieStorage {
 
   @override
   Future<void> clear() => _storage.delete(key: _sessionCookieStorageKey);
+}
+
+class EquipmentDeclarationsPage {
+  const EquipmentDeclarationsPage({
+    required this.declarations,
+    required this.total,
+    required this.page,
+    required this.pages,
+    required this.pageSize,
+  });
+
+  final List<Map<String, dynamic>> declarations;
+  final int total;
+  final int page;
+  final int pages;
+  final int pageSize;
 }
 
 http.Client _createHttpClient(bool isWeb) {
@@ -373,12 +452,24 @@ class AuthService {
     'API_BASE_URL',
     defaultValue: 'https://recep.cymezapi.com',
   );
+  static const _configuredPublicAppUrl = String.fromEnvironment(
+    'PUBLIC_APP_URL',
+    defaultValue: '',
+  );
   static final shared = AuthService();
 
   final http.Client _client;
   final SessionCookieStorage _cookieStorage;
   final String _baseUrl;
   final bool _isWeb;
+
+  String equipmentDeclarationUrl(String token) {
+    final configuredUrl = _configuredPublicAppUrl.trim();
+    final appUri = _isWeb
+        ? Uri.base
+        : Uri.parse(configuredUrl.isNotEmpty ? configuredUrl : _baseUrl);
+    return '${appUri.origin}/#equipo=${Uri.encodeComponent(token)}';
+  }
 
   Future<AuthenticatedUser> login(String identifier, String password) async {
     final response = await _send(
@@ -460,10 +551,13 @@ class AuthService {
   }
 
   Future<DashboardData> getDashboardData(DateTime date) async {
-    final dateString =
-        '${date.year.toString().padLeft(4, '0')}-'
-        '${date.month.toString().padLeft(2, '0')}-'
-        '${date.day.toString().padLeft(2, '0')}';
+    String formatDate(DateTime value) =>
+        '${value.year.toString().padLeft(4, '0')}-'
+        '${value.month.toString().padLeft(2, '0')}-'
+        '${value.day.toString().padLeft(2, '0')}';
+
+    final dateString = formatDate(date);
+    final fromDate = formatDate(date.subtract(const Duration(days: 6)));
     final headers = await _sessionHeaders();
     final responses = await Future.wait([
       _send(() => _client.get(_uri('/api/appointments'), headers: headers)),
@@ -475,6 +569,20 @@ class AuthService {
           headers: headers,
         ),
       ),
+      _send(
+        () => _client.get(
+          _uri('/api/daily-log/stats?from=$fromDate&to=$dateString'),
+          headers: headers,
+        ),
+      ),
+      _send(
+        () => _client.get(
+          _uri(
+            '/api/daily-log?from=$fromDate&to=$dateString&page=1&pageSize=1&recentPage=1&recentPageSize=6',
+          ),
+          headers: headers,
+        ),
+      ),
     ]);
     for (final response in responses) {
       if (response.statusCode != 200) throw _responseError(response);
@@ -482,13 +590,17 @@ class AuthService {
 
     final appointmentValues = _decodeObject(responses[0].body)['appointments'];
     final logData = _decodeObject(responses[1].body);
+    final statsData = _decodeObject(responses[2].body);
+    final periodLogData = _decodeObject(responses[3].body);
     final summary = logData['summary'];
-    final recentValues = logData['recentEntries'];
+    final recentValues = periodLogData['recentEntries'];
+    final statsValues = statsData['stats'];
     if (appointmentValues is! List ||
         summary is! Map<String, dynamic> ||
         summary['insideNow'] is! num ||
         summary['pendingArrivals'] is! num ||
-        recentValues is! List) {
+        recentValues is! List ||
+        statsValues is! List) {
       throw const AuthApiException(
         'La respuesta de datos del inicio no es válida.',
       );
@@ -498,11 +610,28 @@ class AuthService {
         .where((appointment) => appointment.date == dateString)
         .toList();
     final recentEntries = recentValues.map(DashboardLogEntry.fromJson).toList();
+    final statsByDate = {
+      for (final value in statsValues.map(DashboardDailyActivity.fromJson))
+        value.date: value,
+    };
+    final dailyActivity = List.generate(7, (index) {
+      final day = date.subtract(Duration(days: 6 - index));
+      final dayString = formatDate(day);
+      return statsByDate[dayString] ??
+          DashboardDailyActivity(
+            date: dayString,
+            arrivals: 0,
+            entries: 0,
+            exits: 0,
+            observations: 0,
+          );
+    });
     return DashboardData(
       appointments: List.unmodifiable(appointments),
       insideNow: (summary['insideNow'] as num).toInt(),
       pendingArrivals: (summary['pendingArrivals'] as num).toInt(),
       recentEntries: List.unmodifiable(recentEntries),
+      dailyActivity: List.unmodifiable(dailyActivity),
     );
   }
 
@@ -683,6 +812,9 @@ class AuthService {
   Future<List<Map<String, dynamic>>> getExternalStaff() async =>
       _getApiRecords('/api/external-staff', 'externalStaff');
 
+  Future<List<Map<String, dynamic>>> getGeneralVisitors() async =>
+      _getApiRecords('/api/general-visitors', 'generalVisitors');
+
   Future<List<Map<String, dynamic>>> saveExternalStaff(
     Map<String, Object?> staff, {
     int? id,
@@ -756,8 +888,12 @@ class AuthService {
     required String to,
     String query = '',
     String event = '',
+    String category = '',
+    String host = '',
     int page = 1,
-    int pageSize = 30,
+    int pageSize = 7,
+    int recentPage = 1,
+    int recentPageSize = 7,
   }) async {
     final uri = _uri('/api/daily-log').replace(
       queryParameters: {
@@ -765,8 +901,12 @@ class AuthService {
         'to': to,
         if (query.trim().isNotEmpty) 'q': query.trim(),
         if (event.isNotEmpty) 'event': event,
+        if (category.isNotEmpty) 'category': category,
+        if (host.isNotEmpty) 'host': host,
         'page': '$page',
         'pageSize': '$pageSize',
+        'recentPage': '$recentPage',
+        'recentPageSize': '$recentPageSize',
       },
     );
     final data = await _requestApi(
@@ -799,6 +939,43 @@ class AuthService {
     await _requestApi('DELETE', '/api/daily-log/$id');
   }
 
+  Future<List<Map<String, dynamic>>> getVisitorKioskRegistrations() async {
+    final data = await _requestApi('GET', '/api/visitor-kiosk/registrations');
+    final registrations = data['registrations'];
+    if (registrations is! List ||
+        registrations.any((item) => item is! Map<String, dynamic>)) {
+      throw const AuthApiException(
+        'La respuesta de registros manuales no es válida.',
+      );
+    }
+    return registrations.cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> updateVisitorKioskRegistration(
+    int id, {
+    required String action,
+    List<Map<String, Object?>>? items,
+  }) async {
+    if (id <= 0) {
+      throw const AuthApiException(
+        'El registro manual seleccionado no es válido.',
+      );
+    }
+    return _requestApi(
+      'PATCH',
+      '/api/visitor-kiosk/registrations/$id',
+      body: {'action': action, 'items': items},
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAppointmentEmployees(int id) async {
+    if (id <= 0) {
+      throw const AuthApiException('La cita seleccionada no es válida.');
+    }
+    final data = await _requestApi('GET', '/api/appointments/$id/employees');
+    return _apiRecords(data, 'employees');
+  }
+
   Future<Map<String, dynamic>> getEquipmentOptions() async {
     final data = await _requestApi('GET', '/api/equipment/options');
     for (final key in const ['partners', 'staff', 'appointments']) {
@@ -813,17 +990,65 @@ class AuthService {
     return data;
   }
 
-  Future<List<Map<String, dynamic>>> getEquipmentDeclarations({
+  Future<EquipmentDeclarationsPage> getEquipmentDeclarations({
     String query = '',
     int page = 1,
   }) async {
-    final uri = _uri('/api/equipment/declarations')
-        .replace(queryParameters: {'q': query, 'page': '$page'});
+    final uri = _uri(
+      '/api/equipment/declarations',
+    ).replace(queryParameters: {'q': query, 'page': '$page', 'pageSize': '5'});
     final data = await _requestApi(
       'GET',
       uri.toString().replaceFirst(_baseUrl, ''),
     );
-    return _apiRecords(data, 'declarations');
+    final declarations = _apiRecords(data, 'declarations');
+    final totalValue = data['total'];
+    final pageValue = data['page'];
+    final pagesValue = data['pages'];
+    final pageSizeValue = data['pageSize'];
+    if ((totalValue != null &&
+            (totalValue is! num ||
+                totalValue < 0 ||
+                totalValue != totalValue.toInt())) ||
+        (pageValue != null &&
+            (pageValue is! num ||
+                pageValue < 1 ||
+                pageValue != pageValue.toInt())) ||
+        (pagesValue != null &&
+            (pagesValue is! num ||
+                pagesValue < 1 ||
+                pagesValue != pagesValue.toInt())) ||
+        (pageSizeValue != null &&
+            (pageSizeValue is! num ||
+                pageSizeValue < 1 ||
+                pageSizeValue > 100 ||
+                pageSizeValue != pageSizeValue.toInt()))) {
+      throw const AuthApiException(
+        'La respuesta de paginación de declaraciones no es válida.',
+      );
+    }
+    final total = (totalValue as num?)?.toInt() ?? declarations.length;
+    final responsePage = (pageValue as num?)?.toInt() ?? page;
+    final pageSize =
+        (pageSizeValue as num?)?.toInt() ??
+        (declarations.isEmpty ? 5 : declarations.length);
+    final pages =
+        (pagesValue as num?)?.toInt() ??
+        (total == 0 ? 1 : (total / pageSize).ceil());
+    if (responsePage != page) {
+      throw const AuthApiException(
+        'La respuesta de paginación de declaraciones no es válida.',
+      );
+    }
+    return EquipmentDeclarationsPage(
+      declarations: List<Map<String, dynamic>>.unmodifiable(
+        declarations.cast<Map<String, dynamic>>(),
+      ),
+      total: total,
+      page: responsePage,
+      pages: pages,
+      pageSize: pageSize,
+    );
   }
 
   Future<Map<String, dynamic>> createEquipmentDeclaration(
@@ -862,7 +1087,10 @@ class AuthService {
     if (token is! String || token.isEmpty) {
       throw const AuthApiException('El servidor no generó un enlace válido.');
     }
-    return token;
+    final link = data['url'];
+    return link is String && link.isNotEmpty
+        ? link
+        : equipmentDeclarationUrl(token);
   }
 
   Future<void> revokeEquipmentDeclarationLink(int id) async {
@@ -997,6 +1225,47 @@ class AuthService {
     }
     if (response.body.isEmpty) return <String, dynamic>{};
     return _decodeObject(response.body);
+  }
+
+  Stream<RealtimeEvent> watchRealtimeUpdates() async* {
+    if (_isWeb) {
+      await for (final event in watchWebRealtimeEvents(_uri('/api/events'))) {
+        yield switch (event) {
+          'connected' => RealtimeEvent.connected,
+          'update' => RealtimeEvent.update,
+          _ => RealtimeEvent.disconnected,
+        };
+      }
+      return;
+    }
+
+    final request = http.Request('GET', _uri('/api/events'))
+      ..headers.addAll({
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        ...await _sessionHeaders(),
+      });
+    final response = await _client.send(request).timeout(_requestTimeout);
+    if (response.statusCode != 200) {
+      final body = await response.stream.bytesToString();
+      throw _responseError(http.Response(body, response.statusCode));
+    }
+
+    yield RealtimeEvent.connected;
+    var hasData = false;
+    await for (final line
+        in response.stream
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())) {
+      if (line.isEmpty) {
+        if (hasData) {
+          yield RealtimeEvent.update;
+          hasData = false;
+        }
+      } else if (line.startsWith('data:')) {
+        hasData = true;
+      }
+    }
   }
 
   Future<List<HostAccountOption>> getHostAccounts() async {

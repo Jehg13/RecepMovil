@@ -32,7 +32,7 @@ void main() {
     await tester.tap(find.text('Iniciar sesión').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('Citas de hoy'), findsOneWidget);
+    expect(find.text('Agenda de citas'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -80,7 +80,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Citas de hoy'), findsOneWidget);
+    expect(find.text('Agenda de citas'), findsOneWidget);
     expect(find.text('Comenzar'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -95,11 +95,14 @@ void main() {
             jsonEncode({
               'appointments': [
                 {
+                  'id': 42,
                   'date':
                       request.url.queryParameters['from'] ??
                       DateTime.now().toIso8601String().substring(0, 10),
                   'time': '09:30',
                   'visitor': 'Visitante de prueba',
+                  'company': 'Empresa de prueba',
+                  'host': 'Anfitrión de prueba',
                   'status': 'Pendiente',
                   'equipmentChecklistRequired': true,
                 },
@@ -118,6 +121,24 @@ void main() {
                   'time': '09:00',
                   'event': 'Llegada',
                   'person': 'Visitante de prueba',
+                  'details': 'Registro manual · Folio 12345',
+                  'company': 'Empresa de prueba',
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/daily-log/stats') {
+          return http.Response(
+            jsonEncode({
+              'stats': [
+                {
+                  'date': DateTime.now().toIso8601String().substring(0, 10),
+                  'arrivals': 1,
+                  'entries': 2,
+                  'exits': 0,
+                  'observations': 0,
                 },
               ],
             }),
@@ -140,12 +161,307 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Administración'), findsOneWidget);
+    expect(find.text('Inicio'), findsNothing);
     expect(find.text('1'), findsWidgets);
-    expect(find.text('2'), findsOneWidget);
+    expect(find.text('2'), findsWidgets);
     expect(find.text('Visitante de prueba'), findsWidgets);
+    expect(find.text('Composición de movimientos'), findsOneWidget);
+    expect(find.text('Tendencia diaria'), findsOneWidget);
+    expect(find.text('Agenda de citas de hoy'), findsOneWidget);
+    expect(find.text('Hora'), findsOneWidget);
+    expect(find.text('Visitante'), findsOneWidget);
+    expect(find.text('Empresa'), findsOneWidget);
+    expect(find.text('Anfitrión'), findsOneWidget);
+    expect(find.text('Estado'), findsOneWidget);
+    expect(find.text('Acciones'), findsOneWidget);
+    expect(find.text('Registros del periodo'), findsOneWidget);
+    expect(find.text('Registro manual · Folio 12345'), findsOneWidget);
     await tester.tap(find.byIcon(Icons.person_outline_rounded));
     await tester.pumpAndSettle();
     expect(find.text('Administrador'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('el menú de usuario cambia el tema del dashboard', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: _service(
+            MockClient((request) async => _dashboardResponse(request)),
+          ),
+          user: AuthenticatedUser.fromJson(_adminUserJson),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('dashboard-home-background'))),
+      ).brightness,
+      Brightness.dark,
+    );
+
+    await tester.tap(find.byIcon(Icons.person_outline_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('dashboard-theme-switch')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<Scaffold>(
+            find.byKey(const ValueKey('reception-dashboard-scaffold')),
+          )
+          .backgroundColor,
+      const Color(0xFFF3F7FC),
+    );
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('dashboard-home-background'))),
+      ).brightness,
+      Brightness.light,
+    );
+    await tester.tapAt(const Offset(10, 500));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+
+    final activeHomeItem = find.byKey(const ValueKey('drawer-item-Inicio'));
+    final activeHomeTile = tester.widget<ListTile>(activeHomeItem);
+    expect(activeHomeTile.selected, isTrue);
+    expect(activeHomeTile.selectedTileColor, const Color(0xFFFFE6EC));
+    final activeHomeText = tester.widget<Text>(
+      find.descendant(of: activeHomeItem, matching: find.text('Inicio')),
+    );
+    expect(activeHomeText.style?.color, const Color(0xFF9E1230));
+
+    await tester.scrollUntilVisible(
+      find.text('Agenda de citas'),
+      120,
+      scrollable: find
+          .descendant(
+            of: find.byType(Drawer),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.tap(find.text('Agenda de citas').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('connected-section-root')),
+      findsOneWidget,
+    );
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('connected-section-root'))),
+      ).brightness,
+      Brightness.light,
+    );
+
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Bitácora diaria'),
+      120,
+      scrollable: find
+          .descendant(
+            of: find.byType(Drawer),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.tap(find.text('Bitácora diaria').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('connected-section-root')),
+      findsOneWidget,
+    );
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('connected-section-root'))),
+      ).brightness,
+      Brightness.light,
+    );
+
+    await tester.tap(find.byIcon(Icons.person_outline_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('dashboard-theme-switch')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Scaffold>(
+            find.byKey(const ValueKey('reception-dashboard-scaffold')),
+          )
+          .backgroundColor,
+      const Color(0xFF07101F),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('el menú de usuario funciona en las secciones conectadas', (
+    tester,
+  ) async {
+    final service = _service(
+      MockClient((request) async {
+        if (request.method == 'POST' &&
+            request.url.path == '/api/auth/logout') {
+          return http.Response('', 204);
+        }
+        return _dashboardResponse(request);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: service,
+          user: AuthenticatedUser.fromJson(_userJson),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('connected-section-root')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('connected-session-user')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('dashboard-theme-switch')),
+      findsOneWidget,
+    );
+    expect(find.text('Cerrar sesión'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('dashboard-theme-switch')));
+    await tester.pumpAndSettle();
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('connected-section-root'))),
+      ).brightness,
+      Brightness.light,
+    );
+
+    await tester.tapAt(const Offset(8, 400));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('connected-session-user')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('connected-profile-logout')));
+    await tester.pumpAndSettle();
+    expect(find.text('Iniciar sesión'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('el drawer muestra la sesión y permite cerrar sesión', (
+    tester,
+  ) async {
+    final service = _service(
+      MockClient((request) async {
+        if (request.method == 'POST' &&
+            request.url.path == '/api/auth/logout') {
+          return http.Response('', 204);
+        }
+        return _dashboardResponse(request);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: service,
+          user: AuthenticatedUser.fromJson(_adminUserJson),
+        ),
+      ),
+    );
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+
+    final sessionHeader = find.byKey(const ValueKey('drawer-session-user'));
+    expect(
+      find.descendant(of: sessionHeader, matching: find.text('Administración')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: sessionHeader, matching: find.text('Administrador')),
+      findsOneWidget,
+    );
+    expect(find.text('Programador'), findsNothing);
+    expect(find.text('Acceso corporativo'), findsNothing);
+    expect(find.byKey(const ValueKey('drawer-logout')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('drawer-logout')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Iniciar sesión'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('recepción solo ve Agenda de citas y Bitácora diaria', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: _service(
+            MockClient((request) async => _dashboardResponse(request)),
+          ),
+          user: AuthenticatedUser.fromJson(_userJson),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agenda de citas'), findsWidgets);
+    expect(find.text('Bitácora diaria'), findsOneWidget);
+    expect(find.text('Inicio'), findsNothing);
+    expect(find.text('Departamento'), findsNothing);
+    expect(find.text('Anfitriones'), findsNothing);
+    expect(find.text('Accesos'), findsNothing);
+    expect(find.text('Personal de externos'), findsNothing);
+    expect(find.text('Equipo y herramientas'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('anfitriones solo ven sus cuatro secciones permitidas', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionHomePage(
+          authService: _service(
+            MockClient((request) async => _dashboardResponse(request)),
+          ),
+          user: AuthenticatedUser.fromJson(_hostUserJson),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Contratistas/proveedores y visitantes'), findsOneWidget);
+    expect(find.text('Personal de externos'), findsOneWidget);
+    expect(find.text('Agenda de citas'), findsWidgets);
+    expect(find.text('Equipo y herramientas'), findsOneWidget);
+    expect(find.text('Bitácora diaria'), findsNothing);
+    expect(find.text('Inicio'), findsNothing);
+    expect(find.text('Departamento'), findsNothing);
+    expect(find.text('Anfitriones'), findsNothing);
+    expect(find.text('Accesos'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -203,6 +519,8 @@ void main() {
     await tester.tap(find.text('Accesos').last);
     await tester.pumpAndSettle();
 
+    expect(find.text('Administración'), findsOneWidget);
+    expect(find.text('Administrador'), findsOneWidget);
     expect(find.text('cuenta-1'), findsOneWidget);
     expect(find.text('persona@example.test'), findsOneWidget);
     expect(find.text('Recepción'), findsWidgets);
@@ -214,11 +532,12 @@ void main() {
     await tester.tap(find.text('Editar acceso'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Administrador').last);
-    await tester.tap(find.text('Guardar'));
+    await tester.tap(find.text('Guardar acceso'));
     await tester.pumpAndSettle();
 
     expect(find.text('Permisos actualizados correctamente.'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets('edita solo departamento y elimina anfitriones', (tester) async {
@@ -290,6 +609,8 @@ void main() {
     await tester.tap(find.text('Anfitriones').last);
     await tester.pumpAndSettle();
 
+    expect(find.text('Administración'), findsOneWidget);
+    expect(find.text('Administrador'), findsOneWidget);
     expect(find.text('Ana García López'), findsOneWidget);
     expect(find.text('host-ana'), findsOneWidget);
     expect(find.text('ana.garcia@example.test'), findsOneWidget);
@@ -302,10 +623,7 @@ void main() {
     await tester.ensureVisible(find.text('Cambiar departamento'));
     await tester.tap(find.text('Cambiar departamento'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButtonFormField<int>));
-    await tester.pumpAndSettle();
     await tester.tap(find.text('Operaciones').last);
-    await tester.pumpAndSettle();
     await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
 
@@ -325,6 +643,7 @@ void main() {
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets('muestra departamentos en dos columnas y guarda cambios', (
@@ -389,6 +708,8 @@ void main() {
     await tester.tap(find.text('Departamento'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Administración'), findsOneWidget);
+    expect(find.text('Administrador'), findsOneWidget);
     final firstCard = tester.getRect(
       find.byKey(const ValueKey('department-card-1')),
     );
@@ -443,6 +764,7 @@ void main() {
     expect(find.byKey(const ValueKey('department-card-1')), findsNothing);
     expect(departments, hasLength(4));
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
   });
 }
 
@@ -468,6 +790,9 @@ http.Response _dashboardResponse(http.Request request) {
       200,
     );
   }
+  if (request.url.path == '/api/daily-log/stats') {
+    return http.Response(jsonEncode({'stats': []}), 200);
+  }
   return http.Response('', 404);
 }
 
@@ -487,6 +812,15 @@ const _adminUserJson = {
   'role': 'Administrador',
   'isAdmin': true,
   'sectionAccess': ['administrador'],
+};
+
+const _hostUserJson = {
+  'login': 'anfitrion',
+  'name': 'Personal anfitrión',
+  'email': 'anfitrion@example.test',
+  'role': 'Anfitrión',
+  'isAdmin': false,
+  'sectionAccess': ['anfitriones'],
 };
 
 const _accessAccountJson = {

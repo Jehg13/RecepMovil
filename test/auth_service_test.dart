@@ -16,16 +16,22 @@ void main() {
             jsonEncode({
               'appointments': [
                 {
+                  'id': 12,
                   'date': '2026-11-03',
                   'time': '09:30',
                   'visitor': 'Visitante de hoy',
+                  'company': 'Empresa de hoy',
+                  'host': 'Anfitrión de hoy',
                   'status': 'Pendiente',
                   'equipmentChecklistRequired': true,
                 },
                 {
+                  'id': 13,
                   'date': '2026-11-04',
                   'time': '10:00',
                   'visitor': 'Visitante de mañana',
+                  'company': 'Otra empresa',
+                  'host': 'Otro anfitrión',
                   'status': 'Pendiente',
                   'equipmentChecklistRequired': false,
                 },
@@ -34,18 +40,55 @@ void main() {
             200,
           );
         }
-        expect(request.url.path, '/api/daily-log');
-        expect(request.url.queryParameters['from'], '2026-11-03');
+        if (request.url.path == '/api/daily-log') {
+          if (request.url.queryParameters['from'] == '2026-11-03') {
+            expect(request.url.queryParameters['to'], '2026-11-03');
+            return http.Response(
+              jsonEncode({
+                'summary': {'insideNow': 2, 'pendingArrivals': 1},
+                'recentEntries': [
+                  {
+                    'date': '2026-11-03',
+                    'time': '09:00',
+                    'event': 'Llegada',
+                    'person': 'Visitante de bitácora',
+                  },
+                ],
+              }),
+              200,
+            );
+          }
+          expect(request.url.queryParameters['from'], '2026-10-28');
+          expect(request.url.queryParameters['to'], '2026-11-03');
+          expect(request.url.queryParameters['recentPageSize'], '6');
+          return http.Response(
+            jsonEncode({
+              'recentEntries': [
+                {
+                  'date': '2026-11-03',
+                  'time': '09:00',
+                  'event': 'Retiro',
+                  'person': 'Visitante de bitácora',
+                  'details': 'Registro manual · Folio 12345',
+                  'company': 'Empresa de bitácora',
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        expect(request.url.path, '/api/daily-log/stats');
+        expect(request.url.queryParameters['from'], '2026-10-28');
         expect(request.url.queryParameters['to'], '2026-11-03');
         return http.Response(
           jsonEncode({
-            'summary': {'insideNow': 2, 'pendingArrivals': 1},
-            'recentEntries': [
+            'stats': [
               {
                 'date': '2026-11-03',
-                'time': '09:00',
-                'event': 'Llegada',
-                'person': 'Visitante de bitácora',
+                'arrivals': 2,
+                'entries': 1,
+                'exits': 0,
+                'observations': 1,
               },
             ],
           }),
@@ -64,9 +107,75 @@ void main() {
 
       expect(data.appointments, hasLength(1));
       expect(data.appointments.single.visitor, 'Visitante de hoy');
+      expect(data.appointments.single.company, 'Empresa de hoy');
+      expect(data.appointments.single.host, 'Anfitrión de hoy');
       expect(data.insideNow, 2);
       expect(data.pendingArrivals, 1);
       expect(data.recentEntries.single.person, 'Visitante de bitácora');
+      expect(data.dailyActivity, hasLength(7));
+      expect(data.dailyActivity.first.date, '2026-10-28');
+      expect(data.dailyActivity.last.arrivals, 2);
+      expect(data.dailyActivity.last.entries, 1);
+      expect(data.recentEntries.single.event, 'Retiro');
+      expect(data.recentEntries.single.company, 'Empresa de bitácora');
+      expect(
+        data.recentEntries.single.details,
+        'Registro manual · Folio 12345',
+      );
+    },
+  );
+
+  test(
+    'envía tamaño de cinco registros a las dos páginas de bitácora',
+    () async {
+      final service = AuthService(
+        client: MockClient((request) async {
+          expect(request.url.queryParameters['pageSize'], '5');
+          expect(request.url.queryParameters['recentPageSize'], '5');
+          return http.Response(
+            jsonEncode({
+              'entries': [],
+              'summary': <String, Object>{},
+              'hosts': [],
+              'total': 0,
+              'pages': 1,
+            }),
+            200,
+          );
+        }),
+        baseUrl: 'https://example.test',
+        isWeb: true,
+      );
+
+      await service.getDailyLog(
+        from: '2026-11-03',
+        to: '2026-11-03',
+        pageSize: 5,
+        recentPageSize: 5,
+      );
+    },
+  );
+
+  test(
+    'conecta al stream SSE autenticado y detecta sus actualizaciones',
+    () async {
+      final service = AuthService(
+        client: MockClient((request) async {
+          expect(request.method, 'GET');
+          expect(request.url.path, '/api/events');
+          expect(request.headers['accept'], 'text/event-stream');
+          expect(request.headers['cookie'], 'visitas_session=opaque-token');
+          return http.Response(': connected\n\ndata: update\n\n', 200);
+        }),
+        cookieStorage: _MemorySessionCookieStorage()
+          ..value = 'visitas_session=opaque-token',
+        baseUrl: 'https://example.test',
+        isWeb: false,
+      );
+
+      final events = await service.watchRealtimeUpdates().toList();
+
+      expect(events, [RealtimeEvent.connected, RealtimeEvent.update]);
     },
   );
 

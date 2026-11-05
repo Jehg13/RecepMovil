@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:visitas_recep_mobile/auth_service.dart';
+import 'package:visitas_recep_mobile/connected_modules.dart';
 import 'package:visitas_recep_mobile/main.dart';
 
 const _partner = {
@@ -25,8 +27,8 @@ const _appointment = {
   'businessPartnerId': 8,
   'date': '2026-11-04',
   'time': '09:30',
-  'visitor': 'Visitante desde API',
-  'email': 'visitor@example.test',
+  'visitor': 'Personal externo API',
+  'email': 'staff@example.test',
   'referenceCode': 'AB12CD34',
   'company': 'Empresa desde API',
   'partnerType': 'Contratista',
@@ -88,19 +90,367 @@ const _admin = AuthenticatedUser(
 );
 
 void main() {
-  testWidgets('las cinco secciones del menú cargan datos desde la API', (
-    tester,
-  ) async {
+  testWidgets('registra la entrada de una cita activa', (tester) async {
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    Map<String, dynamic>? recordedEntry;
+    final requestedPaths = <String>[];
+    final service = _service((request) async {
+      requestedPaths.add(request.url.path);
+      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+        recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'El movimiento se registró.'}),
+          201,
+        );
+      }
+      if (request.url.path == '/api/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 19,
+                'businessPartnerId': null,
+                'date': today,
+                'time': '10:30',
+                'visitor': 'Visita de prueba',
+                'email': 'visitor@example.test',
+                'referenceCode': 'ENTRY19',
+                'company': 'Empresa de prueba',
+                'host': 'Anfitrión de prueba',
+                'status': 'En proceso',
+                'equipmentChecklistRequired': false,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Bitácora diaria'), findsOneWidget);
+    expect(
+      requestedPaths,
+      containsAll(['/api/daily-log', '/api/appointments']),
+    );
+    expect(find.byType(RefreshIndicator), findsOneWidget);
+    await tester.tap(find.text('Visita de prueba'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Dar entrada'));
+    await tester.pumpAndSettle();
+
+    expect(recordedEntry, containsPair('event', 'Ingreso'));
+    expect(recordedEntry, containsPair('appointmentId', 19));
+    expect(recordedEntry, containsPair('personName', 'Visita de prueba'));
+    expect(find.text('Visita de prueba: entrada registrada.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('el modal de bitácora usa superficies claras en modo claro', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final service = _service((request) async {
+      if (request.url.path == '/api/appointments') {
+        return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Nuevo registro'));
+    await tester.tap(find.text('Nuevo registro'));
+    await tester.pumpAndSettle();
+
+    final dialog = tester.widget<Dialog>(find.byType(Dialog).last);
+    final dialogSurface = dialog.child! as Container;
+    final decoration = dialogSurface.decoration! as BoxDecoration;
+    expect(decoration.color, Colors.white);
+    expect(
+      tester.widget<Text>(find.text('¿A quién vas a registrar?')).style?.color,
+      const Color(0xFF17243A),
+    );
+
+    await tester.tap(find.text('Manual'));
+    await tester.pumpAndSettle();
+    final textField = tester.widget<TextField>(find.byType(TextField).last);
+    expect(textField.style?.color, const Color(0xFF17243A));
+    expect(textField.decoration?.fillColor, const Color(0xFFF3F6FB));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'anfitriones solo pueden eliminar declaraciones pendientes y admin cualquiera',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final service = _service((request) async {
+        if (request.url.path == '/api/equipment/options') {
+          return http.Response(
+            jsonEncode({
+              'partners': <Object>[],
+              'staff': <Object>[],
+              'appointments': <Object>[],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/equipment/declarations') {
+          return http.Response(
+            jsonEncode({
+              'declarations': [
+                {..._declaration, 'id': 31, 'status': 'Pendiente'},
+                {..._declaration, 'id': 32, 'status': 'Enviada'},
+              ],
+              'total': 2,
+              'page': 1,
+              'pages': 1,
+              'pageSize': 5,
+            }),
+            200,
+          );
+        }
+        return http.Response('{}', 200);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ConnectedEquipmentPage(
+              authService: service,
+              isAdmin: false,
+              canManage: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Eliminar'), findsOneWidget);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ConnectedEquipmentPage(
+              authService: service,
+              isAdmin: true,
+              canManage: false,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Eliminar'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'las declaraciones se paginan de cinco en cinco bajo las tarjetas',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final requestedPages = <String>[];
+      final service = _service((request) async {
+        if (request.url.path == '/api/equipment/options') {
+          return http.Response(
+            jsonEncode({
+              'partners': <Object>[],
+              'staff': <Object>[],
+              'appointments': <Object>[],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/equipment/declarations') {
+          final page = request.url.queryParameters['page']!;
+          requestedPages.add(page);
+          final firstId = page == '1' ? 1 : 6;
+          final declarations = List.generate(
+            page == '1' ? 5 : 1,
+            (index) => {
+              'id': firstId + index,
+              'personName': 'Personal ${firstId + index}',
+              'companyName': 'Contratista',
+              'status': 'Enviada',
+              'createdBy': 'Administración',
+              'createdAt': '2026-11-04 09:00:00',
+              'itemCount': 0,
+              'incidentCount': 0,
+              'entryStatus': 'Pendiente',
+              'exitStatus': 'Pendiente',
+            },
+          );
+          return http.Response(
+            jsonEncode({
+              'declarations': declarations,
+              'total': 6,
+              'page': int.parse(page),
+              'pages': 2,
+              'pageSize': 5,
+            }),
+            200,
+          );
+        }
+        return http.Response('{}', 200);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ConnectedEquipmentPage(
+              authService: service,
+              isAdmin: true,
+              canManage: false,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView), const Offset(0, -1800));
+      await tester.pumpAndSettle();
+
+      expect(requestedPages, ['1']);
+      expect(find.text('Página 1 de 2'), findsOneWidget);
+      expect(find.text('Personal 5'), findsOneWidget);
+      expect(find.text('Personal 6'), findsNothing);
+
+      await tester.tap(find.byTooltip('Más registros'));
+      await tester.pumpAndSettle();
+
+      expect(requestedPages, ['1', '2']);
+      expect(find.text('Página 2 de 2'), findsOneWidget);
+      expect(find.text('Personal 6'), findsOneWidget);
+      expect(find.text('Personal 1'), findsNothing);
+    },
+  );
+
+  test('el cliente tolera la paginación del backend anterior', () async {
+    final service = _service((request) async {
+      expect(request.url.queryParameters['page'], '2');
+      expect(request.url.queryParameters['pageSize'], '5');
+      return http.Response(
+        jsonEncode({
+          'declarations': [
+            {..._declaration, 'id': 22},
+          ],
+          'total': 6,
+          'page': 2,
+          'pages': 2,
+          'pageSize': 7,
+        }),
+        200,
+      );
+    });
+
+    final result = await service.getEquipmentDeclarations(page: 2);
+
+    expect(result.declarations, hasLength(1));
+    expect(result.total, 6);
+    expect(result.page, 2);
+    expect(result.pages, 2);
+    expect(result.pageSize, 7);
+  });
+
+  test(
+    'el cliente admite respuestas de paginación sin metadatos opcionales',
+    () async {
+      final service = _service(
+        (request) async => http.Response(
+          jsonEncode({
+            'declarations': List.generate(
+              3,
+              (index) => {..._declaration, 'id': index + 1},
+            ),
+          }),
+          200,
+        ),
+      );
+
+      final result = await service.getEquipmentDeclarations();
+
+      expect(result.declarations, hasLength(3));
+      expect(result.total, 3);
+      expect(result.page, 1);
+      expect(result.pages, 1);
+      expect(result.pageSize, 3);
+    },
+  );
+
+  testWidgets('las cinco secciones del menú cargan datos desde la API', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     final requestedPaths = <String>{};
+    Map<String, String>? dailyLogQuery;
     Map<String, dynamic>? createdEquipmentDeclaration;
     Map<String, dynamic>? createdAppointment;
     final service = _service((request) async {
       requestedPaths.add(request.url.path);
+      if (request.url.path == '/api/daily-log') {
+        dailyLogQuery = request.url.queryParameters;
+      }
       if (request.method == 'POST' && request.url.path == '/api/appointments') {
         createdAppointment = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
@@ -119,9 +469,18 @@ void main() {
             'id': 42,
             'personName': createdEquipmentDeclaration?['personName'],
             'token': 'equipment-link-token',
+            'url': 'https://example.test/#equipo=equipment-link-token',
             'expiresInDays': 30,
           }),
           201,
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/appointments/12/send-qr') {
+        expect(jsonDecode(request.body), {'employeeId': 3});
+        return http.Response(
+          jsonEncode({'message': 'QR enviado a staff@example.test'}),
+          200,
         );
       }
       final Object response = switch (request.url.path) {
@@ -147,6 +506,10 @@ void main() {
         '/api/daily-log' => _dailyLog,
         '/api/equipment/declarations' => {
           'declarations': [_declaration],
+          'total': 1,
+          'page': 1,
+          'pages': 1,
+          'pageSize': 5,
         },
         '/api/equipment/options' => {
           'partners': [
@@ -188,9 +551,38 @@ void main() {
     for (final section in sections.entries) {
       await tester.tap(find.byIcon(Icons.menu_rounded).first);
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text(section.key),
+        350,
+        scrollable: find
+            .descendant(
+              of: find.byType(Drawer),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
       await tester.tap(find.text(section.key).last);
       await tester.pumpAndSettle();
       expect(find.text(section.value), findsOneWidget);
+      expect(find.text('RECEP'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('connected-session-user')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('connected-session-user')),
+          matching: find.text('Administración'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('connected-session-user')),
+          matching: find.text('Administrador'),
+        ),
+        findsOneWidget,
+      );
       switch (section.key) {
         case 'Contratistas/proveedores y visitantes':
           expect(find.text('Empresa desde API'), findsOneWidget);
@@ -200,8 +592,11 @@ void main() {
           expect(find.text('EMPLEADOS'), findsOneWidget);
           expect(find.text('3'), findsOneWidget);
           expect(find.text('REGISTRADO POR'), findsOneWidget);
-          expect(find.text('Administración'), findsOneWidget);
+          expect(find.text('Administración'), findsWidgets);
           expect(find.text('Activa'), findsOneWidget);
+          expect(find.byTooltip('Acciones del registro'), findsNothing);
+          expect(find.text('Editar'), findsOneWidget);
+          expect(find.text('Eliminar'), findsOneWidget);
           expect(find.byType(DropdownButtonFormField<String>), findsNothing);
           await tester.tap(find.text('Registrar'));
           await tester.pumpAndSettle();
@@ -222,6 +617,11 @@ void main() {
           expect(find.text('staff@example.test'), findsOneWidget);
           expect(find.text('5551234567'), findsOneWidget);
           expect(find.text('Empresa desde API'), findsNWidgets(2));
+          expect(find.text('TIPO DE VÍNCULO'), findsOneWidget);
+          expect(find.text('Contratista'), findsWidgets);
+          expect(find.byTooltip('Acciones del empleado'), findsNothing);
+          expect(find.text('Editar'), findsOneWidget);
+          expect(find.text('Eliminar'), findsOneWidget);
           await tester.tap(find.text('Registrar empleado'));
           await tester.pumpAndSettle();
           expect(find.text('Registrar personal externo'), findsOneWidget);
@@ -240,6 +640,13 @@ void main() {
           expect(find.text('VERIFICACIÓN DE ENTRADA'), findsOneWidget);
           expect(find.text('VERIFICACIÓN DE SALIDA'), findsOneWidget);
           expect(find.text('Pendiente'), findsNWidgets(2));
+          expect(find.byTooltip('Acciones de declaración'), findsNothing);
+          expect(find.text('Eliminar'), findsOneWidget);
+          expect(
+            find.widgetWithText(FilledButton, 'Abrir declaración'),
+            findsOneWidget,
+          );
+          expect(find.widgetWithText(FilledButton, 'Eliminar'), findsOneWidget);
           tester.view.physicalSize = const Size(390, 844);
           await tester.pumpAndSettle();
           await tester.tap(find.text('Nueva'));
@@ -256,12 +663,12 @@ void main() {
           await tester.pumpAndSettle();
           expect(find.text('Cita vinculada'), findsOneWidget);
           await tester.tap(
-            find.text('Visitante desde API · 04/11/2026 · 09:30'),
+            find.text('Personal externo API · 04/11/2026 · 09:30'),
           );
           await tester.pumpAndSettle();
           await tester.tap(find.text('PERSONAL EXTERNO REGISTRADO · OPCIONAL'));
           await tester.pumpAndSettle();
-          await tester.tap(find.text('Personal externo API'));
+          await tester.tap(find.text('Personal externo API').last);
           await tester.pumpAndSettle();
           await tester.tap(find.text('Crear enlace'));
           await tester.pumpAndSettle();
@@ -272,7 +679,7 @@ void main() {
           );
           expect(
             createdEquipmentDeclaration,
-            containsPair('appointmentId', 12),
+            containsPair('appointmentId', null),
           );
           expect(
             createdEquipmentDeclaration,
@@ -282,21 +689,97 @@ void main() {
             createdEquipmentDeclaration,
             containsPair('personName', 'Personal externo API'),
           );
+          expect(
+            find.text('https://example.test/#equipo=equipment-link-token'),
+            findsOneWidget,
+          );
+          expect(find.text('Copiar enlace'), findsOneWidget);
           await tester.tap(find.text('Cerrar').last);
           await tester.pumpAndSettle();
           tester.view.physicalSize = const Size(1280, 900);
           await tester.pumpAndSettle();
         case 'Agenda de citas':
-          expect(find.text('Visitante desde API'), findsOneWidget);
-          expect(find.text('Anfitrión API'), findsOneWidget);
+          await tester.ensureVisible(find.text('Del día'));
+          await tester.tap(find.text('Del día'));
+          await tester.pumpAndSettle();
+          expect(find.text('Crear cita'), findsNothing);
+          final calendarDay = find.byKey(
+            const ValueKey('appointment-calendar-day-2026-11-04'),
+          );
+          await tester.ensureVisible(calendarDay);
+          await tester.tap(calendarDay);
+          await tester.pumpAndSettle();
+          expect(find.text('04/11/2026'), findsOneWidget);
+          expect(find.text('1 cita programada'), findsOneWidget);
+          expect(find.text('Anfitrión: Anfitrión API'), findsOneWidget);
+          expect(find.text('Personal externo API'), findsOneWidget);
+          await tester.tap(find.text('Cerrar').last);
+          await tester.pumpAndSettle();
+          await tester.drag(find.byType(ListView).last, const Offset(0, 1000));
+          await tester.pumpAndSettle();
+          await tester.ensureVisible(find.text('Todas'));
+          await tester.tap(find.text('Todas'));
+          await tester.pumpAndSettle();
+          await tester.drag(find.byType(ListView).last, const Offset(0, -900));
+          await tester.pumpAndSettle();
+          final deleteAppointmentButton = tester.widget<OutlinedButton>(
+            find.widgetWithText(OutlinedButton, 'Eliminar'),
+          );
+          expect(deleteAppointmentButton.onPressed, isNull);
           expect(find.text('Ver QR'), findsOneWidget);
           await tester.tap(find.text('Ver QR'));
           await tester.pumpAndSettle();
           expect(find.text('Pase de visita'), findsOneWidget);
-          expect(find.text('FOLIO  AB12CD34'), findsOneWidget);
-          await tester.tap(find.text('Cerrar'));
+          expect(find.byType(QrImageView), findsOneWidget);
+          expect(find.text('AB12CD34'), findsWidgets);
+          await tester.ensureVisible(find.text('Cerrar').last);
+          await tester.tap(find.text('Cerrar').last);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Enviar pase'));
+          await tester.pumpAndSettle();
+          expect(find.text('Personal externo'), findsOneWidget);
+          expect(find.text('Ver QR'), findsOneWidget);
+          expect(find.text('Enviar QR'), findsOneWidget);
+          await tester.tap(find.text('Enviar QR'));
+          await tester.pumpAndSettle();
+          expect(find.text('Enviar pase QR'), findsOneWidget);
+          await tester.tap(find.text('Enviar QR').last);
+          await tester.pumpAndSettle();
+          expect(
+            find.text(
+              'El pase de Personal externo API se envió a staff@example.test.',
+            ),
+            findsOneWidget,
+          );
+          expect(find.text('QR enviado'), findsOneWidget);
+          await tester.tap(find.byIcon(Icons.menu_rounded).first);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Agenda de citas').last);
+          await tester.pumpAndSettle();
+          await tester.drag(find.byType(ListView).last, const Offset(0, -1000));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Ver QR').last);
+          await tester.pumpAndSettle();
+          expect(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is QrImageView &&
+                  widget.semanticsLabel ==
+                      'Código QR de Personal externo API · referencia AB12CD34',
+            ),
+            findsOneWidget,
+          );
+          expect(find.text('Personal externo API'), findsWidgets);
+          expect(find.bySemanticsLabel('Logo CyMEZ'), findsOneWidget);
+          expect(find.text('CÓDIGO DE REFERENCIA'), findsOneWidget);
+          expect(find.text('AB12CD34'), findsWidgets);
+          expect(find.text('Descargar PNG'), findsOneWidget);
+          await tester.ensureVisible(find.text('Cerrar').last);
+          await tester.tap(find.text('Cerrar').last);
           await tester.pumpAndSettle();
           tester.view.physicalSize = const Size(390, 844);
+          await tester.pumpAndSettle();
+          await tester.drag(find.byType(ListView).last, const Offset(0, 1000));
           await tester.pumpAndSettle();
           await tester.tap(find.text('Nueva'));
           await tester.pumpAndSettle();
@@ -338,10 +821,18 @@ void main() {
           tester.view.physicalSize = const Size(1280, 900);
           await tester.pumpAndSettle();
         case 'Bitácora diaria':
-          expect(
-            find.text('Persona desde bitácora API · Llegada'),
-            findsOneWidget,
+          await tester.drag(
+            find.byType(RefreshIndicator).last,
+            const Offset(0, -700),
           );
+          await tester.pumpAndSettle();
+          expect(find.text('Filtrar registros'), findsOneWidget);
+          expect(find.text('TIPO DE MOVIMIENTO'), findsNothing);
+          await tester.tap(find.byTooltip('Mostrar filtros'));
+          await tester.pumpAndSettle();
+          expect(find.text('TIPO DE MOVIMIENTO'), findsOneWidget);
+          expect(find.text('CATEGORÍA'), findsOneWidget);
+          expect(tester.takeException(), isNull);
       }
     }
 
@@ -356,6 +847,8 @@ void main() {
         '/api/daily-log',
       }),
     );
+    expect(dailyLogQuery?['pageSize'], '5');
+    expect(dailyLogQuery?['recentPageSize'], '5');
     expect(tester.takeException(), isNull);
   });
 }

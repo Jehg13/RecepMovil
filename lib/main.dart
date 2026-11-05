@@ -15,7 +15,9 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'auth_service.dart';
+import 'app_feedback.dart';
 import 'connected_modules.dart';
+import 'reception_header.dart';
 
 const _red = Color(0xFFFF1538);
 const _blue = Color(0xFF087FFF);
@@ -3952,12 +3954,10 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
                           : _TabletWalkInReviewStep(
                               onPrevious: () => setState(() => _tabletStep = 3),
                               onSubmit: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'El envío del registro aún no está conectado.',
-                                    ),
-                                  ),
+                                AppFeedback.show(
+                                  context,
+                                  'El envío del registro aún no está conectado.',
+                                  type: AppFeedbackType.warning,
                                 );
                               },
                             );
@@ -4059,7 +4059,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
                               children: [
                                 Icon(
                                   Icons.person_add_alt_1_rounded,
-                                  color: Color(0xFF087FFF),
+                                  color: const Color(0xFF087FFF),
                                   size: 17,
                                 ),
                                 SizedBox(width: 7),
@@ -6786,7 +6786,37 @@ class _ReceptionDashboardPage extends StatefulWidget {
 }
 
 class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
-  String _activeSection = 'home';
+  late String _activeSection;
+  Map<String, dynamic>? _externalStaffAppointment;
+  bool _isLoggingOut = false;
+  bool _isDarkMode = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final user = widget.user;
+    _activeSection = user?.isAdmin == true
+        ? 'home'
+        : user?.sectionAccess.contains('recepcion') == true ||
+              user?.sectionAccess.contains('anfitriones') == true
+        ? 'appointments'
+        : 'access_denied';
+  }
+
+  bool _canAccessSection(String section) {
+    final user = widget.user;
+    if (user?.isAdmin == true) return true;
+    if (user?.sectionAccess.contains('recepcion') == true) {
+      return section == 'appointments' || section == 'logbook';
+    }
+    if (user?.sectionAccess.contains('anfitriones') == true) {
+      return section == 'external_companies' ||
+          section == 'external_staff' ||
+          section == 'appointments' ||
+          section == 'equipment';
+    }
+    return false;
+  }
 
   bool get _canManageExternalModules {
     final user = widget.user;
@@ -6794,6 +6824,25 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
         (user.isAdmin ||
             (user.sectionAccess.contains('anfitriones') &&
                 !user.sectionAccess.contains('recepcion')));
+  }
+
+  Future<void> _logout() async {
+    if (_isLoggingOut) return;
+    setState(() => _isLoggingOut = true);
+    final authService = widget.authService ?? AuthService.shared;
+    try {
+      await authService.logout();
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => ReceptionLoginPage(authService: authService),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _isLoggingOut = false);
+      AppFeedback.show(context, error.message, type: AppFeedbackType.error);
+    }
   }
 
   Widget _withAuthService(
@@ -6812,237 +6861,348 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
     return builder(authService, widget.user);
   }
 
-  void _openDepartments() {
-    setState(() => _activeSection = 'departments');
+  void _openSection(String section) {
+    if (!_canAccessSection(section)) return;
+    setState(() => _activeSection = section);
   }
 
-  void _openHome() {
-    setState(() => _activeSection = 'home');
+  void _openDepartments() => _openSection('departments');
+
+  void _openHome() => _openSection('home');
+
+  void _openHosts() => _openSection('hosts');
+
+  void _openAccesses() => _openSection('accesses');
+
+  void _openExternalCompanies() => _openSection('external_companies');
+
+  void _openExternalStaff([Map<String, dynamic>? appointment]) {
+    if (!_canAccessSection('external_staff')) return;
+    setState(() {
+      _externalStaffAppointment = appointment;
+      _activeSection = 'external_staff';
+    });
   }
 
-  void _openHosts() {
-    setState(() => _activeSection = 'hosts');
-  }
+  void _openEquipment() => _openSection('equipment');
 
-  void _openAccesses() {
-    setState(() => _activeSection = 'accesses');
-  }
+  void _openAppointments() => _openSection('appointments');
 
-  void _openExternalCompanies() {
-    setState(() => _activeSection = 'external_companies');
-  }
-
-  void _openExternalStaff() {
-    setState(() => _activeSection = 'external_staff');
-  }
-
-  void _openEquipment() {
-    setState(() => _activeSection = 'equipment');
-  }
-
-  void _openAppointments() {
-    setState(() => _activeSection = 'appointments');
-  }
-
-  void _openLogbook() {
-    setState(() => _activeSection = 'logbook');
-  }
+  void _openLogbook() => _openSection('logbook');
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF07101F),
-      drawer: _ReceptionDrawer(
-        activeSection: _activeSection,
-        onHome: _openHome,
-        onDepartments: _openDepartments,
-        onHosts: _openHosts,
-        onAccesses: _openAccesses,
-        onExternalCompanies: _openExternalCompanies,
-        onExternalStaff: _openExternalStaff,
-        onEquipment: _openEquipment,
-        onAppointments: _openAppointments,
-        onLogbook: _openLogbook,
+    final theme = ThemeData(
+      brightness: _isDarkMode ? Brightness.dark : Brightness.light,
+      scaffoldBackgroundColor: _isDarkMode
+          ? const Color(0xFF07101F)
+          : const Color(0xFFF3F7FC),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xFF087FFF),
+        brightness: _isDarkMode ? Brightness.dark : Brightness.light,
       ),
-      body: _activeSection == 'home'
-          ? _HomeDashboardContent(
-              authService: widget.authService,
+      fontFamily: 'Roboto',
+      dialogTheme: DialogThemeData(
+        backgroundColor: _isDarkMode ? const Color(0xFF0D1730) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+      ),
+    );
+    return AnimatedTheme(
+      data: theme,
+      duration: const Duration(milliseconds: 220),
+      child: _DashboardThemeScope(
+        isDarkMode: _isDarkMode,
+        onChanged: (value) => setState(() => _isDarkMode = value),
+        child: ReceptionThemeScope(
+          isDarkMode: _isDarkMode,
+          onChanged: (value) => setState(() => _isDarkMode = value),
+          onLogout: _logout,
+          child: Scaffold(
+            key: const ValueKey('reception-dashboard-scaffold'),
+            backgroundColor: theme.scaffoldBackgroundColor,
+            drawer: _ReceptionDrawer(
+              activeSection: _activeSection,
               user: widget.user,
-              onOpenAppointments: _openAppointments,
-              onOpenLogbook: _openLogbook,
-            )
-          : switch (_activeSection) {
-              'departments' => _DepartmentsPage(
-                authService: widget.authService,
-                isAdmin: widget.user?.isAdmin ?? false,
-              ),
-              'hosts' => _HostsPage(
-                authService: widget.authService,
-                isAdmin: widget.user?.isAdmin ?? false,
-              ),
-              'accesses' => _AccessesPage(
-                authService: widget.authService,
-                isAdmin: widget.user?.isAdmin ?? false,
-              ),
-              'external_companies' => _withAuthService(
-                (authService, user) => ConnectedExternalCompaniesPage(
-                  authService: authService,
-                  isAdmin: user?.isAdmin ?? false,
-                  canManage: _canManageExternalModules,
-                ),
-              ),
-              'external_staff' => _withAuthService(
-                (authService, user) => ConnectedExternalStaffPage(
-                  authService: authService,
-                  isAdmin: user?.isAdmin ?? false,
-                  canManage: _canManageExternalModules,
-                ),
-              ),
-              'equipment' => _withAuthService(
-                (authService, user) => ConnectedEquipmentPage(
-                  authService: authService,
-                  isAdmin: user?.isAdmin ?? false,
-                  canManage: _canManageExternalModules,
-                ),
-              ),
-              'appointments' => _withAuthService(
-                (authService, user) => ConnectedAppointmentsPage(
-                  authService: authService,
-                  isAdmin: user?.isAdmin ?? false,
-                  canManage: _canManageExternalModules,
-                ),
-              ),
-              'logbook' => _withAuthService(
-                (authService, user) => ConnectedDailyLogbookPage(
-                  authService: authService,
-                  isAdmin: user?.isAdmin ?? false,
-                ),
-              ),
-              _ => Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Color(0xFF101936),
-                      Color(0xFF091329),
-                      Color(0xFF050A16),
-                    ],
-                    stops: [0, 0.48, 1],
-                  ),
-                ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 50,
-                      right: -90,
-                      child: Container(
-                        width: 230,
-                        height: 230,
+              isLoggingOut: _isLoggingOut,
+              onLogout: _logout,
+              onHome: _openHome,
+              onDepartments: _openDepartments,
+              onHosts: _openHosts,
+              onAccesses: _openAccesses,
+              onExternalCompanies: _openExternalCompanies,
+              onExternalStaff: _openExternalStaff,
+              onEquipment: _openEquipment,
+              onAppointments: _openAppointments,
+              onLogbook: _openLogbook,
+            ),
+            body: _ReceptionSessionScope(
+              user: widget.user,
+              child: _activeSection == 'home'
+                  ? _HomeDashboardContent(
+                      authService: widget.authService,
+                      user: widget.user,
+                      onOpenAppointments: _openAppointments,
+                      onOpenLogbook: _openLogbook,
+                    )
+                  : switch (_activeSection) {
+                      'departments' => _DepartmentsPage(
+                        authService: widget.authService,
+                        isAdmin: widget.user?.isAdmin ?? false,
+                        user: widget.user,
+                      ),
+                      'hosts' => _HostsPage(
+                        authService: widget.authService,
+                        isAdmin: widget.user?.isAdmin ?? false,
+                        user: widget.user,
+                      ),
+                      'accesses' => _AccessesPage(
+                        authService: widget.authService,
+                        isAdmin: widget.user?.isAdmin ?? false,
+                        user: widget.user,
+                      ),
+                      'external_companies' => _withAuthService(
+                        (authService, user) => ConnectedExternalCompaniesPage(
+                          authService: authService,
+                          isAdmin: user?.isAdmin ?? false,
+                          canManage: _canManageExternalModules,
+                          user: user,
+                        ),
+                      ),
+                      'external_staff' => _withAuthService(
+                        (authService, user) => ConnectedExternalStaffPage(
+                          authService: authService,
+                          isAdmin: user?.isAdmin ?? false,
+                          canManage: _canManageExternalModules,
+                          user: user,
+                          appointment: _externalStaffAppointment,
+                        ),
+                      ),
+                      'equipment' => _withAuthService(
+                        (authService, user) => ConnectedEquipmentPage(
+                          authService: authService,
+                          isAdmin: user?.isAdmin ?? false,
+                          canManage: _canManageExternalModules,
+                          user: user,
+                        ),
+                      ),
+                      'appointments' => _withAuthService(
+                        (authService, user) => ConnectedAppointmentsPage(
+                          authService: authService,
+                          isAdmin: user?.isAdmin ?? false,
+                          canManage: _canManageExternalModules,
+                          onSendPass: _openExternalStaff,
+                          user: user,
+                        ),
+                      ),
+                      'logbook' => _withAuthService(
+                        (authService, user) => ConnectedDailyLogbookPage(
+                          authService: authService,
+                          isAdmin: user?.isAdmin ?? false,
+                          user: user,
+                        ),
+                      ),
+                      'access_denied' => const Center(
+                        child: Text(
+                          'Tu cuenta no tiene secciones habilitadas.',
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      _ => Container(
                         decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(
-                            colors: [Color(0x300087FF), Colors.transparent],
-                          ),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      top: 480,
-                      left: -120,
-                      child: Container(
-                        width: 260,
-                        height: 260,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(
-                            colors: [Color(0x2200D4FF), Colors.transparent],
-                          ),
-                        ),
-                      ),
-                    ),
-                    SafeArea(
-                      child: ListView(
-                        padding: EdgeInsets.fromLTRB(
-                          responsivePadding(context),
-                          10,
-                          responsivePadding(context),
-                          responsiveBottomScrollPadding(context),
-                        ),
-                        children: [
-                          _DashboardHeader(authService: widget.authService),
-                          const SizedBox(height: 12),
-                          const _DashboardSection(
-                            icon: Icons.home_rounded,
-                            title: 'Inicio',
-                          ),
-                          const SizedBox(height: 12),
-                          const Row(
-                            children: [
-                              Expanded(
-                                child: _DashboardMetricCard(
-                                  icon: Icons.calendar_month_rounded,
-                                  accent: Color(0xFFFF3155),
-                                  title: 'Citas de hoy',
-                                  value: '0',
-                                  detail: 'Agenda programada',
-                                ),
-                              ),
-                              SizedBox(width: 12),
-                              Expanded(
-                                child: _DashboardMetricCard(
-                                  icon: Icons.person_rounded,
-                                  accent: Color(0xFF087FFF),
-                                  title: 'Visitantes dentro',
-                                  value: '5',
-                                  detail: 'Según el último movimiento',
-                                ),
-                              ),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Color(0xFF101936),
+                              Color(0xFF091329),
+                              Color(0xFF050A16),
                             ],
+                            stops: [0, 0.48, 1],
                           ),
-                          const SizedBox(height: 12),
-                          const Row(
-                            children: [
-                              Expanded(
-                                child: _DashboardMetricCard(
-                                  icon: Icons.grid_view_rounded,
-                                  accent: Color(0xFFFF3155),
-                                  title: 'Llegadas pendientes',
-                                  value: '0',
-                                  detail: 'Citas sin ingreso completado',
+                        ),
+                        child: Stack(
+                          children: [
+                            Positioned(
+                              top: 50,
+                              right: -90,
+                              child: Container(
+                                width: 230,
+                                height: 230,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  gradient: RadialGradient(
+                                    colors: [
+                                      Color(0x300087FF),
+                                      Colors.transparent,
+                                    ],
+                                  ),
                                 ),
                               ),
-                              SizedBox(width: 12),
-                              Expanded(
-                                child: _DashboardMetricCard(
-                                  icon: Icons.business_center_rounded,
-                                  accent: Color(0xFF087FFF),
-                                  title: 'Declaraciones de equipo',
-                                  value: '4',
-                                  detail: 'Registros en el módulo de equipo',
+                            ),
+                            Positioned(
+                              top: 480,
+                              left: -120,
+                              child: Container(
+                                width: 260,
+                                height: 260,
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  gradient: RadialGradient(
+                                    colors: [
+                                      Color(0x2200D4FF),
+                                      Colors.transparent,
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          const _MovementHistoryCard(),
-                          const SizedBox(height: 12),
-                          const _CompositionCard(),
-                          const SizedBox(height: 12),
-                          const _TrendCard(),
-                          const SizedBox(height: 12),
-                          const _AgendaPanel(),
-                          const SizedBox(height: 12),
-                          const _BitacoraPanel(),
-                        ],
+                            ),
+                            SafeArea(
+                              child: ListView(
+                                padding: EdgeInsets.fromLTRB(
+                                  responsivePadding(context),
+                                  10,
+                                  responsivePadding(context),
+                                  responsiveBottomScrollPadding(context),
+                                ),
+                                children: [
+                                  _DashboardHeader(
+                                    authService: widget.authService,
+                                    user: widget.user,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const Row(
+                                    children: [
+                                      Expanded(
+                                        child: _DashboardMetricCard(
+                                          icon: Icons.calendar_month_rounded,
+                                          accent: Color(0xFFFF3155),
+                                          title: 'Citas de hoy',
+                                          value: '0',
+                                          detail: 'Agenda programada',
+                                        ),
+                                      ),
+                                      SizedBox(width: 12),
+                                      Expanded(
+                                        child: _DashboardMetricCard(
+                                          icon: Icons.person_rounded,
+                                          accent: Color(0xFF087FFF),
+                                          title: 'Visitantes dentro',
+                                          value: '5',
+                                          detail: 'Según el último movimiento',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const Row(
+                                    children: [
+                                      Expanded(
+                                        child: _DashboardMetricCard(
+                                          icon: Icons.grid_view_rounded,
+                                          accent: Color(0xFFFF3155),
+                                          title: 'Llegadas pendientes',
+                                          value: '0',
+                                          detail:
+                                              'Citas sin ingreso completado',
+                                        ),
+                                      ),
+                                      SizedBox(width: 12),
+                                      Expanded(
+                                        child: _DashboardMetricCard(
+                                          icon: Icons.business_center_rounded,
+                                          accent: Color(0xFF087FFF),
+                                          title: 'Declaraciones de equipo',
+                                          value: '4',
+                                          detail: 'Registros en el módulo de equipo',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const _MovementHistoryCard(),
+                                  const SizedBox(height: 12),
+                                  const _CompositionCard(),
+                                  const SizedBox(height: 12),
+                                  const _TrendCard(),
+                                  const SizedBox(height: 12),
+                                  const _AgendaPanel(),
+                                  const SizedBox(height: 12),
+                                  const _BitacoraPanel(),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            },
+                    },
+            ),
+          ),
+        ),
+      ),
     );
   }
+}
+
+class _ReceptionSessionScope extends InheritedWidget {
+  const _ReceptionSessionScope({required this.user, required super.child});
+
+  final AuthenticatedUser? user;
+
+  static AuthenticatedUser? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<_ReceptionSessionScope>()
+      ?.user;
+
+  @override
+  bool updateShouldNotify(_ReceptionSessionScope oldWidget) =>
+      user != oldWidget.user;
+}
+
+bool _isLightDashboard(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.light;
+
+Color _dashboardPrimaryText(BuildContext context) =>
+    _isLightDashboard(context) ? const Color(0xFF17243A) : Colors.white;
+
+Color _dashboardSecondaryText(BuildContext context) =>
+    _isLightDashboard(context)
+    ? const Color(0xFF5C6B80)
+    : const Color(0xFFAEB7CC);
+
+BoxDecoration _dashboardPageDecoration(BuildContext context) =>
+    _isLightDashboard(context)
+    ? const BoxDecoration(color: Color(0xFFF3F7FC))
+    : const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
+        ),
+      );
+
+Color _dashboardSurfaceColor(BuildContext context) =>
+    _isLightDashboard(context) ? Colors.white : const Color(0xFF111D35);
+
+class _DashboardThemeScope extends InheritedWidget {
+  const _DashboardThemeScope({
+    required this.isDarkMode,
+    required this.onChanged,
+    required super.child,
+  });
+
+  final bool isDarkMode;
+  final ValueChanged<bool> onChanged;
+
+  static _DashboardThemeScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_DashboardThemeScope>();
+
+  @override
+  bool updateShouldNotify(_DashboardThemeScope oldWidget) =>
+      isDarkMode != oldWidget.isDarkMode;
 }
 
 class _HomeDashboardContent extends StatefulWidget {
@@ -7078,13 +7238,21 @@ class _HomeDashboardContentState extends State<_HomeDashboardContent> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-          stops: [0, 0.48, 1],
-        ),
+      key: const ValueKey('dashboard-home-background'),
+      decoration: BoxDecoration(
+        color: _isLightDashboard(context) ? const Color(0xFFF3F7FC) : null,
+        gradient: _isLightDashboard(context)
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Color(0xFF101936),
+                  Color(0xFF091329),
+                  Color(0xFF050A16),
+                ],
+                stops: [0, 0.48, 1],
+              ),
       ),
       child: SafeArea(
         child: ListView(
@@ -7099,8 +7267,6 @@ class _HomeDashboardContentState extends State<_HomeDashboardContent> {
               authService: widget.authService,
               user: widget.user,
             ),
-            const SizedBox(height: 12),
-            const _DashboardSection(icon: Icons.home_rounded, title: 'Inicio'),
             const SizedBox(height: 12),
             FutureBuilder<DashboardData>(
               future: _dashboardFuture,
@@ -7178,7 +7344,7 @@ class _HomeDashboardData extends StatelessWidget {
             Expanded(
               child: _DashboardMetricCard(
                 icon: Icons.calendar_month_rounded,
-                accent: const Color(0xFFFF3155),
+                accent: const Color(0xFF00C8FF),
                 title: 'Citas de hoy',
                 value: '${data.appointments.length}',
                 detail: 'Agenda programada',
@@ -7202,7 +7368,7 @@ class _HomeDashboardData extends StatelessWidget {
             Expanded(
               child: _DashboardMetricCard(
                 icon: Icons.grid_view_rounded,
-                accent: const Color(0xFFFF3155),
+                accent: const Color(0xFF00C8FF),
                 title: 'Llegadas pendientes',
                 value: '${data.pendingArrivals}',
                 detail: 'Citas sin ingreso completado',
@@ -7220,6 +7386,10 @@ class _HomeDashboardData extends StatelessWidget {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        _CompositionCard(dailyActivity: data.dailyActivity),
+        const SizedBox(height: 12),
+        _TrendCard(dailyActivity: data.dailyActivity),
         const SizedBox(height: 12),
         _HomeAppointmentsPanel(
           appointments: data.appointments,
@@ -7246,72 +7416,256 @@ class _HomeAppointmentsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     final todayAppointments = [...appointments]
       ..sort((a, b) => a.time.compareTo(b.time));
     return _DashboardPanel(
+      padding: EdgeInsets.zero,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _HomePanelHeader(
-            title: 'Agenda de hoy',
-            icon: Icons.calendar_month_rounded,
-            onTap: onOpenAppointments,
-          ),
-          const SizedBox(height: 10),
-          if (todayAppointments.isEmpty)
-            const Text(
-              'No hay citas programadas para hoy.',
-              style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 12),
-            )
-          else
-            ...todayAppointments
-                .take(5)
-                .map(
-                  (appointment) => Padding(
-                    padding: const EdgeInsets.only(bottom: 9),
-                    child: Row(
-                      children: [
-                        Text(
-                          appointment.time,
-                          style: const TextStyle(
-                            color: Color(0xFF75BFFF),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            appointment.visitor,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          appointment.status,
-                          style: const TextStyle(
-                            color: Color(0xFFAEB7CC),
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.calendar_month_rounded,
+                  color: Color(0xFF55B7FF),
+                  size: 21,
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    'Agenda de citas de hoy',
+                    style: TextStyle(
+                      color: _dashboardPrimaryText(context),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: onOpenAppointments,
-              child: const Text('Ver agenda'),
+                TextButton(
+                  onPressed: onOpenAppointments,
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF087FFF),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: const Text('Abrir agenda'),
+                ),
+              ],
             ),
           ),
+          if (todayAppointments.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 2, 14, 16),
+              child: Text(
+                'No hay citas programadas para hoy.',
+                style: TextStyle(
+                  color: _dashboardSecondaryText(context),
+                  fontSize: 12,
+                ),
+              ),
+            )
+          else ...[
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: 780,
+                child: Column(
+                  children: [
+                    Container(
+                      height: 38,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: isLight ? const Color(0xFFE7F0FC) : null,
+                        gradient: isLight
+                            ? null
+                            : const LinearGradient(
+                                colors: [Color(0xFF0D2A4A), Color(0xFF0A1D35)],
+                              ),
+                        border: Border.symmetric(
+                          horizontal: BorderSide(
+                            color: isLight
+                                ? const Color(0xFFC9D8EA)
+                                : const Color(0xFF164C7C),
+                          ),
+                        ),
+                      ),
+                      child: const Row(
+                        children: [
+                          _HomeAppointmentColumn(label: 'Hora', width: 68),
+                          _HomeAppointmentColumn(
+                            label: 'Visitante',
+                            width: 156,
+                          ),
+                          _HomeAppointmentColumn(label: 'Empresa', width: 162),
+                          _HomeAppointmentColumn(
+                            label: 'Anfitrión',
+                            width: 145,
+                          ),
+                          _HomeAppointmentColumn(label: 'Estado', width: 112),
+                          _HomeAppointmentColumn(label: 'Acciones', width: 95),
+                        ],
+                      ),
+                    ),
+                    for (final appointment in todayAppointments.take(6))
+                      Container(
+                        constraints: const BoxConstraints(minHeight: 58),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: const BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(color: Color(0x222C75B2)),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            _HomeAppointmentColumn(
+                              label: appointment.time,
+                              width: 68,
+                              color: const Color(0xFF087FFF),
+                              strong: true,
+                            ),
+                            _HomeAppointmentColumn(
+                              label: appointment.visitor,
+                              width: 156,
+                              strong: true,
+                            ),
+                            _HomeAppointmentColumn(
+                              label: appointment.company.isEmpty
+                                  ? 'Público general'
+                                  : appointment.company,
+                              width: 162,
+                            ),
+                            _HomeAppointmentColumn(
+                              label: appointment.host.isEmpty
+                                  ? 'Sin anfitrión'
+                                  : appointment.host,
+                              width: 145,
+                            ),
+                            SizedBox(
+                              width: 112,
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: _HomeAppointmentStatus(
+                                  status: appointment.status,
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 95,
+                              child: TextButton.icon(
+                                onPressed: onOpenAppointments,
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF087FFF),
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                ),
+                                icon: const Icon(
+                                  Icons.open_in_new_rounded,
+                                  size: 14,
+                                ),
+                                label: const Text(
+                                  'Abrir',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: onOpenAppointments,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF75BFFF),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Ver agenda completa'),
+                    SizedBox(width: 4),
+                    Icon(Icons.arrow_forward_rounded, size: 16),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _HomeAppointmentColumn extends StatelessWidget {
+  const _HomeAppointmentColumn({
+    required this.label,
+    required this.width,
+    this.color,
+    this.strong = false,
+  });
+
+  final String label;
+  final double width;
+  final Color? color;
+  final bool strong;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: width,
+    child: Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color ?? _dashboardPrimaryText(context),
+          fontSize: 11,
+          fontWeight: strong ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
+    ),
+  );
+}
+
+class _HomeAppointmentStatus extends StatelessWidget {
+  const _HomeAppointmentStatus({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      'Cancelada' => const Color(0xFFFF7189),
+      'Dentro' || 'Retirado' => const Color(0xFF55D8B0),
+      _ => const Color(0xFFFFC56E),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .1),
+        border: Border.all(color: color.withValues(alpha: .4)),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        status,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
@@ -7325,63 +7679,218 @@ class _HomeLogbookPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return _DashboardPanel(
+      padding: EdgeInsets.zero,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _HomePanelHeader(
-            title: 'Actividad reciente',
-            icon: Icons.history_rounded,
-            onTap: onOpenLogbook,
-          ),
-          const SizedBox(height: 10),
-          if (entries.isEmpty)
-            const Text(
-              'Todavía no hay movimientos registrados hoy.',
-              style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 12),
-            )
-          else
-            ...entries
-                .take(5)
-                .map(
-                  (entry) => Padding(
-                    padding: const EdgeInsets.only(bottom: 9),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 43,
-                          child: Text(
-                            entry.time,
-                            style: const TextStyle(
-                              color: Color(0xFF75BFFF),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Text(
-                            '${entry.event} · ${entry.person}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.access_time_rounded,
+                  color: Color(0xFF55B7FF),
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Registros del periodo',
+                    style: TextStyle(
+                      color: _dashboardPrimaryText(context),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
                 ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: onOpenLogbook,
-              child: const Text('Ver bitácora'),
+                TextButton(
+                  onPressed: onOpenLogbook,
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF9FCBFF),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: const Text(
+                    'Ver toda la bitácora  →',
+                    style: TextStyle(fontSize: 10),
+                  ),
+                ),
+              ],
             ),
           ),
+          Divider(
+            height: 1,
+            color: isLight ? const Color(0xFFD8E2EF) : const Color(0x443B78AB),
+          ),
+          if (entries.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
+              child: Text(
+                'No hay movimientos en el periodo seleccionado.',
+                style: TextStyle(
+                  color: _dashboardSecondaryText(context),
+                  fontSize: 12,
+                ),
+              ),
+            )
+          else
+            ...entries
+                .take(6)
+                .map(
+                  (entry) =>
+                      _HomePeriodEntry(entry: entry, onTap: onOpenLogbook),
+                ),
         ],
+      ),
+    );
+  }
+}
+
+class _HomePeriodEntry extends StatelessWidget {
+  const _HomePeriodEntry({required this.entry, required this.onTap});
+
+  final DashboardLogEntry entry;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
+    final (icon, accent) = switch (entry.event) {
+      'Llegada' => (Icons.call_received_rounded, const Color(0xFF43D6AC)),
+      'Ingreso' => (Icons.login_rounded, const Color(0xFF52AFFF)),
+      'Retiro' => (Icons.logout_rounded, const Color(0xFFFF4968)),
+      _ => (Icons.notes_rounded, const Color(0xFF9AAEC5)),
+    };
+    final company = entry.company.trim();
+    final details = entry.details.trim();
+    final date = DateTime.tryParse(entry.date);
+    final dateLabel = date == null
+        ? entry.date
+        : '${date.day} ${_chartDateLabel(entry.date).split(' ').last}';
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 37,
+              height: 37,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: accent.withValues(alpha: .1),
+                border: Border.all(color: accent.withValues(alpha: .75)),
+              ),
+              child: Icon(icon, size: 17, color: accent),
+            ),
+            const SizedBox(width: 10),
+            SizedBox(
+              width: 48,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      dateLabel,
+                      style: TextStyle(
+                        color: isLight
+                            ? const Color(0xFF65758B)
+                            : const Color(0xFF8DA8C8),
+                        fontSize: 10,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      entry.time,
+                      style: TextStyle(
+                        color: isLight
+                            ? const Color(0xFF52657D)
+                            : const Color(0xFFB7C8DD),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    entry.event,
+                    style: TextStyle(
+                      color: accent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Wrap(
+                    spacing: 5,
+                    children: [
+                      Text(
+                        entry.person,
+                        style: TextStyle(
+                          color: isLight
+                              ? const Color(0xFF17243A)
+                              : const Color(0xFFE7EEF9),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (company.isNotEmpty) ...[
+                        Text(
+                          '•',
+                          style: TextStyle(
+                            color: isLight
+                                ? const Color(0xFF65758B)
+                                : const Color(0xFF8DA8C8),
+                            fontSize: 11,
+                          ),
+                        ),
+                        Text(
+                          company,
+                          style: TextStyle(
+                            color: isLight
+                                ? const Color(0xFF52657D)
+                                : const Color(0xFFB7C8DD),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (details.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      details,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isLight
+                            ? const Color(0xFF65758B)
+                            : const Color(0xFF8DA8C8),
+                        fontSize: 10,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: Color(0xFF76B8F4),
+              size: 19,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -7438,223 +7947,42 @@ class _DashboardHeader extends StatefulWidget {
 }
 
 class _DashboardHeaderState extends State<_DashboardHeader> {
-  OverlayEntry? _profileEntry;
-
-  void _closeProfileMenu() {
-    _profileEntry?.remove();
-    _profileEntry = null;
-  }
+  AuthenticatedUser? get _currentUser =>
+      widget.user ?? _ReceptionSessionScope.maybeOf(context);
 
   void _toggleProfileMenu() {
-    if (_profileEntry != null) {
-      _closeProfileMenu();
-      return;
-    }
-
-    final renderBox = context.findRenderObject() as RenderBox;
-    final offset = renderBox.localToGlobal(Offset.zero);
-    final menuTop = offset.dy + renderBox.size.height - 3;
-    _profileEntry = OverlayEntry(
-      builder: (overlayContext) => _ProfileMenuOverlay(
-        top: menuTop,
-        onClose: _closeProfileMenu,
-        authService: widget.authService ?? AuthService.shared,
-        user: widget.user,
-      ),
+    final user = _currentUser;
+    final userName = user?.name?.trim();
+    showReceptionThemeMenu(
+      context: context,
+      name: userName != null && userName.isNotEmpty
+          ? userName
+          : user?.login ?? 'Cuenta',
+      role: user?.role?.trim().isNotEmpty == true
+          ? user!.role!.trim()
+          : user?.isAdmin == true
+          ? 'Administrador'
+          : 'Recepción',
     );
-    Overlay.of(context).insert(_profileEntry!);
-  }
-
-  @override
-  void dispose() {
-    _closeProfileMenu();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.sizeOf(context).width < 440;
-    final userName = widget.user?.name?.trim();
+    final user = _currentUser;
+    final userName = user?.name?.trim();
     final displayName = userName != null && userName.isNotEmpty
         ? userName
-        : widget.user?.login ?? 'Cuenta';
-    final displayRole = widget.user?.role?.trim().isNotEmpty == true
-        ? widget.user!.role!.trim()
-        : widget.user?.isAdmin == true
+        : user?.login ?? 'Cuenta';
+    final displayRole = user?.role?.trim().isNotEmpty == true
+        ? user!.role!.trim()
+        : user?.isAdmin == true
         ? 'Administrador'
         : 'Recepción';
-    return SizedBox(
-      height: 68,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF07162E),
-          border: Border(
-            bottom: BorderSide(color: Color(0xFF263B58), width: 1),
-          ),
-        ),
-        child: Row(
-          children: [
-            Builder(
-              builder: (context) =>
-                  _MenuButton(onTap: () => Scaffold.of(context).openDrawer()),
-            ),
-            Expanded(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Image.asset(
-                    'assets/images/cymez-reception-logo.webp',
-                    cacheWidth: 480,
-                    width: compact ? 58 : 82,
-                    height: 52,
-                    fit: BoxFit.contain,
-                  ),
-                  const SizedBox(width: 5),
-                  Container(
-                    width: 1,
-                    height: 31,
-                    color: const Color(0xFF3A4A62),
-                  ),
-                  const SizedBox(width: 5),
-                  const Text(
-                    'RECEP',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      height: 1.05,
-                      letterSpacing: 1.3,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  if (!compact) ...[
-                    const SizedBox(width: 5),
-                    const Text(
-                      'CONTROL DE\nVISITANTES',
-                      style: TextStyle(
-                        color: Color(0xFF9CB5D1),
-                        fontSize: 7,
-                        height: 1.25,
-                        letterSpacing: .55,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            _ProfileButton(
-              name: displayName,
-              role: displayRole,
-              compact: compact,
-              onTap: _toggleProfileMenu,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MenuButton extends StatelessWidget {
-  const _MenuButton({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(25),
-      child: Container(
-        width: 45,
-        height: 45,
-        decoration: BoxDecoration(
-          color: const Color(0xFF09101D),
-          border: Border.all(color: const Color(0xFF263B58)),
-          shape: BoxShape.circle,
-        ),
-        child: const Icon(
-          Icons.menu_rounded,
-          color: Color(0xFFB7C7DA),
-          size: 25,
-        ),
-      ),
-    );
-  }
-}
-
-class _ProfileButton extends StatelessWidget {
-  const _ProfileButton({
-    required this.name,
-    required this.role,
-    required this.compact,
-    required this.onTap,
-  });
-
-  final String name;
-  final String role;
-  final bool compact;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(22),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: compact ? 100 : 140),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Padding(
-                padding: const EdgeInsets.only(right: 7),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    Text(
-                      role,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF75BFFF),
-                        fontSize: 9,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            Container(
-              width: compact ? 36 : 42,
-              height: compact ? 36 : 42,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF111D32), Color(0xFF09101D)],
-                ),
-                border: Border.all(color: const Color(0xFF263B58)),
-              ),
-              child: Icon(
-                Icons.person_outline_rounded,
-                color: Color(0xFFB7C7DA),
-                size: compact ? 21 : 25,
-              ),
-            ),
-          ],
-        ),
-      ),
+    return ReceptionHeaderBar(
+      name: displayName,
+      role: displayRole,
+      onMenuTap: () => Scaffold.of(context).openDrawer(),
+      onProfileTap: _toggleProfileMenu,
     );
   }
 }
@@ -7665,19 +7993,23 @@ class _ProfileMenuOverlay extends StatefulWidget {
     required this.onClose,
     required this.authService,
     required this.user,
+    required this.isDarkMode,
+    required this.onThemeChanged,
   });
 
   final double top;
   final VoidCallback onClose;
   final AuthService authService;
   final AuthenticatedUser? user;
+  final bool isDarkMode;
+  final ValueChanged<bool> onThemeChanged;
 
   @override
   State<_ProfileMenuOverlay> createState() => _ProfileMenuOverlayState();
 }
 
 class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
-  bool _darkMode = true;
+  late bool _darkMode = widget.isDarkMode;
   bool _isLoggingOut = false;
 
   Future<void> _logout() async {
@@ -7695,8 +8027,7 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
     } on AuthApiException catch (error) {
       if (!mounted) return;
       setState(() => _isLoggingOut = false);
-      ScaffoldMessenger.maybeOf(context)
-          ?.showSnackBar(SnackBar(content: Text(error.message)));
+      AppFeedback.show(context, error.message, type: AppFeedbackType.error);
     }
   }
 
@@ -7729,10 +8060,12 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(18),
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFF172442), Color(0xFF090F20)],
+                  colors: _darkMode
+                      ? const [Color(0xFF172442), Color(0xFF090F20)]
+                      : const [Color(0xFFFFFFFF), Color(0xFFEAF3FF)],
                 ),
                 border: Border.all(color: const Color(0x990087FF)),
                 boxShadow: const [
@@ -7774,7 +8107,9 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: Colors.white,
+                                  color: _darkMode
+                                      ? Colors.white
+                                      : const Color(0xFF17243A),
                                   fontSize: 13,
                                   fontWeight: FontWeight.w800,
                                 ),
@@ -7814,22 +8149,26 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
                           size: 20,
                         ),
                         const SizedBox(width: 10),
-                        const Expanded(
+                        Expanded(
                           child: Text(
                             'Modo oscuro',
                             style: TextStyle(
-                              color: Color(0xFFDDE6F5),
+                              color: _darkMode
+                                  ? const Color(0xFFDDE6F5)
+                                  : const Color(0xFF33435C),
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
                         Switch.adaptive(
+                          key: const ValueKey('dashboard-theme-switch'),
                           value: _darkMode,
                           activeTrackColor: const Color(0xFF087FFF),
                           activeThumbColor: Colors.white,
                           onChanged: (value) {
                             setState(() => _darkMode = value);
+                            widget.onThemeChanged(value);
                           },
                         ),
                       ],
@@ -7869,52 +8208,6 @@ class _ProfileMenuOverlayState extends State<_ProfileMenuOverlay> {
   }
 }
 
-class _DashboardSection extends StatelessWidget {
-  const _DashboardSection({required this.icon, required this.title});
-
-  final IconData icon;
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 54,
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF1D2B50), Color(0xFF131C35)],
-        ),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF087FFF)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x6600AEEF),
-            blurRadius: 8,
-            offset: Offset(0, 3),
-          ),
-          BoxShadow(color: Color(0x220087FF), blurRadius: 18, spreadRadius: 2),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: const Color(0xFF087FFF), size: 24),
-          const SizedBox(width: 14),
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _DashboardMetricCard extends StatelessWidget {
   const _DashboardMetricCard({
     required this.icon,
@@ -7932,14 +8225,17 @@ class _DashboardMetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       height: 96,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF1B2748), Color(0xFF141A31), Color(0xFF0E1427)],
+          colors: isLight
+              ? const [Color(0xFFFFFFFF), Color(0xFFF1F6FD), Color(0xFFEAF2FC)]
+              : const [Color(0xFF1B2748), Color(0xFF141A31), Color(0xFF0E1427)],
         ),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: accent.withValues(alpha: .82), width: 1.3),
@@ -7967,7 +8263,7 @@ class _DashboardMetricCard extends StatelessWidget {
                 end: Alignment.bottomRight,
                 colors: [
                   accent.withValues(alpha: .28),
-                  const Color(0xFF10172B),
+                  isLight ? Colors.white : const Color(0xFF10172B),
                 ],
               ),
               borderRadius: BorderRadius.circular(12),
@@ -7988,15 +8284,17 @@ class _DashboardMetricCard extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFDCE2F0),
+                  style: TextStyle(
+                    color: isLight
+                        ? const Color(0xFF53647D)
+                        : const Color(0xFFDCE2F0),
                     fontSize: 10,
                   ),
                 ),
                 Text(
                   value,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: isLight ? const Color(0xFF17243A) : Colors.white,
                     fontSize: 23,
                     height: 1.05,
                     fontWeight: FontWeight.w800,
@@ -8006,8 +8304,10 @@ class _DashboardMetricCard extends StatelessWidget {
                   detail,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFA9B4CB),
+                  style: TextStyle(
+                    color: isLight
+                        ? const Color(0xFF65758B)
+                        : const Color(0xFFA9B4CB),
                     fontSize: 10,
                     height: 1.15,
                   ),
@@ -8033,14 +8333,22 @@ class _DashboardPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       padding: padding,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF1B2949), Color(0xFF12192F), Color(0xFF0D1325)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xFF1B2949),
+                  Color(0xFF12192F),
+                  Color(0xFF0D1325),
+                ],
+              ),
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: const Color(0xFF087FFF), width: 1.2),
         boxShadow: const [
@@ -8159,6 +8467,7 @@ class _PeriodChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       margin: const EdgeInsets.all(4),
       padding: const EdgeInsets.symmetric(horizontal: 7),
@@ -8169,8 +8478,8 @@ class _PeriodChip extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: active || !isLight ? Colors.white : const Color(0xFF53647D),
           fontSize: 8,
           fontWeight: FontWeight.w600,
         ),
@@ -8179,41 +8488,81 @@ class _PeriodChip extends StatelessWidget {
   }
 }
 
+String _chartDateLabel(String date) {
+  final value = DateTime.parse(date);
+  const months = [
+    'ene',
+    'feb',
+    'mar',
+    'abr',
+    'may',
+    'jun',
+    'jul',
+    'ago',
+    'sep',
+    'oct',
+    'nov',
+    'dic',
+  ];
+  return '${value.day} ${months[value.month - 1]}';
+}
+
 class _CompositionCard extends StatelessWidget {
-  const _CompositionCard();
+  const _CompositionCard({this.dailyActivity = const []});
+
+  final List<DashboardDailyActivity> dailyActivity;
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
+    final arrivals = dailyActivity.fold(0, (sum, day) => sum + day.arrivals);
+    final entries = dailyActivity.fold(0, (sum, day) => sum + day.entries);
+    final exits = dailyActivity.fold(0, (sum, day) => sum + day.exits);
+    final observations = dailyActivity.fold(
+      0,
+      (sum, day) => sum + day.observations,
+    );
+    final total = arrivals + entries + exits + observations;
+    final range = dailyActivity.isEmpty
+        ? 'Sin datos'
+        : '${_chartDateLabel(dailyActivity.first.date)} – '
+              '${_chartDateLabel(dailyActivity.last.date)}';
     return _DashboardPanel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Composición de movimientos',
             style: TextStyle(
-              color: Colors.white,
+              color: _dashboardPrimaryText(context),
               fontSize: 14,
               fontWeight: FontWeight.w700,
             ),
           ),
-          const Text(
-            'Distribución · 24 oct 2026 – 30 oct 2026',
-            style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 10),
+          Text(
+            'Últimos 7 días · $range',
+            style: TextStyle(
+              color: _dashboardSecondaryText(context),
+              fontSize: 10,
+            ),
           ),
           const SizedBox(height: 10),
           Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 130,
                 height: 112,
                 child: CustomPaint(
-                  painter: _DonutPainter(),
+                  painter: _DonutPainter(
+                    values: [arrivals, entries, exits, observations],
+                    isLight: isLight,
+                  ),
                   child: Center(
                     child: Text(
-                      '9\nmovimientos',
+                      '$total\nmovimientos',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: Colors.white,
+                        color: _dashboardPrimaryText(context),
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                         height: 1.05,
@@ -8224,35 +8573,38 @@ class _CompositionCard extends StatelessWidget {
               ),
               Expanded(
                 child: Column(
-                  children: const [
+                  children: [
                     _LegendRow(
-                      color: Color(0xFFFF3155),
+                      color: const Color(0xFFFF3155),
                       label: 'Llegadas',
-                      value: '3',
+                      value: '$arrivals',
                     ),
                     _LegendRow(
-                      color: Color(0xFF087FFF),
+                      color: const Color(0xFF087FFF),
                       label: 'Entradas',
-                      value: '5',
+                      value: '$entries',
                     ),
                     _LegendRow(
-                      color: Color(0xFF28C9E8),
+                      color: const Color(0xFF28C9E8),
                       label: 'Salidas',
-                      value: '1',
+                      value: '$exits',
                     ),
                     _LegendRow(
-                      color: Colors.white,
+                      color: const Color(0xFFAEB7CC),
                       label: 'Observaciones',
-                      value: '0',
+                      value: '$observations',
                     ),
                   ],
                 ),
               ),
             ],
           ),
-          const Text(
+          Text(
             'Conteo real de los registros de la bitácora',
-            style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 10),
+            style: TextStyle(
+              color: _dashboardSecondaryText(context),
+              fontSize: 10,
+            ),
           ),
         ],
       ),
@@ -8273,6 +8625,7 @@ class _LegendRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final textColor = _dashboardPrimaryText(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -8286,13 +8639,13 @@ class _LegendRow extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(color: Colors.white, fontSize: 11),
+              style: TextStyle(color: textColor, fontSize: 11),
             ),
           ),
           Text(
             value,
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: textColor,
               fontSize: 11,
               fontWeight: FontWeight.w700,
             ),
@@ -8304,42 +8657,57 @@ class _LegendRow extends StatelessWidget {
 }
 
 class _TrendCard extends StatelessWidget {
-  const _TrendCard();
+  const _TrendCard({this.dailyActivity = const []});
+
+  final List<DashboardDailyActivity> dailyActivity;
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
+    final total = dailyActivity.fold(
+      0,
+      (sum, day) =>
+          sum + day.arrivals + day.entries + day.exits + day.observations,
+    );
+    final range = dailyActivity.isEmpty
+        ? 'Sin datos'
+        : '${_chartDateLabel(dailyActivity.first.date)} – '
+              '${_chartDateLabel(dailyActivity.last.date)}';
     return _DashboardPanel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
               Expanded(
                 child: Text(
                   'Tendencia diaria',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: _dashboardPrimaryText(context),
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
               Text(
-                '9 total',
+                '$total total',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: _dashboardPrimaryText(context),
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                 ),
               ),
             ],
           ),
-          const Text(
-            'Volumen diario · 24 oct 2026 – 30 oct 2026',
-            style: TextStyle(color: Color(0xFFAEB7CC), fontSize: 10),
+          Text(
+            'Volumen diario · últimos 7 días · $range',
+            style: TextStyle(
+              color: _dashboardSecondaryText(context),
+              fontSize: 10,
+            ),
           ),
           const SizedBox(height: 10),
-          const Row(
+          const Wrap(
             children: [
               _LegendDot(color: Color(0xFF087FFF), label: 'Llegadas'),
               SizedBox(width: 12),
@@ -8354,15 +8722,20 @@ class _TrendCard extends StatelessWidget {
             margin: const EdgeInsets.only(top: 8),
             padding: const EdgeInsets.fromLTRB(0, 6, 4, 0),
             decoration: BoxDecoration(
-              color: const Color(0xFF0A1020).withValues(alpha: .72),
+              color: isLight
+                  ? const Color(0xFFF3F7FC)
+                  : const Color(0xFF0A1020).withValues(alpha: .72),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: const Color(0xFF087FFF).withValues(alpha: .12),
               ),
             ),
-            child: const CustomPaint(
-              painter: _LineChartPainter(),
-              size: Size(double.infinity, 178),
+            child: CustomPaint(
+              painter: _LineChartPainter(
+                dailyActivity: dailyActivity,
+                isLight: isLight,
+              ),
+              size: const Size(double.infinity, 178),
             ),
           ),
         ],
@@ -8719,73 +9092,108 @@ class _BitacoraEntry extends StatelessWidget {
 }
 
 class _DonutPainter extends CustomPainter {
-  const _DonutPainter();
+  const _DonutPainter({required this.values, this.isLight = false});
+
+  final List<int> values;
+  final bool isLight;
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.shortestSide * .39;
     final rect = Rect.fromCircle(center: center, radius: radius);
-    final paints = [
-      (const Color(0xFFFF3155), 120.0),
-      (const Color(0xFF087FFF), 200.0),
-      (const Color(0xFF28C9E8), 40.0),
-      (const Color(0xFF2B3350), 360.0 - 120.0 - 200.0 - 40.0),
+    const colors = [
+      Color(0xFFFF3155),
+      Color(0xFF087FFF),
+      Color(0xFF28C9E8),
+      Color(0xFFAEB7CC),
     ];
+    final total = values.fold<int>(0, (sum, value) => sum + value);
+    final stroke = Paint()
+      ..color = isLight ? const Color(0xFFDCE5F0) : const Color(0xFF2B3350)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 14;
+    canvas.drawArc(rect, 0, math.pi * 2, false, stroke);
+    if (total == 0) return;
     var start = -90.0;
-    for (final segment in paints) {
+    for (var index = 0; index < values.length; index++) {
+      if (values[index] == 0) continue;
+      final sweep = values[index] / total * 360;
       canvas.drawArc(
         rect,
         start * 3.1415926535 / 180,
-        segment.$2 * 3.1415926535 / 180,
+        sweep * 3.1415926535 / 180,
         false,
         Paint()
-          ..color = segment.$1
+          ..color = colors[index]
           ..style = PaintingStyle.stroke
           ..strokeWidth = 14
           ..strokeCap = StrokeCap.butt,
       );
-      start += segment.$2;
+      start += sweep;
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _DonutPainter oldDelegate) =>
+      oldDelegate.values != values || oldDelegate.isLight != isLight;
 }
 
 class _LineChartPainter extends CustomPainter {
-  const _LineChartPainter();
+  const _LineChartPainter({required this.dailyActivity, this.isLight = false});
+
+  final List<DashboardDailyActivity> dailyActivity;
+  final bool isLight;
 
   @override
   void paint(Canvas canvas, Size size) {
-    const labels = ['24 Oct', '26 Oct', '28 Oct', '30 Oct'];
+    if (dailyActivity.isEmpty || size.width <= 0 || size.height <= 0) return;
     final left = 31.0;
     final top = 12.0;
     final bottom = size.height - 28;
     final right = size.width - 12;
     final plotWidth = right - left;
     final plotHeight = bottom - top;
+    final maxValue = dailyActivity.fold<int>(1, (maximum, day) {
+      final dayMaximum = [
+        day.arrivals,
+        day.entries,
+        day.exits,
+      ].reduce((first, second) => first > second ? first : second);
+      return dayMaximum > maximum ? dayMaximum : maximum;
+    });
     final gridPaint = Paint()
-      ..color = const Color(0xFF2A365B).withValues(alpha: .72)
+      ..color = (isLight ? const Color(0xFFD8E2EF) : const Color(0xFF2A365B))
+          .withValues(alpha: .72)
       ..strokeWidth = 1;
     for (var i = 0; i <= 3; i++) {
       final y = bottom - plotHeight * i / 3;
       canvas.drawLine(Offset(left, y), Offset(right, y), gridPaint);
+      final value = (maxValue * i / 3).round();
       final valuePainter = TextPainter(
         text: TextSpan(
-          text: '$i',
-          style: const TextStyle(color: Color(0xFFAEB7CC), fontSize: 8),
+          text: '$value',
+          style: TextStyle(
+            color: isLight ? const Color(0xFF65758B) : const Color(0xFFAEB7CC),
+            fontSize: 8,
+          ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
       valuePainter.paint(canvas, Offset(7, y - valuePainter.height / 2));
     }
-    void drawSeries(List<double> values, Color color) {
+    void drawSeries(List<int> values, Color color) {
       final points = <Offset>[];
       for (var i = 0; i < values.length; i++) {
-        final x = left + plotWidth * i / (values.length - 1);
-        final y = bottom - values[i] / 3 * plotHeight;
+        final x = values.length < 2
+            ? left + plotWidth / 2
+            : left + plotWidth * i / (values.length - 1);
+        final y = bottom - values[i] / maxValue * plotHeight;
         points.add(Offset(x, y));
+      }
+      if (points.length == 1) {
+        canvas.drawCircle(points.first, 2.2, Paint()..color = color);
+        return;
       }
       final path = Path()..moveTo(points.first.dx, points.first.dy);
       for (var i = 1; i < points.length; i++) {
@@ -8808,25 +9216,51 @@ class _LineChartPainter extends CustomPainter {
             ..color = color.withValues(alpha: .18)
             ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
         );
-        canvas.drawCircle(point, 3.2, Paint()..color = const Color(0xFF07101F));
+        canvas.drawCircle(
+          point,
+          3.2,
+          Paint()..color = isLight ? Colors.white : const Color(0xFF07101F),
+        );
         canvas.drawCircle(point, 2.2, Paint()..color = color);
       }
     }
 
-    drawSeries([0, 0, 3, 1], const Color(0xFF087FFF));
-    drawSeries([0, 1, 1, 2], const Color(0xFF28C9E8));
-    drawSeries([0, 1, 0, 0], const Color(0xFFFF3155));
-    final labelStyle = const TextStyle(color: Color(0xFFAEB7CC), fontSize: 9);
-    for (var i = 0; i < labels.length; i++) {
-      final x = left + plotWidth * i / 3;
+    drawSeries(
+      dailyActivity.map((day) => day.arrivals).toList(),
+      const Color(0xFF087FFF),
+    );
+    drawSeries(
+      dailyActivity.map((day) => day.entries).toList(),
+      const Color(0xFF28C9E8),
+    );
+    drawSeries(
+      dailyActivity.map((day) => day.exits).toList(),
+      const Color(0xFFFF3155),
+    );
+    final labelStyle = TextStyle(
+      color: isLight ? const Color(0xFF65758B) : const Color(0xFFAEB7CC),
+      fontSize: 9,
+    );
+    final labelIndices = <int>{
+      0,
+      dailyActivity.length ~/ 2,
+      dailyActivity.length - 1,
+    };
+    for (final index in labelIndices) {
+      final x = dailyActivity.length < 2
+          ? left + plotWidth / 2
+          : left + plotWidth * index / (dailyActivity.length - 1);
       final tp = TextPainter(
-        text: TextSpan(text: labels[i], style: labelStyle),
+        text: TextSpan(
+          text: _chartDateLabel(dailyActivity[index].date),
+          style: labelStyle,
+        ),
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
       )..layout();
-      final labelX = i == 0
+      final labelX = index == 0
           ? left
-          : i == labels.length - 1
+          : index == dailyActivity.length - 1
           ? right - tp.width
           : x - tp.width / 2;
       tp.paint(canvas, Offset(labelX, size.height - 16));
@@ -8834,14 +9268,21 @@ class _LineChartPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _LineChartPainter oldDelegate) =>
+      oldDelegate.dailyActivity != dailyActivity ||
+      oldDelegate.isLight != isLight;
 }
 
 class _AccessesPage extends StatefulWidget {
-  const _AccessesPage({required this.authService, required this.isAdmin});
+  const _AccessesPage({
+    required this.authService,
+    required this.isAdmin,
+    this.user,
+  });
 
   final AuthService? authService;
   final bool isAdmin;
+  final AuthenticatedUser? user;
 
   @override
   State<_AccessesPage> createState() => _AccessesPageState();
@@ -8919,8 +9360,10 @@ class _AccessesPageState extends State<_AccessesPage> {
         _accounts = accounts;
         _isSaving = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Permisos actualizados correctamente.')),
+      AppFeedback.show(
+        context,
+        'Permisos actualizados correctamente.',
+        type: AppFeedbackType.success,
       );
     } on AuthApiException catch (error) {
       if (!mounted) return;
@@ -8949,23 +9392,18 @@ class _AccessesPageState extends State<_AccessesPage> {
     }).toList();
 
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-        ),
-      ),
+      key: const ValueKey('access-section-root'),
+      decoration: _dashboardPageDecoration(context),
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: _DashboardHeader(),
+                child: _DashboardHeader(user: widget.user),
               ),
             ),
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 8, 14, 12),
                 child: Column(
@@ -8974,7 +9412,7 @@ class _AccessesPageState extends State<_AccessesPage> {
                     Text(
                       'Accesos',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: _dashboardPrimaryText(context),
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
                       ),
@@ -8982,7 +9420,10 @@ class _AccessesPageState extends State<_AccessesPage> {
                     SizedBox(height: 4),
                     Text(
                       'Administra quién puede ingresar al sistema',
-                      style: TextStyle(color: Color(0xFFB5C1D6), fontSize: 12),
+                      style: TextStyle(
+                        color: _dashboardSecondaryText(context),
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -8996,11 +9437,14 @@ class _AccessesPageState extends State<_AccessesPage> {
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color(0xFF17243D), Color(0xFF0B1427)],
-                        ),
+                        color: _isLightDashboard(context) ? Colors.white : null,
+                        gradient: _isLightDashboard(context)
+                            ? null
+                            : const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFF17243D), Color(0xFF0B1427)],
+                              ),
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: const Color(0xFF087FFF)),
                       ),
@@ -9073,7 +9517,10 @@ class _AccessesPageState extends State<_AccessesPage> {
                       controller: _searchController,
                       onChanged: (value) =>
                           setState(() => _query = value.trim()),
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      style: TextStyle(
+                        color: _dashboardPrimaryText(context),
+                        fontSize: 13,
+                      ),
                       decoration: InputDecoration(
                         hintText: 'Buscar usuario, nombre, puesto o correo...',
                         hintStyle: const TextStyle(
@@ -9085,7 +9532,7 @@ class _AccessesPageState extends State<_AccessesPage> {
                           color: Color(0xFF087FFF),
                         ),
                         filled: true,
-                        fillColor: const Color(0xFF111D35),
+                        fillColor: _dashboardSurfaceColor(context),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(
@@ -9188,15 +9635,19 @@ class _AccessAccountCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       key: ValueKey('access-account-card-${account.login}'),
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF14243D), Color(0xFF0B1528)],
-        ),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF14243D), Color(0xFF0B1528)],
+              ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0x553D9DFF)),
         boxShadow: const [
@@ -9246,8 +9697,8 @@ class _AccessAccountCard extends StatelessWidget {
                       account.login,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: _dashboardPrimaryText(context),
                         fontWeight: FontWeight.w800,
                         fontSize: 16,
                       ),
@@ -9257,8 +9708,10 @@ class _AccessAccountCard extends StatelessWidget {
                       account.name ?? '—',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF67ACFF),
+                      style: TextStyle(
+                        color: isLight
+                            ? const Color(0xFF087FFF)
+                            : const Color(0xFF67ACFF),
                         fontSize: 11,
                       ),
                     ),
@@ -9300,11 +9753,16 @@ class _AccessAccountCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.fromLTRB(13, 12, 13, 5),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0x241C75C5), Color(0x160D315A)],
-              ),
+              color: isLight
+                  ? const Color(0xFFF2F7FD)
+                  : const Color(0x241C75C5),
+              gradient: isLight
+                  ? null
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0x241C75C5), Color(0x160D315A)],
+                    ),
               borderRadius: BorderRadius.circular(15),
               border: Border.all(color: const Color(0x332D83D1)),
             ),
@@ -9388,6 +9846,7 @@ class _AccessDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
@@ -9402,8 +9861,10 @@ class _AccessDetail extends StatelessWidget {
             width: 57,
             child: Text(
               label,
-              style: const TextStyle(
-                color: Color(0xFF91A4C1),
+              style: TextStyle(
+                color: isLight
+                    ? const Color(0xFF65758B)
+                    : const Color(0xFF91A4C1),
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),
@@ -9412,8 +9873,8 @@ class _AccessDetail extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
-                color: Color(0xFFE1ECFC),
+              style: TextStyle(
+                color: _dashboardPrimaryText(context),
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -9493,39 +9954,146 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
-      backgroundColor: const Color(0xFF111D35),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 480),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: _dashboardSurfaceColor(context),
+          borderRadius: BorderRadius.circular(25),
+          border: Border.all(
+            color: isLight ? const Color(0xFFD8E4F2) : const Color(0x554AA8FF),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isLight ? 0.12 : 0.35),
+              blurRadius: 28,
+              offset: const Offset(0, 15),
+            ),
+          ],
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Editar control de acceso',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF087FFF), Color(0xFF18B7D8)],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Icon(
+                    Icons.shield_outlined,
+                    color: Colors.white,
+                    size: 25,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'PERMISOS DE CUENTA',
+                        style: TextStyle(
+                          color: isLight
+                              ? const Color(0xFF167C92)
+                              : const Color(0xFF73CDE0),
+                          fontSize: 9,
+                          letterSpacing: 1.15,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Editar acceso',
+                        style: TextStyle(
+                          color: _dashboardPrimaryText(context),
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Cerrar',
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: _dashboardSecondaryText(context),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+              decoration: BoxDecoration(
+                color: isLight
+                    ? const Color(0xFFEFF6FD)
+                    : const Color(0xFF0A1426),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: isLight
+                      ? const Color(0xFFD7E5F4)
+                      : const Color(0x333D9DFF),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.account_circle_outlined,
+                    color: isLight
+                        ? const Color(0xFF1769AA)
+                        : const Color(0xFF67ACFF),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'CUENTA',
+                          style: TextStyle(
+                            color: _dashboardSecondaryText(context),
+                            fontSize: 9,
+                            letterSpacing: 0.8,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.account.login,
+                          style: TextStyle(
+                            color: _dashboardPrimaryText(context),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 14),
             Text(
-              widget.account.login,
-              style: const TextStyle(
-                color: Color(0xFF67ACFF),
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
+              'Selecciona el alcance de acceso para esta cuenta.',
+              style: TextStyle(
+                color: _dashboardSecondaryText(context),
+                fontSize: 12,
               ),
             ),
-            const SizedBox(height: 12),
-            const Text(
-              'Elige el nivel de acceso para esta cuenta.',
-              style: TextStyle(color: Color(0xFFB5C1D6), fontSize: 13),
-            ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             RadioGroup<String>(
               groupValue: _selectedAccess,
               onChanged: (selected) {
@@ -9535,24 +10103,54 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
               },
               child: Column(
                 children: [
-                  _accessOption('administrador', 'Administrador'),
-                  _accessOption('recepcion', 'Recepción'),
-                  _accessOption('none', 'Sin acceso'),
+                  _accessOption(
+                    'administrador',
+                    'Administrador',
+                    'Acceso completo a la administración.',
+                    Icons.admin_panel_settings_rounded,
+                    const Color(0xFF168BFF),
+                  ),
+                  _accessOption(
+                    'recepcion',
+                    'Recepción',
+                    'Agenda de citas y bitácora diaria.',
+                    Icons.door_front_door_rounded,
+                    const Color(0xFF18A6A1),
+                  ),
+                  _accessOption(
+                    'none',
+                    'Sin acceso',
+                    'La cuenta no podrá entrar al sistema.',
+                    Icons.block_rounded,
+                    const Color(0xFFE05A70),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton(
                     onPressed: () => Navigator.of(context).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _dashboardPrimaryText(context),
+                      side: BorderSide(
+                        color: isLight
+                            ? const Color(0xFFC9D6E6)
+                            : const Color(0x557F94B3),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
                     child: const Text('Cancelar'),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: FilledButton(
+                  child: FilledButton.icon(
                     onPressed: () => Navigator.of(context).pop(
                       _selectedAccess == 'none'
                           ? <String>[]
@@ -9561,9 +10159,14 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
                     style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF087FFF),
                       foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                     ),
-                    child: const Text(
-                      'Guardar',
+                    icon: const Icon(Icons.save_rounded, size: 18),
+                    label: const Text(
+                      'Guardar acceso',
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ),
@@ -9576,13 +10179,80 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
     );
   }
 
-  Widget _accessOption(String value, String label) {
-    return RadioListTile<String>(
-      value: value,
-      dense: true,
-      contentPadding: EdgeInsets.zero,
-      activeColor: const Color(0xFF35A8FF),
-      title: Text(label, style: const TextStyle(color: Colors.white)),
+  Widget _accessOption(
+    String value,
+    String label,
+    String description,
+    IconData icon,
+    Color accent,
+  ) {
+    final isSelected = _selectedAccess == value;
+    final isLight = _isLightDashboard(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: isSelected
+            ? accent.withValues(alpha: isLight ? 0.09 : 0.14)
+            : isLight
+            ? const Color(0xFFF7F9FC)
+            : const Color(0xFF0B1628),
+        borderRadius: BorderRadius.circular(15),
+        child: InkWell(
+          onTap: () => setState(() => _selectedAccess = value),
+          borderRadius: BorderRadius.circular(15),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(
+                color: isSelected
+                    ? accent.withValues(alpha: 0.56)
+                    : isLight
+                    ? const Color(0xFFE2E8F0)
+                    : const Color(0x223D9DFF),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.13),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: accent, size: 20),
+                ),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: TextStyle(
+                          color: _dashboardPrimaryText(context),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        description,
+                        style: TextStyle(
+                          color: _dashboardSecondaryText(context),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Radio<String>(value: value, activeColor: accent),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -11164,29 +11834,21 @@ class _AppointmentsPageState extends State<_AppointmentsPage> {
                         onEdit: () => _showAppointmentDialog(
                           appointment: filtered[index],
                         ),
-                        onCancel: () => ScaffoldMessenger.of(context)
-                            .showSnackBar(
-                              const SnackBar(
-                                content: Text('Cita cancelada'),
-                                backgroundColor: Color(0xFFFF1538),
-                              ),
-                            ),
-                        onDelete: () => ScaffoldMessenger.of(context)
-                            .showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Solicitud de eliminación enviada',
-                                ),
-                                backgroundColor: Color(0xFFFF1538),
-                              ),
-                            ),
-                        onSendQr: () => ScaffoldMessenger.of(context)
-                            .showSnackBar(
-                              const SnackBar(
-                                content: Text('Código QR enviado al visitante'),
-                                backgroundColor: Color(0xFF087FFF),
-                              ),
-                            ),
+                        onCancel: () => AppFeedback.show(
+                          context,
+                          'Cita cancelada',
+                          type: AppFeedbackType.success,
+                        ),
+                        onDelete: () => AppFeedback.show(
+                          context,
+                          'Solicitud de eliminación enviada',
+                          type: AppFeedbackType.warning,
+                        ),
+                        onSendQr: () => AppFeedback.show(
+                          context,
+                          'Código QR enviado al visitante',
+                          type: AppFeedbackType.success,
+                        ),
                         onQr: () => showDialog<void>(
                           context: context,
                           builder: (_) => _AppointmentQrDialog(
@@ -12130,13 +12792,17 @@ class _AppointmentQrDialogState extends State<_AppointmentQrDialog> {
             'visita-${widget.appointment.visitor.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '-')}',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('QR descargado en la galería')),
+      AppFeedback.show(
+        context,
+        'QR descargado en la galería',
+        type: AppFeedbackType.success,
       );
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No fue posible guardar el código QR')),
+      AppFeedback.show(
+        context,
+        'No fue posible guardar el código QR',
+        type: AppFeedbackType.error,
       );
     } finally {
       if (mounted) setState(() => _downloading = false);
@@ -13921,13 +14587,8 @@ class _EquipmentPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-        ),
-      ),
+      key: const ValueKey('equipment-section-root'),
+      decoration: _dashboardPageDecoration(context),
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
@@ -14539,10 +15200,11 @@ class _EquipmentChecklist extends StatelessWidget {
 }
 
 class _HostsPage extends StatefulWidget {
-  const _HostsPage({this.authService, required this.isAdmin});
+  const _HostsPage({this.authService, required this.isAdmin, this.user});
 
   final AuthService? authService;
   final bool isAdmin;
+  final AuthenticatedUser? user;
 
   @override
   State<_HostsPage> createState() => _HostsPageState();
@@ -14651,8 +15313,10 @@ class _HostsPageState extends State<_HostsPage> {
         _hosts = hosts;
         _isSaving = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Departamento actualizado.')),
+      AppFeedback.show(
+        context,
+        'Departamento actualizado.',
+        type: AppFeedbackType.success,
       );
     } on AuthApiException catch (error) {
       if (!mounted) return;
@@ -14671,32 +15335,12 @@ class _HostsPageState extends State<_HostsPage> {
 
   Future<void> _deleteHost(DepartmentHost host) async {
     if (!widget.isAdmin || _isSaving) return;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showReceptionConfirmDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111D32),
-        title: const Text(
-          'Eliminar anfitrión',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Text(
-          '¿Quieres eliminar a "${host.name}" de la lista de anfitriones?',
-          style: const TextStyle(color: Color(0xFFD4DDF0)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFFF3155),
-            ),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
+      title: 'Eliminar anfitrión',
+      message: '¿Quieres eliminar a "${host.name}" de la lista de anfitriones?',
+      confirmLabel: 'Eliminar',
+      destructive: true,
     );
     if (confirmed != true || !mounted) return;
 
@@ -14711,8 +15355,11 @@ class _HostsPageState extends State<_HostsPage> {
         _hosts = hosts;
         _isSaving = false;
       });
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Anfitrión eliminado.')));
+      AppFeedback.show(
+        context,
+        'Anfitrión eliminado.',
+        type: AppFeedbackType.success,
+      );
     } on AuthApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -14732,20 +15379,15 @@ class _HostsPageState extends State<_HostsPage> {
   Widget build(BuildContext context) {
     final hosts = _filteredHosts;
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-        ),
-      ),
+      key: const ValueKey('hosts-section-root'),
+      decoration: _dashboardPageDecoration(context),
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: _DashboardHeader(),
+                child: _DashboardHeader(user: widget.user),
               ),
             ),
             SliverToBoxAdapter(
@@ -14753,11 +15395,11 @@ class _HostsPageState extends State<_HostsPage> {
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
+                  children: [
                     Text(
                       'Anfitriones',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: _dashboardPrimaryText(context),
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
                       ),
@@ -14765,7 +15407,10 @@ class _HostsPageState extends State<_HostsPage> {
                     SizedBox(height: 4),
                     Text(
                       'Registro de anfitriones de la organización',
-                      style: TextStyle(color: Color(0xFFB5C1D6), fontSize: 12),
+                      style: TextStyle(
+                        color: _dashboardSecondaryText(context),
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -14777,11 +15422,14 @@ class _HostsPageState extends State<_HostsPage> {
                 child: Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Color(0xFF17243D), Color(0xFF0B1427)],
-                    ),
+                    color: _isLightDashboard(context) ? Colors.white : null,
+                    gradient: _isLightDashboard(context)
+                        ? null
+                        : const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFF17243D), Color(0xFF0B1427)],
+                          ),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: const Color(0xFF087FFF)),
                   ),
@@ -14794,11 +15442,11 @@ class _HostsPageState extends State<_HostsPage> {
                             color: Color(0xFF087FFF),
                           ),
                           const SizedBox(width: 8),
-                          const Expanded(
+                          Expanded(
                             child: Text(
                               'Anfitriones',
                               style: TextStyle(
-                                color: Colors.white,
+                                color: _dashboardPrimaryText(context),
                                 fontWeight: FontWeight.w800,
                                 fontSize: 16,
                               ),
@@ -14854,7 +15502,7 @@ class _HostsPageState extends State<_HostsPage> {
                                   ),
                                 ),
                           filled: true,
-                          fillColor: const Color(0xFF091325),
+                          fillColor: _dashboardSurfaceColor(context),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(10),
                             borderSide: const BorderSide(
@@ -14997,85 +15645,215 @@ class _DepartmentHostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       key: ValueKey('host-card-${host.id}'),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF17243D), Color(0xFF0B1427)],
-        ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF284D75)),
+        color: isLight ? Colors.white : null,
+        gradient: isLight
+            ? null
+            : const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF14243D), Color(0xFF0B1528)],
+              ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x553D9DFF)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x220087FF),
-            blurRadius: 12,
-            offset: Offset(0, 4),
+            color: Color(0x1F087FFF),
+            blurRadius: 22,
+            offset: Offset(0, 9),
           ),
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _HostInfoRow(
-            icon: Icons.person_outline_rounded,
-            label: 'Login',
-            value: host.login,
-          ),
-          _HostInfoRow(
-            icon: Icons.badge_outlined,
-            label: 'Nombre completo',
-            value: host.name,
-          ),
-          _HostInfoRow(
-            icon: Icons.email_outlined,
-            label: 'Correo electrónico',
-            value: host.email,
-            copyTooltip: 'Copiar correo electrónico',
-          ),
-          _HostInfoRow(
-            icon: Icons.apartment_rounded,
-            label: 'Departamento',
-            value: departmentName,
-          ),
-          _HostInfoRow(
-            icon: Icons.work_outline_rounded,
-            label: 'Puesto',
-            value: host.role,
-          ),
-          _HostInfoRow(
-            icon: Icons.phone_outlined,
-            label: 'Teléfono',
-            value: host.phone,
-            copyTooltip: 'Copiar teléfono',
-          ),
-          if (isAdmin) ...[
-            const SizedBox(height: 10),
-            const Divider(color: Color(0xFF28405E), height: 1),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              runSpacing: 4,
-              children: [
-                TextButton.icon(
-                  onPressed: isSaving ? null : onEditDepartment,
-                  icon: const Icon(Icons.apartment_rounded, size: 18),
-                  label: const Text('Cambiar departamento'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF8FBFFF),
+          Row(
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const RadialGradient(
+                    colors: [Color(0xFF24BDF5), Color(0xFF087FFF)],
+                  ),
+                  border: Border.all(
+                    color: const Color(0xFF9ADFFF),
+                    width: 1.5,
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x440087FF),
+                      blurRadius: 14,
+                      offset: Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.person_outline_rounded,
+                  color: Colors.white,
+                  size: 27,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      host.login,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _dashboardPrimaryText(context),
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      host.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isLight
+                            ? const Color(0xFF087FFF)
+                            : const Color(0xFF67ACFF),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF153D35), Color(0xFF1D574A)],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0x554AE3B5)),
+                ),
+                child: const Text(
+                  'Anfitrión',
+                  style: TextStyle(
+                    color: Color(0xFF4AE3B5),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-                TextButton.icon(
-                  onPressed: isSaving ? null : onDelete,
-                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                  label: const Text('Eliminar'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFFFF7185),
-                  ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.fromLTRB(13, 12, 13, 5),
+            decoration: BoxDecoration(
+              color: isLight
+                  ? const Color(0xFFF2F7FD)
+                  : const Color(0x241C75C5),
+              gradient: isLight
+                  ? null
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0x241C75C5), Color(0x160D315A)],
+                    ),
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: const Color(0x332D83D1)),
+            ),
+            child: Column(
+              children: [
+                _HostInfoRow(
+                  icon: Icons.work_outline_rounded,
+                  label: 'Puesto',
+                  value: host.role,
+                ),
+                _HostInfoRow(
+                  icon: Icons.mail_outline_rounded,
+                  label: 'Correo',
+                  value: host.email,
+                  copyTooltip: 'Copiar correo electrónico',
+                ),
+                _HostInfoRow(
+                  icon: Icons.phone_rounded,
+                  label: 'Teléfono',
+                  value: host.phone,
+                  copyTooltip: 'Copiar teléfono',
+                ),
+                _HostInfoRow(
+                  icon: Icons.apartment_rounded,
+                  label: 'Departamento',
+                  value: departmentName,
                 ),
               ],
+            ),
+          ),
+          if (isAdmin) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(13),
+                  gradient: const LinearGradient(
+                    colors: [
+                      Color(0xFF087FFF),
+                      Color(0xFF168EFF),
+                      Color(0xFF04BCEB),
+                    ],
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x550087FF),
+                      blurRadius: 13,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: FilledButton.icon(
+                  onPressed: isSaving ? null : onEditDepartment,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.apartment_rounded, size: 18),
+                  label: const Text(
+                    'Cambiar departamento',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 42,
+              child: OutlinedButton.icon(
+                onPressed: isSaving ? null : onDelete,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFFF7185),
+                  side: const BorderSide(color: Color(0x66FF7185)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                ),
+                icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                label: const Text(
+                  'Eliminar',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
             ),
           ],
         ],
@@ -15107,47 +15885,211 @@ class _HostDepartmentDialogState extends State<_HostDepartmentDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: const Color(0xFF111D32),
-      title: const Text(
-        'Cambiar departamento',
-        style: TextStyle(color: Colors.white),
-      ),
-      content: DropdownButtonFormField<int>(
-        initialValue: _departmentId,
-        isExpanded: true,
-        dropdownColor: const Color(0xFF17243D),
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          labelText: 'Departamento',
-          labelStyle: const TextStyle(color: Color(0xFFB5C1D6)),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Color(0xFF27476A)),
+    final isLight = _isLightDashboard(context);
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+        ),
+        padding: const EdgeInsets.all(19),
+        decoration: BoxDecoration(
+          color: _dashboardSurfaceColor(context),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isLight ? const Color(0xFFD8E4F2) : const Color(0x554AA8FF),
           ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isLight ? 0.12 : 0.36),
+              blurRadius: 28,
+              offset: const Offset(0, 15),
+            ),
+          ],
         ),
-        items: widget.departments
-            .map(
-              (department) => DropdownMenuItem(
-                value: department.id,
-                child: Text(department.name, overflow: TextOverflow.ellipsis),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF087FFF), Color(0xFF18B7D8)],
+                    ),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: const Icon(
+                    Icons.apartment_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'ORGANIZACIÓN',
+                        style: TextStyle(
+                          color: isLight
+                              ? const Color(0xFF167C92)
+                              : const Color(0xFF73CDE0),
+                          fontSize: 9,
+                          letterSpacing: 1.1,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Cambiar departamento',
+                        style: TextStyle(
+                          color: _dashboardPrimaryText(context),
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Cerrar',
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: Icon(
+                    Icons.close_rounded,
+                    color: _dashboardSecondaryText(context),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Elige el área a la que pertenece este anfitrión.',
+              style: TextStyle(
+                color: _dashboardSecondaryText(context),
+                fontSize: 12,
               ),
-            )
-            .toList(),
-        onChanged: (value) => setState(() => _departmentId = value),
+            ),
+            const SizedBox(height: 12),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: widget.departments.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 7),
+                itemBuilder: (context, index) {
+                  final department = widget.departments[index];
+                  final selected = department.id == _departmentId;
+                  return Material(
+                    color: selected
+                        ? const Color(0xFF087FFF).withValues(alpha: 0.11)
+                        : isLight
+                        ? const Color(0xFFF7F9FC)
+                        : const Color(0xFF0A1426),
+                    borderRadius: BorderRadius.circular(14),
+                    child: InkWell(
+                      onTap: () =>
+                          setState(() => _departmentId = department.id),
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 11,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: selected
+                                ? const Color(0xFF168BFF).withValues(alpha: 0.6)
+                                : isLight
+                                ? const Color(0xFFE2E8F0)
+                                : const Color(0x223D9DFF),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.business_rounded,
+                              color: selected
+                                  ? const Color(0xFF087FFF)
+                                  : _dashboardSecondaryText(context),
+                              size: 19,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                department.name,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: _dashboardPrimaryText(context),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            if (selected)
+                              const Icon(
+                                Icons.check_circle_rounded,
+                                color: Color(0xFF087FFF),
+                                size: 20,
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _dashboardPrimaryText(context),
+                      side: BorderSide(
+                        color: isLight
+                            ? const Color(0xFFC9D6E6)
+                            : const Color(0x557F94B3),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                    ),
+                    child: const Text('Cancelar'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _departmentId == null
+                        ? null
+                        : () => Navigator.of(context).pop(_departmentId),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF087FFF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                    ),
+                    icon: const Icon(Icons.check_rounded, size: 18),
+                    label: const Text('Guardar'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancelar'),
-        ),
-        FilledButton(
-          onPressed: _departmentId == null
-              ? null
-              : () => Navigator.of(context).pop(_departmentId),
-          child: const Text('Guardar'),
-        ),
-      ],
     );
   }
 }
@@ -15166,36 +16108,41 @@ class _HostInfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     final displayValue = value.trim().isEmpty ? 'No disponible' : value;
     return Padding(
-      padding: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 17, color: const Color(0xFF63C5FF)),
-          const SizedBox(width: 9),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Color(0xFF8FA1BC),
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  displayValue,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Color(0xFFE2EAF5),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+          SizedBox(
+            width: 23,
+            child: Icon(icon, size: 16, color: const Color(0xFF28A0FF)),
+          ),
+          const SizedBox(width: 7),
+          SizedBox(
+            width: 72,
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isLight
+                    ? const Color(0xFF65758B)
+                    : const Color(0xFF91A4C1),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              displayValue,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: _dashboardPrimaryText(context),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
           if (copyTooltip != null && value.trim().isNotEmpty)
@@ -15206,8 +16153,11 @@ class _HostInfoRow extends StatelessWidget {
               onPressed: () async {
                 await Clipboard.setData(ClipboardData(text: value));
                 if (!context.mounted) return;
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text('$label copiado.')));
+                AppFeedback.show(
+                  context,
+                  '$label copiado.',
+                  type: AppFeedbackType.info,
+                );
               },
               icon: const Icon(
                 Icons.content_copy_rounded,
@@ -15338,11 +16288,15 @@ class _HostFormDialogState extends State<_HostFormDialog> {
   Widget build(BuildContext context) {
     final editing = widget.host != null;
     return Dialog(
-      backgroundColor: const Color(0xFF111D32),
+      backgroundColor: _dashboardSurfaceColor(context),
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        side: const BorderSide(color: Color(0xFF087FFF)),
+        side: BorderSide(
+          color: _isLightDashboard(context)
+              ? const Color(0xFFDCE4EF)
+              : const Color(0xFF087FFF),
+        ),
       ),
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(18),
@@ -15368,8 +16322,10 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.close_rounded),
                     style: IconButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      backgroundColor: const Color(0xFF172747),
+                      foregroundColor: _dashboardSecondaryText(context),
+                      backgroundColor: _isLightDashboard(context)
+                          ? const Color(0xFFF3F6FB)
+                          : const Color(0xFF172747),
                     ),
                   ),
                 ],
@@ -15377,8 +16333,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
               const SizedBox(height: 16),
               Text(
                 editing ? 'Editar anfitrión' : 'Registrar anfitrión',
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: _dashboardPrimaryText(context),
                   fontSize: 20,
                   fontWeight: FontWeight.w800,
                 ),
@@ -15386,16 +16342,22 @@ class _HostFormDialogState extends State<_HostFormDialog> {
               const SizedBox(height: 5),
               Text(
                 editing ? 'Actualiza los datos y el departamento asignado.' : 'Selecciona una cuenta de Accesos o captura los datos manualmente.',
-                style: const TextStyle(color: Color(0xFFAAB5C7), fontSize: 12),
+                style: TextStyle(
+                  color: _dashboardSecondaryText(context),
+                  fontSize: 12,
+                ),
               ),
               const SizedBox(height: 18),
               _DepartmentHostFormField(
                 label: 'Cuenta de Accesos',
                 child: DropdownButtonFormField<String>(
                   initialValue: _accountSelection,
-                  dropdownColor: const Color(0xFF17243D),
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: _hostInputDecoration(),
+                  dropdownColor: _dashboardSurfaceColor(context),
+                  style: TextStyle(
+                    color: _dashboardPrimaryText(context),
+                    fontSize: 13,
+                  ),
+                  decoration: _hostInputDecoration(context),
                   items: [
                     ...widget.accounts.map(
                       (account) => DropdownMenuItem(
@@ -15421,8 +16383,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                   controller: _nameController,
                   readOnly: !_manualEntry,
                   maxLength: 180,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _hostInputDecoration(),
+                  style: TextStyle(color: _dashboardPrimaryText(context)),
+                  decoration: _hostInputDecoration(context),
                   validator: (value) => value == null || value.trim().isEmpty
                       ? 'Escribe el nombre completo.'
                       : null,
@@ -15435,8 +16397,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                   controller: _loginController,
                   readOnly: !_manualEntry,
                   maxLength: 255,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _hostInputDecoration(),
+                  style: TextStyle(color: _dashboardPrimaryText(context)),
+                  decoration: _hostInputDecoration(context),
                   validator: (value) => value == null || value.trim().isEmpty
                       ? 'Escribe el login.'
                       : null,
@@ -15452,9 +16414,12 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                       )
                       ? _departmentId
                       : null,
-                  dropdownColor: const Color(0xFF17243D),
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: _hostInputDecoration(),
+                  dropdownColor: _dashboardSurfaceColor(context),
+                  style: TextStyle(
+                    color: _dashboardPrimaryText(context),
+                    fontSize: 13,
+                  ),
+                  decoration: _hostInputDecoration(context),
                   items: widget.departments
                       .map(
                         (department) => DropdownMenuItem(
@@ -15476,8 +16441,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                   readOnly: !_manualEntry,
                   maxLength: 254,
                   keyboardType: TextInputType.emailAddress,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _hostInputDecoration(),
+                  style: TextStyle(color: _dashboardPrimaryText(context)),
+                  decoration: _hostInputDecoration(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -15487,8 +16452,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                   controller: _roleController,
                   readOnly: !_manualEntry,
                   maxLength: 120,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _hostInputDecoration(),
+                  style: TextStyle(color: _dashboardPrimaryText(context)),
+                  decoration: _hostInputDecoration(context),
                 ),
               ),
               const SizedBox(height: 12),
@@ -15499,8 +16464,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                   readOnly: !_manualEntry,
                   maxLength: 30,
                   keyboardType: TextInputType.phone,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _hostInputDecoration(),
+                  style: TextStyle(color: _dashboardPrimaryText(context)),
+                  decoration: _hostInputDecoration(context),
                 ),
               ),
               const SizedBox(height: 18),
@@ -15555,8 +16520,8 @@ class _DepartmentHostFormField extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            color: Color(0xFFD8E3F4),
+          style: TextStyle(
+            color: _dashboardPrimaryText(context),
             fontSize: 12,
             fontWeight: FontWeight.w700,
           ),
@@ -15581,8 +16546,8 @@ class _HostFormField extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            color: Color(0xFFD8E3F4),
+          style: TextStyle(
+            color: _dashboardPrimaryText(context),
             fontSize: 12,
             fontWeight: FontWeight.w700,
           ),
@@ -15590,7 +16555,7 @@ class _HostFormField extends StatelessWidget {
         const SizedBox(height: 7),
         TextField(
           keyboardType: keyboardType,
-          style: const TextStyle(color: Colors.white),
+          style: TextStyle(color: _dashboardPrimaryText(context)),
           decoration: InputDecoration(
             filled: true,
             fillColor: const Color(0xFF091325),
@@ -15609,14 +16574,20 @@ class _HostFormField extends StatelessWidget {
   }
 }
 
-InputDecoration _hostInputDecoration() => InputDecoration(
+InputDecoration _hostInputDecoration(BuildContext context) => InputDecoration(
   filled: true,
-  fillColor: const Color(0xFF091325),
+  fillColor: _isLightDashboard(context)
+      ? const Color(0xFFF3F6FB)
+      : const Color(0xFF091325),
   counterText: '',
   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
   enabledBorder: OutlineInputBorder(
     borderRadius: BorderRadius.circular(10),
-    borderSide: const BorderSide(color: Color(0xFF27476A)),
+    borderSide: BorderSide(
+      color: _isLightDashboard(context)
+          ? const Color(0xFFDCE4EF)
+          : const Color(0xFF27476A),
+    ),
   ),
   focusedBorder: OutlineInputBorder(
     borderRadius: BorderRadius.circular(10),
@@ -15625,10 +16596,15 @@ InputDecoration _hostInputDecoration() => InputDecoration(
 );
 
 class _DepartmentsPage extends StatefulWidget {
-  const _DepartmentsPage({required this.authService, required this.isAdmin});
+  const _DepartmentsPage({
+    required this.authService,
+    required this.isAdmin,
+    this.user,
+  });
 
   final AuthService? authService;
   final bool isAdmin;
+  final AuthenticatedUser? user;
 
   @override
   State<_DepartmentsPage> createState() => _DepartmentsPageState();
@@ -15696,14 +16672,12 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
         _departments = departments;
         _isSaving = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            department == null
-                ? 'Departamento registrado correctamente.'
-                : 'Departamento actualizado correctamente.',
-          ),
-        ),
+      AppFeedback.show(
+        context,
+        department == null
+            ? 'Departamento registrado correctamente.'
+            : 'Departamento actualizado correctamente.',
+        type: AppFeedbackType.success,
       );
     } on AuthApiException catch (error) {
       if (!mounted) return;
@@ -15722,32 +16696,12 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
   }
 
   Future<void> _deleteDepartment(Department department) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showReceptionConfirmDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF111D32),
-        title: const Text(
-          'Eliminar departamento',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: Text(
-          '¿Quieres eliminar "${department.name}"?',
-          style: const TextStyle(color: Color(0xFFD4DDF0)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFFF3155),
-            ),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
+      title: 'Eliminar departamento',
+      message: '¿Quieres eliminar "${department.name}"?',
+      confirmLabel: 'Eliminar',
+      destructive: true,
     );
     if (confirmed != true || !mounted) return;
 
@@ -15762,9 +16716,11 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
         _departments = departments;
         _isSaving = false;
       });
-      ScaffoldMessenger.of(
+      AppFeedback.show(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Departamento eliminado.')));
+        'Departamento eliminado.',
+        type: AppFeedbackType.success,
+      );
     } on AuthApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -15784,20 +16740,18 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF101936), Color(0xFF091329), Color(0xFF050A16)],
-        ),
-      ),
+      key: const ValueKey('departments-section-root'),
+      decoration: _dashboardPageDecoration(context),
       child: SafeArea(
         child: CustomScrollView(
           slivers: [
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: _DashboardHeader(authService: _authService),
+                child: _DashboardHeader(
+                  authService: _authService,
+                  user: widget.user,
+                ),
               ),
             ),
             SliverToBoxAdapter(
@@ -15806,10 +16760,10 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Departamento',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: _dashboardPrimaryText(context),
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
                       ),
@@ -15818,7 +16772,7 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
                     Text(
                       'Administra departamentos y consulta los anfitriones vinculados',
                       style: TextStyle(
-                        color: const Color(0xFFB5C1D6).withValues(alpha: .85),
+                        color: _dashboardSecondaryText(context),
                         fontSize: 12,
                       ),
                     ),
@@ -15832,7 +16786,7 @@ class _DepartmentsPageState extends State<_DepartmentsPage> {
                 child: Container(
                   padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
                   decoration: BoxDecoration(
-                    color: const Color(0xE610172A),
+                    color: _dashboardSurfaceColor(context),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: const Color(0xFF087FFF)),
                   ),
@@ -16106,6 +17060,7 @@ class _DepartmentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Container(
       key: ValueKey('department-card-${department.id}'),
       decoration: BoxDecoration(
@@ -16134,11 +17089,18 @@ class _DepartmentCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(13.7),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF17243D), Color(0xFF0B1427), Color(0xFF10172D)],
-          ),
+          color: isLight ? Colors.white : null,
+          gradient: isLight
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF17243D),
+                    Color(0xFF0B1427),
+                    Color(0xFF10172D),
+                  ],
+                ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -16176,7 +17138,9 @@ class _DepartmentCard extends StatelessWidget {
                     vertical: 5,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF102B48),
+                    color: isLight
+                        ? const Color(0xFFEAF2FC)
+                        : const Color(0xFF102B48),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: const Color(0x664A9DFF)),
                   ),
@@ -16196,8 +17160,8 @@ class _DepartmentCard extends StatelessWidget {
               department.name,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: _dashboardPrimaryText(context),
                 fontSize: 14,
                 height: 1.15,
                 fontWeight: FontWeight.w800,
@@ -16217,8 +17181,8 @@ class _DepartmentCard extends StatelessWidget {
                     '${department.hostCount} ${department.hostCount == 1 ? 'anfitrión vinculado' : 'anfitriones vinculados'}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFFB8D7F4),
+                    style: TextStyle(
+                      color: _dashboardSecondaryText(context),
                       fontSize: 10,
                       fontWeight: FontWeight.w700,
                     ),
@@ -16368,11 +17332,20 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
         constraints: const BoxConstraints(maxWidth: 420),
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
         decoration: BoxDecoration(
-          color: const Color(0xFF111D32),
+          color: _dashboardSurfaceColor(context),
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: const Color(0xFF087FFF)),
-          boxShadow: const [
-            BoxShadow(color: Color(0x800087FF), blurRadius: 28),
+          border: Border.all(
+            color: _isLightDashboard(context)
+                ? const Color(0xFFDCE4EF)
+                : const Color(0xFF087FFF),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(
+                alpha: _isLightDashboard(context) ? .08 : .4,
+              ),
+              blurRadius: 28,
+            ),
           ],
         ),
         child: Column(
@@ -16398,8 +17371,10 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
                   onPressed: () => Navigator.of(context).pop(),
                   icon: const Icon(Icons.close_rounded),
                   style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF172747),
-                    foregroundColor: Colors.white,
+                    backgroundColor: _isLightDashboard(context)
+                        ? const Color(0xFFF3F6FB)
+                        : const Color(0xFF172747),
+                    foregroundColor: _dashboardSecondaryText(context),
                   ),
                 ),
               ],
@@ -16410,7 +17385,7 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
                   ? 'Registrar departamento'
                   : 'Editar departamento',
               style: TextStyle(
-                color: Colors.white,
+                color: _dashboardPrimaryText(context),
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
               ),
@@ -16420,13 +17395,16 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
               widget.department == null
                   ? 'Captura el nombre del departamento.'
                   : 'Actualiza el nombre del departamento.',
-              style: TextStyle(color: Color(0xFFAAB5C7), fontSize: 12),
+              style: TextStyle(
+                color: _dashboardSecondaryText(context),
+                fontSize: 12,
+              ),
             ),
             const SizedBox(height: 22),
-            const Text(
+            Text(
               'Nombre del departamento',
               style: TextStyle(
-                color: Color(0xFFD8E3F4),
+                color: _dashboardPrimaryText(context),
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
               ),
@@ -16438,15 +17416,21 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
               maxLength: 120,
               textCapitalization: TextCapitalization.words,
               onSubmitted: (_) => _save(),
-              style: const TextStyle(color: Colors.white),
+              style: TextStyle(color: _dashboardPrimaryText(context)),
               decoration: InputDecoration(
                 filled: true,
-                fillColor: const Color(0xFF091325),
+                fillColor: _isLightDashboard(context)
+                    ? const Color(0xFFF3F6FB)
+                    : const Color(0xFF091325),
                 hintText: 'Ej. Recursos Humanos',
-                hintStyle: const TextStyle(color: Color(0xFF64748B)),
+                hintStyle: TextStyle(color: _dashboardSecondaryText(context)),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF087FFF)),
+                  borderSide: BorderSide(
+                    color: _isLightDashboard(context)
+                        ? const Color(0xFFDCE4EF)
+                        : const Color(0xFF087FFF),
+                  ),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
@@ -16504,6 +17488,9 @@ class _DepartmentFormDialogState extends State<_DepartmentFormDialog> {
 class _ReceptionDrawer extends StatelessWidget {
   const _ReceptionDrawer({
     this.activeSection,
+    this.user,
+    this.isLoggingOut = false,
+    this.onLogout,
     this.onHome,
     this.onDepartments,
     this.onHosts,
@@ -16516,6 +17503,9 @@ class _ReceptionDrawer extends StatelessWidget {
   });
 
   final String? activeSection;
+  final AuthenticatedUser? user;
+  final bool isLoggingOut;
+  final VoidCallback? onLogout;
   final VoidCallback? onHome;
   final VoidCallback? onDepartments;
   final VoidCallback? onHosts;
@@ -16528,22 +17518,53 @@ class _ReceptionDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     final currentSection = activeSection ?? 'home';
+    final isAdmin = user?.isAdmin == true;
+    final hasReceptionAccess =
+        user?.sectionAccess.contains('recepcion') == true;
+    final isHost =
+        !isAdmin &&
+        !hasReceptionAccess &&
+        user?.sectionAccess.contains('anfitriones') == true;
+    final userName = user?.name?.trim();
+    final displayName = userName != null && userName.isNotEmpty
+        ? userName
+        : user?.login ?? 'Cuenta';
+    final displayRole = isAdmin
+        ? 'Administrador'
+        : user?.role?.trim().isNotEmpty == true
+        ? user!.role!.trim()
+        : hasReceptionAccess
+        ? 'Recepción'
+        : 'Anfitrión';
     return Drawer(
       width: 300,
       backgroundColor: Colors.transparent,
       elevation: 24,
       shadowColor: const Color(0xCC087FFF),
       child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFF10172D), Color(0xFF080D1C), Color(0xFF050713)],
-            stops: [0, .48, 1],
-          ),
+        decoration: BoxDecoration(
+          color: isLight ? const Color(0xFFF3F7FC) : null,
+          gradient: isLight
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0xFF10172D),
+                    Color(0xFF080D1C),
+                    Color(0xFF050713),
+                  ],
+                  stops: [0, .48, 1],
+                ),
           border: Border(
-            right: BorderSide(color: Color(0x9900A8FF), width: .7),
+            right: BorderSide(
+              color: isLight
+                  ? const Color(0xFFD8E2EF)
+                  : const Color(0x9900A8FF),
+              width: .7,
+            ),
           ),
         ),
         child: Stack(
@@ -16581,125 +17602,224 @@ class _ReceptionDrawer extends StatelessWidget {
               ),
             ),
             SafeArea(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 18),
+              child: Column(
                 children: [
-                  Container(
-                    height: 104,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(18),
-                      gradient: const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF202A49), Color(0xFF10172A)],
-                      ),
-                      border: Border.all(color: const Color(0x4300A8FF)),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x330087FF),
-                          blurRadius: 22,
-                          offset: Offset(0, 9),
-                        ),
-                      ],
-                    ),
-                    child: Stack(
-                      alignment: Alignment.center,
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
                       children: [
-                        Image.asset(
-                          'assets/images/cymez-reception-logo.webp',
-                          cacheWidth: 480,
-                          height: 78,
-                          fit: BoxFit.contain,
-                        ),
-                        Positioned(
-                          right: 9,
-                          top: 9,
-                          child: InkWell(
-                            onTap: () => Navigator.of(context).pop(),
+                        Container(
+                          key: const ValueKey('drawer-session-user'),
+                          height: 96,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(18),
-                            child: Container(
-                              width: 28,
-                              height: 28,
-                              decoration: BoxDecoration(
-                                color: const Color(0x19FFFFFF),
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: const Color(0x33B4D9FF),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: isLight
+                                  ? const [Colors.white, Color(0xFFEAF2FC)]
+                                  : const [
+                                      Color(0xFF202A49),
+                                      Color(0xFF10172A),
+                                    ],
+                            ),
+                            border: Border.all(color: const Color(0x4300A8FF)),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Color(0x330087FF),
+                                blurRadius: 22,
+                                offset: Offset(0, 9),
+                              ),
+                            ],
+                          ),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  10,
+                                  8,
+                                  32,
+                                  8,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Image.asset(
+                                      'assets/images/cymez-reception-logo.webp',
+                                      cacheWidth: 480,
+                                      width: 76,
+                                      height: 62,
+                                      fit: BoxFit.contain,
+                                    ),
+                                    Container(
+                                      width: 1,
+                                      height: 48,
+                                      margin: const EdgeInsets.symmetric(
+                                        horizontal: 9,
+                                      ),
+                                      color: const Color(0x553D8FFF),
+                                    ),
+                                    Expanded(
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            displayName,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              color: isLight
+                                                  ? const Color(0xFF17243A)
+                                                  : Colors.white,
+                                              fontSize: 12,
+                                              height: 1.15,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            displayRole,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              color: isLight
+                                                  ? const Color(0xFF087FFF)
+                                                  : const Color(0xFF75BFFF),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              child: const Icon(
-                                Icons.close_rounded,
-                                size: 17,
-                                color: Color(0xFFC9D7EB),
+                              Positioned(
+                                right: 9,
+                                top: 9,
+                                child: InkWell(
+                                  onTap: () => Navigator.of(context).pop(),
+                                  borderRadius: BorderRadius.circular(18),
+                                  child: Container(
+                                    width: 28,
+                                    height: 28,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0x19FFFFFF),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: const Color(0x33B4D9FF),
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.close_rounded,
+                                      size: 17,
+                                      color: Color(0xFFC9D7EB),
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ),
+                        const SizedBox(height: 10),
+                        if (isAdmin) ...[
+                          _DrawerItem(
+                            icon: Icons.home_rounded,
+                            label: 'Inicio',
+                            active: currentSection == 'home',
+                            onTap: onHome,
+                          ),
+                          const _DrawerLabel('Organización'),
+                          _DrawerItem(
+                            icon: Icons.apartment_rounded,
+                            label: 'Departamento',
+                            active: currentSection == 'departments',
+                            onTap: onDepartments,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.meeting_room_rounded,
+                            label: 'Anfitriones',
+                            active: currentSection == 'hosts',
+                            onTap: onHosts,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.vpn_key_rounded,
+                            label: 'Accesos',
+                            active: currentSection == 'accesses',
+                            onTap: onAccesses,
+                          ),
+                        ],
+                        if (isAdmin || isHost) ...[
+                          const _DrawerLabel('Externos'),
+                          _DrawerItem(
+                            icon: Icons.business_rounded,
+                            label: 'Contratistas/proveedores y visitantes',
+                            active: currentSection == 'external_companies',
+                            onTap: onExternalCompanies,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.badge_rounded,
+                            label: 'Personal de externos',
+                            active: currentSection == 'external_staff',
+                            onTap: onExternalStaff,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.handyman_rounded,
+                            label: 'Equipo y herramientas',
+                            active: currentSection == 'equipment',
+                            onTap: onEquipment,
+                          ),
+                        ],
+                        if (isAdmin || hasReceptionAccess || isHost) ...[
+                          const _DrawerLabel('Operación'),
+                          _DrawerItem(
+                            icon: Icons.calendar_month_rounded,
+                            label: 'Agenda de citas',
+                            active: currentSection == 'appointments',
+                            onTap: onAppointments,
+                          ),
+                        ],
+                        if (isAdmin || hasReceptionAccess)
+                          _DrawerItem(
+                            icon: Icons.assignment_rounded,
+                            label: 'Bitácora diaria',
+                            active: currentSection == 'logbook',
+                            onTap: onLogbook,
+                          ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  _DrawerItem(
-                    icon: Icons.home_rounded,
-                    label: 'Inicio',
-                    active: currentSection == 'home',
-                    onTap: onHome,
-                  ),
-                  const _DrawerLabel('Organización'),
-                  _DrawerItem(
-                    icon: Icons.apartment_rounded,
-                    label: 'Departamento',
-                    active: currentSection == 'departments',
-                    onTap: onDepartments,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.meeting_room_rounded,
-                    label: 'Anfitriones',
-                    active: currentSection == 'hosts',
-                    onTap: onHosts,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.vpn_key_rounded,
-                    label: 'Accesos',
-                    active: currentSection == 'accesses',
-                    onTap: onAccesses,
-                  ),
-                  const _DrawerLabel('Externos'),
-                  _DrawerItem(
-                    icon: Icons.business_rounded,
-                    label: 'Contratistas/proveedores y visitantes',
-                    active: currentSection == 'external_companies',
-                    onTap: onExternalCompanies,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.badge_rounded,
-                    label: 'Personal de externos',
-                    active: currentSection == 'external_staff',
-                    onTap: onExternalStaff,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.handyman_rounded,
-                    label: 'Equipo y herramientas',
-                    active: currentSection == 'equipment',
-                    onTap: onEquipment,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.calendar_month_rounded,
-                    label: 'Agenda de citas',
-                    active: currentSection == 'appointments',
-                    onTap: onAppointments,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.assignment_rounded,
-                    label: 'Bitácora diaria',
-                    active: currentSection == 'logbook',
-                    onTap: onLogbook,
-                  ),
-                  const _DrawerLabel('Programador'),
-                  const _DrawerItem(
-                    icon: Icons.admin_panel_settings_rounded,
-                    label: 'Acceso corporativo',
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+                    child: SizedBox(
+                      height: 46,
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        key: const ValueKey('drawer-logout'),
+                        onPressed: isLoggingOut ? null : onLogout,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFFF7189),
+                          side: const BorderSide(color: Color(0x99FF4565)),
+                          backgroundColor: const Color(0x18FF3155),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(13),
+                          ),
+                        ),
+                        icon: const Icon(Icons.logout_rounded, size: 18),
+                        label: Text(
+                          isLoggingOut ? 'Cerrando sesión...' : 'Cerrar sesión',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -16718,6 +17838,7 @@ class _DrawerLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isLight = _isLightDashboard(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 16, 10, 7),
       child: Row(
@@ -16736,8 +17857,10 @@ class _DrawerLabel extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             label.toUpperCase(),
-            style: const TextStyle(
-              color: Color(0xFF8798B8),
+            style: TextStyle(
+              color: isLight
+                  ? const Color(0xFF65758B)
+                  : const Color(0xFF8798B8),
               fontSize: 9.5,
               letterSpacing: 1.55,
               fontWeight: FontWeight.w800,
@@ -16775,73 +17898,90 @@ class _DrawerItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      onTap: () {
-        Navigator.of(context).pop();
-        onTap?.call();
-      },
-      dense: true,
-      minVerticalPadding: 9,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      tileColor: Colors.transparent,
-      selected: active,
-      selectedTileColor: const Color(0x18FF3155),
-      leading: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(11),
-          gradient: active
-              ? const LinearGradient(
-                  colors: [Color(0xFFFF3155), Color(0xFFCF1741)],
-                )
-              : const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF182441), Color(0xFF11182A)],
-                ),
-          border: Border.all(
-            color: active ? const Color(0xFFFF7189) : const Color(0x260087FF),
-          ),
-          boxShadow: active
-              ? const [
-                  BoxShadow(
-                    color: Color(0x66FF3155),
-                    blurRadius: 14,
-                    offset: Offset(0, 4),
+    final isLight = _isLightDashboard(context);
+    return Material(
+      color: Colors.transparent,
+      child: ListTile(
+        key: ValueKey('drawer-item-$label'),
+        onTap: () {
+          Navigator.of(context).pop();
+          onTap?.call();
+        },
+        dense: true,
+        minVerticalPadding: 9,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        tileColor: Colors.transparent,
+        selected: active,
+        selectedTileColor: isLight
+            ? const Color(0xFFFFE6EC)
+            : const Color(0x28FF3155),
+        leading: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(11),
+            gradient: active
+                ? const LinearGradient(
+                    colors: [Color(0xFFFF3155), Color(0xFFCF1741)],
+                  )
+                : LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: isLight
+                        ? const [Color(0xFFE5EEF9), Color(0xFFF7FAFE)]
+                        : const [Color(0xFF182441), Color(0xFF11182A)],
                   ),
-                ]
-              : null,
+            border: Border.all(
+              color: active ? const Color(0xFFFF7189) : const Color(0x260087FF),
+            ),
+            boxShadow: active
+                ? const [
+                    BoxShadow(
+                      color: Color(0x66FF3155),
+                      blurRadius: 14,
+                      offset: Offset(0, 4),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Icon(
+            icon,
+            size: 19,
+            color: active
+                ? Colors.white
+                : isLight
+                ? const Color(0xFF53647D)
+                : const Color(0xFFC4CEE1),
+          ),
         ),
-        child: Icon(
-          icon,
-          size: 19,
-          color: active ? Colors.white : const Color(0xFFC4CEE1),
+        title: Text(
+          label,
+          style: TextStyle(
+            color: active
+                ? (isLight ? const Color(0xFF9E1230) : Colors.white)
+                : isLight
+                ? const Color(0xFF33435C)
+                : const Color(0xFFDDE2EE),
+            fontSize: 12.5,
+            fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+            height: 1.25,
+          ),
         ),
+        trailing: active
+            ? Container(
+                width: 5,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFF3155),
+                  borderRadius: BorderRadius.circular(6),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0xFFFF3155), blurRadius: 10),
+                  ],
+                ),
+              )
+            : null,
       ),
-      title: Text(
-        label,
-        style: TextStyle(
-          color: active ? Colors.white : const Color(0xFFDDE2EE),
-          fontSize: 12.5,
-          fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-          height: 1.25,
-        ),
-      ),
-      trailing: active
-          ? Container(
-              width: 5,
-              height: 28,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFF3155),
-                borderRadius: BorderRadius.circular(6),
-                boxShadow: const [
-                  BoxShadow(color: Color(0xFFFF3155), blurRadius: 10),
-                ],
-              ),
-            )
-          : null,
     );
   }
 }
