@@ -6086,7 +6086,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
     }
   }
 
-  Future<void> _recordMovement({
+  Future<bool> _recordMovement({
     required String event,
     required String person,
     int? appointmentId,
@@ -6109,7 +6109,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
         'visitorRecordId': visitorRecordId,
         'sourceEntryId': sourceEntryId,
       });
-      if (!mounted) return;
+      if (!mounted) return false;
       _showMessage(
         context,
         '$person: ${event == 'Ingreso'
@@ -6125,8 +6125,10 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
         _recentPage = 1;
       });
       await _load();
+      return true;
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
+      return false;
     }
   }
 
@@ -6134,21 +6136,20 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
     Map<String, dynamic> appointment, {
     int? externalStaffId,
   }) async {
-    final result = await showDialog<Map<String, Object?>>(
+    await showDialog<void>(
       context: context,
       builder: (context) => _AppointmentReceptionDialog(
         appointment: appointment,
         authService: widget.authService,
         externalStaffId: externalStaffId,
+        onRecordMovement: (event, person, {externalStaffId}) => _recordMovement(
+          event: event,
+          person: person,
+          appointmentId: appointment['id'] as int?,
+          externalStaffId: externalStaffId,
+          visitorRecordId: appointment['visitorRecordId'] as int?,
+        ),
       ),
-    );
-    if (result == null || !mounted) return;
-    await _recordMovement(
-      event: result['event'] as String,
-      person: result['person'] as String,
-      appointmentId: appointment['id'] as int?,
-      externalStaffId: result['externalStaffId'] as int?,
-      visitorRecordId: appointment['visitorRecordId'] as int?,
     );
   }
 
@@ -6488,7 +6489,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
     final appointment = appointmentId is num
         ? _appointments.where((item) => item['id'] == appointmentId).firstOrNull
         : null;
-    final event = await showDialog<String>(
+    await showDialog<void>(
       context: context,
       builder: (context) => _DailyLogEntryDetailDialog(
         entry: entry,
@@ -6496,25 +6497,21 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
         authService: widget.authService,
         showRegisteredBy: widget.isAdmin,
         readOnly: readOnly,
+        onRecordMovement: (event) => _recordMovement(
+          event: event,
+          person: '${entry['person'] ?? 'Visitante'}',
+          appointmentId: appointmentId is num ? appointmentId.toInt() : null,
+          externalStaffId: entry['externalStaffId'] is num
+              ? (entry['externalStaffId'] as num).toInt()
+              : null,
+          visitorRecordId: visitorRecordId is num
+              ? visitorRecordId.toInt()
+              : null,
+          sourceEntryId: entry['id'] is num
+              ? (entry['id'] as num).toInt()
+              : null,
+        ),
       ),
-    );
-    if (event == null || !mounted) return;
-    if (readOnly) {
-      _showMessage(
-        context,
-        'Los movimientos de días anteriores son de solo lectura.',
-      );
-      return;
-    }
-    await _recordMovement(
-      event: event,
-      person: '${entry['person'] ?? 'Visitante'}',
-      appointmentId: appointmentId is num ? appointmentId.toInt() : null,
-      externalStaffId: entry['externalStaffId'] is num
-          ? (entry['externalStaffId'] as num).toInt()
-          : null,
-      visitorRecordId: visitorRecordId is num ? visitorRecordId.toInt() : null,
-      sourceEntryId: entry['id'] is num ? (entry['id'] as num).toInt() : null,
     );
   }
 
@@ -8539,11 +8536,18 @@ class _AppointmentReceptionDialog extends StatefulWidget {
   const _AppointmentReceptionDialog({
     required this.appointment,
     required this.authService,
+    required this.onRecordMovement,
     this.externalStaffId,
   });
 
   final Map<String, dynamic> appointment;
   final AuthService authService;
+  final Future<bool> Function(
+    String event,
+    String person, {
+    int? externalStaffId,
+  })
+  onRecordMovement;
   final int? externalStaffId;
 
   @override
@@ -8558,6 +8562,7 @@ class _AppointmentReceptionDialogState
   List<Map<String, dynamic>> _employees = [];
   bool _checklistLoading = false;
   bool _checklistSaving = false;
+  bool _movementSaving = false;
   String? _checklistError;
   Map<String, dynamic>? _equipmentDeclaration;
 
@@ -8621,9 +8626,9 @@ class _AppointmentReceptionDialogState
     return null;
   }
 
-  Future<void> _openChecklist(String phase) async {
+  Future<bool> _openChecklist(String phase) async {
     final declaration = _equipmentDeclaration;
-    if (declaration == null || _checklistSaving) return;
+    if (declaration == null || _checklistSaving) return false;
     final items = (declaration['items'] as List? ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();
@@ -8633,7 +8638,7 @@ class _AppointmentReceptionDialogState
         'La declaración todavía no incluye artículos para verificar.',
         error: true,
       );
-      return;
+      return false;
     }
     final inspectionItems = await showDialog<List<Map<String, Object?>>>(
       context: context,
@@ -8642,7 +8647,7 @@ class _AppointmentReceptionDialogState
         phase: phase,
       ),
     );
-    if (inspectionItems == null || !mounted) return;
+    if (inspectionItems == null || !mounted) return false;
     final id = declaration['id'];
     if (id is! num || id <= 0) {
       _showMessage(
@@ -8650,7 +8655,7 @@ class _AppointmentReceptionDialogState
         'La declaración seleccionada no es válida.',
         error: true,
       );
-      return;
+      return false;
     }
     setState(() {
       _checklistSaving = true;
@@ -8662,7 +8667,7 @@ class _AppointmentReceptionDialogState
         phase,
         inspectionItems,
       );
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         if (phase == 'entrada') {
           widget.appointment['equipmentEntryChecklistComplete'] = true;
@@ -8684,16 +8689,18 @@ class _AppointmentReceptionDialogState
       _showMessage(
         context,
         phase == 'entrada'
-            ? 'Checklist de entrada completado. Ya puedes registrar el ingreso.'
-            : 'Checklist de salida completado. Ya puedes registrar la salida.',
+            ? 'Checklist de entrada completado.'
+            : 'Checklist de salida completado.',
       );
+      return true;
     } on AuthApiException catch (error) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _checklistSaving = false;
         _checklistError = error.message;
       });
       _showMessage(context, error.message, error: true);
+      return false;
     }
   }
 
@@ -8742,6 +8749,90 @@ class _AppointmentReceptionDialogState
       widget.appointment['equipmentChecklistRequired'] != true ||
       widget.appointment['equipmentExitChecklistComplete'] == true;
 
+  bool _canStartEntry() =>
+      widget.appointment['equipmentChecklistRequired'] != true ||
+      (_equipmentDeclaration?['status'] == 'Enviada' &&
+          !_checklistLoading &&
+          !_checklistSaving);
+
+  bool _canStartExit({required bool arrivedWithoutEntry}) =>
+      arrivedWithoutEntry ||
+      widget.appointment['equipmentChecklistRequired'] != true ||
+      (_equipmentDeclaration?['status'] == 'Enviada' &&
+          _entryChecklistComplete &&
+          !_checklistLoading &&
+          !_checklistSaving);
+
+  Future<void> _performMovement({
+    required String event,
+    required String person,
+    int? externalStaffId,
+    Map<String, dynamic>? employee,
+  }) async {
+    if (_movementSaving || _checklistSaving) return;
+
+    final employeeStatus =
+        '${employee?['status'] ?? widget.appointment['status'] ?? ''}';
+    if (event == 'Ingreso' &&
+        widget.appointment['equipmentChecklistRequired'] == true &&
+        !_entryChecklistComplete) {
+      if (!_canStartEntry()) {
+        _showMessage(
+          context,
+          'El contratista debe enviar su declaración antes de completar la verificación.',
+          error: true,
+        );
+        return;
+      }
+      if (!await _openChecklist('entrada') || !mounted) return;
+    }
+
+    if (event == 'Retiro' &&
+        employeeStatus == 'Dentro' &&
+        widget.appointment['equipmentChecklistRequired'] == true &&
+        !_exitChecklistComplete) {
+      if (!_canStartExit(arrivedWithoutEntry: false)) {
+        _showMessage(
+          context,
+          'Completa primero la verificación de entrada para revisar el equipo resguardado.',
+          error: true,
+        );
+        return;
+      }
+      if (!await _openChecklist('salida')) return;
+    }
+
+    setState(() => _movementSaving = true);
+    final saved = await widget.onRecordMovement(
+      event,
+      person,
+      externalStaffId: externalStaffId,
+    );
+    if (!mounted) return;
+    if (!saved) {
+      setState(() => _movementSaving = false);
+      return;
+    }
+
+    final nextStatus = switch (event) {
+      'Llegada' => 'En proceso',
+      'Ingreso' => 'Dentro',
+      'Retiro' => 'Retirado',
+      _ => employeeStatus,
+    };
+    if (employee != null) {
+      employee['status'] = nextStatus;
+    } else {
+      widget.appointment['status'] = nextStatus;
+    }
+    setState(() => _movementSaving = false);
+
+    final appointmentId = widget.appointment['id'];
+    if (employee != null && appointmentId is num) {
+      await _loadEmployees(appointmentId.toInt());
+    }
+  }
+
   List<Map<String, dynamic>> get _visibleEmployees {
     final staffId = widget.externalStaffId;
     if (staffId == null) return _employees;
@@ -8752,7 +8843,64 @@ class _AppointmentReceptionDialogState
     required String status,
     required String person,
     int? externalStaffId,
+    Map<String, dynamic>? employee,
   }) {
+    if (status == 'En proceso' &&
+        widget.appointment['businessPartnerId'] is num) {
+      final canEnter = _canStartEntry();
+      final canLeave = _canStartExit(arrivedWithoutEntry: true);
+      return Row(
+        children: [
+          Expanded(
+            child: FilledButton(
+              onPressed: !canEnter || _movementSaving
+                  ? null
+                  : () => _performMovement(
+                      event: 'Ingreso',
+                      person: person,
+                      externalStaffId: externalStaffId,
+                      employee: employee,
+                    ),
+              style: _logPrimaryButtonStyle(
+                context,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+              ),
+              child: const Text(
+                'Dar entrada',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: OutlinedButton(
+              onPressed: !canLeave || _movementSaving
+                  ? null
+                  : () => _performMovement(
+                      event: 'Retiro',
+                      person: person,
+                      externalStaffId: externalStaffId,
+                      employee: employee,
+                    ),
+              style: _logOutlinedButtonStyle(
+                context,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+              ),
+              child: const Text(
+                'Registrar salida',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     final event = _eventForStatus(status);
     if (event == null) {
       return Container(
@@ -8768,16 +8916,19 @@ class _AppointmentReceptionDialogState
       );
     }
     final blocked =
-        (event == 'Ingreso' && !_canEnter()) ||
-        (event == 'Retiro' && !_canExit());
+        (event == 'Ingreso' && !_canStartEntry()) ||
+        (event == 'Retiro' &&
+            !_canStartExit(arrivedWithoutEntry: status == 'En proceso')) ||
+        _movementSaving;
     return FilledButton(
       onPressed: blocked
           ? null
-          : () => Navigator.pop(context, <String, Object?>{
-              'event': event,
-              'person': person,
-              'externalStaffId': externalStaffId,
-            }),
+          : () => _performMovement(
+              event: event,
+              person: person,
+              externalStaffId: externalStaffId,
+              employee: employee,
+            ),
       style: _logPrimaryButtonStyle(
         context,
         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
@@ -9211,6 +9362,7 @@ class _AppointmentReceptionDialogState
                                   externalStaffId: employee['id'] is num
                                       ? (employee['id'] as num).toInt()
                                       : null,
+                                  employee: employee,
                                 ),
                               ),
                             ],
@@ -9276,6 +9428,15 @@ class _AppointmentEquipmentChecklistDialogState
           .whereType<Map<String, dynamic>>()
           .toList();
 
+  bool _isItemComplete(int id) =>
+      _checkedIds.contains(id) ||
+      (widget.phase == 'entrada' && _retainedIds.contains(id));
+
+  int get _completedItemCount => _items.where((item) {
+    final id = item['id'];
+    return id is num && _isItemComplete(id.toInt());
+  }).length;
+
   Set<int> get _itemsKeptAtReception {
     final retained = <int>{};
     for (final inspection
@@ -9306,7 +9467,7 @@ class _AppointmentEquipmentChecklistDialogState
       'color': '${item['color'] ?? ''}',
       'notes': '',
       'incident': false,
-      'checked': _checkedIds.contains(id),
+      'checked': _isItemComplete(id),
       'keepAtReception': widget.phase == 'entrada' && _retainedIds.contains(id),
       'returnedToVisitor':
           widget.phase == 'salida' && _returnedIds.contains(id),
@@ -9320,11 +9481,10 @@ class _AppointmentEquipmentChecklistDialogState
     final isLight = _isLightTheme(context);
     final canComplete =
         _items.isNotEmpty &&
-        _items.every(
-          (item) =>
-              item['id'] is num &&
-              _checkedIds.contains((item['id'] as num).toInt()),
-        );
+        _items.every((item) {
+          final id = item['id'];
+          return id is num && _isItemComplete(id.toInt());
+        });
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
@@ -9420,7 +9580,7 @@ class _AppointmentEquipmentChecklistDialogState
                   Expanded(
                     child: Text(
                       isEntry
-                          ? 'Confirma cada artículo. Marca si debe quedarse resguardado.'
+                          ? 'Marca cada artículo como verificado o indica que se resguarda en recepción.'
                           : 'Confirma cada artículo y registra las devoluciones del resguardo.',
                       style: TextStyle(
                         color: _secondaryTextColor(context),
@@ -9431,7 +9591,7 @@ class _AppointmentEquipmentChecklistDialogState
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '${_checkedIds.length}/${_items.length}',
+                    '$_completedItemCount/${_items.length}',
                     style: const TextStyle(
                       color: Color(0xFF168BFF),
                       fontSize: 11,
@@ -9459,7 +9619,7 @@ class _AppointmentEquipmentChecklistDialogState
                       color: _logInsetColor(context),
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
-                        color: _checkedIds.contains(id)
+                        color: _isItemComplete(id)
                             ? const Color(0x663EB98E)
                             : _logBorderColor(context),
                       ),
@@ -9469,7 +9629,9 @@ class _AppointmentEquipmentChecklistDialogState
                         InkWell(
                           borderRadius: BorderRadius.circular(10),
                           onTap: () => setState(() {
-                            if (!_checkedIds.add(id)) _checkedIds.remove(id);
+                            if (_checkedIds.remove(id)) return;
+                            _checkedIds.add(id);
+                            _retainedIds.remove(id);
                           }),
                           child: Row(
                             children: [
@@ -9479,6 +9641,7 @@ class _AppointmentEquipmentChecklistDialogState
                                 onChanged: (value) => setState(() {
                                   if (value == true) {
                                     _checkedIds.add(id);
+                                    _retainedIds.remove(id);
                                   } else {
                                     _checkedIds.remove(id);
                                   }
@@ -9512,8 +9675,7 @@ class _AppointmentEquipmentChecklistDialogState
                             ],
                           ),
                         ),
-                        if ((isEntry && _checkedIds.contains(id)) ||
-                            (!isEntry && retained))
+                        if (isEntry || retained)
                           Padding(
                             padding: const EdgeInsets.only(left: 44, top: 4),
                             child: InkWell(
@@ -9521,7 +9683,11 @@ class _AppointmentEquipmentChecklistDialogState
                                 final selection = isEntry
                                     ? _retainedIds
                                     : _returnedIds;
-                                if (!selection.add(id)) selection.remove(id);
+                                if (!selection.add(id)) {
+                                  selection.remove(id);
+                                } else if (isEntry) {
+                                  _checkedIds.remove(id);
+                                }
                               }),
                               child: Row(
                                 children: [
@@ -9598,6 +9764,7 @@ class _DailyLogEntryDetailDialog extends StatefulWidget {
     required this.entry,
     required this.authService,
     required this.showRegisteredBy,
+    required this.onRecordMovement,
     this.readOnly = false,
     this.appointment,
   });
@@ -9606,6 +9773,7 @@ class _DailyLogEntryDetailDialog extends StatefulWidget {
   final Map<String, dynamic>? appointment;
   final AuthService authService;
   final bool showRegisteredBy;
+  final Future<bool> Function(String event) onRecordMovement;
   final bool readOnly;
 
   @override
@@ -9617,6 +9785,7 @@ class _DailyLogEntryDetailDialogState
     extends State<_DailyLogEntryDetailDialog> {
   bool _loadingChecklist = false;
   bool _savingChecklist = false;
+  bool _savingMovement = false;
   String? _checklistError;
   Map<String, dynamic>? _declaration;
 
@@ -9671,9 +9840,9 @@ class _DailyLogEntryDetailDialogState
     }
   }
 
-  Future<void> _completeChecklist(String phase) async {
+  Future<bool> _completeChecklist(String phase) async {
     final declaration = widget.readOnly ? null : _declaration;
-    if (declaration == null || _savingChecklist) return;
+    if (declaration == null || _savingChecklist) return false;
     final items = (declaration['items'] as List? ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();
@@ -9683,7 +9852,7 @@ class _DailyLogEntryDetailDialogState
         'La declaración todavía no incluye artículos para verificar.',
         error: true,
       );
-      return;
+      return false;
     }
     final result = await showDialog<List<Map<String, Object?>>>(
       context: context,
@@ -9692,7 +9861,7 @@ class _DailyLogEntryDetailDialogState
         phase: phase,
       ),
     );
-    if (result == null || !mounted) return;
+    if (result == null || !mounted) return false;
     final id = declaration['id'];
     if (id is! num || id <= 0) {
       _showMessage(
@@ -9700,7 +9869,7 @@ class _DailyLogEntryDetailDialogState
         'La declaración seleccionada no es válida.',
         error: true,
       );
-      return;
+      return false;
     }
     setState(() {
       _savingChecklist = true;
@@ -9712,7 +9881,7 @@ class _DailyLogEntryDetailDialogState
         phase,
         result,
       );
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         final field = phase == 'entrada'
             ? 'equipmentEntryChecklistComplete'
@@ -9744,14 +9913,47 @@ class _DailyLogEntryDetailDialogState
             ? 'Checklist de entrada completado.'
             : 'Checklist de salida completado.',
       );
+      return true;
     } on AuthApiException catch (error) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _savingChecklist = false;
         _checklistError = error.message;
       });
       _showMessage(context, error.message, error: true);
+      return false;
     }
+  }
+
+  Future<void> _performMovement(String event) async {
+    if (_savingMovement || _savingChecklist) return;
+    if (event == 'Ingreso' && _requiresChecklist && !_entryComplete) {
+      if (_declaration?['status'] != 'Enviada') return;
+      if (!await _completeChecklist('entrada')) return;
+    } else if (event == 'Retiro' &&
+        '${widget.entry['event'] ?? ''}' == 'Ingreso' &&
+        _requiresChecklist &&
+        !_exitComplete) {
+      if (_declaration?['status'] != 'Enviada') return;
+      if (!await _completeChecklist('salida')) return;
+    }
+
+    setState(() => _savingMovement = true);
+    final saved = await widget.onRecordMovement(event);
+    if (!mounted) return;
+    setState(() {
+      _savingMovement = false;
+      if (saved) {
+        widget.entry['event'] = event;
+        if (widget.appointment != null) {
+          widget.appointment!['status'] = switch (event) {
+            'Ingreso' => 'Dentro',
+            'Retiro' => 'Retirado',
+            _ => 'En proceso',
+          };
+        }
+      }
+    });
   }
 
   @override
@@ -9767,19 +9969,22 @@ class _DailyLogEntryDetailDialogState
         : nextEvent == 'Retiro'
         ? 'Registrar salida'
         : 'Cerrar';
-    final checklistPending =
-        _requiresChecklist &&
-        ((nextEvent == 'Ingreso' && !_entryComplete) ||
-            (nextEvent == 'Retiro' && !_exitComplete));
-    final declarationNotReady =
-        _requiresChecklist && _declaration?['status'] != 'Enviada';
+    final movementNeedsDeclaration =
+        _requiresChecklist && (nextEvent == 'Ingreso' || nextEvent == 'Retiro');
     final canPerformMovement =
         nextEvent != null &&
         !widget.readOnly &&
-        !checklistPending &&
-        !declarationNotReady &&
         !_loadingChecklist &&
-        !_savingChecklist;
+        !_savingChecklist &&
+        !_savingMovement &&
+        (!movementNeedsDeclaration || _declaration?['status'] == 'Enviada');
+    final canLeaveWithoutEntering =
+        event == 'Llegada' &&
+        _requiresChecklist &&
+        !widget.readOnly &&
+        !_loadingChecklist &&
+        !_savingChecklist &&
+        !_savingMovement;
     return Dialog(
       backgroundColor: Colors.transparent,
       child: Container(
@@ -9888,7 +10093,7 @@ class _DailyLogEntryDetailDialogState
                           : _checklistError ??
                                 (_declaration == null
                                     ? 'No se encontró la declaración asociada a esta cita.'
-                                    : declarationNotReady
+                                    : _declaration?['status'] != 'Enviada'
                                     ? 'El contratista aún debe enviar su declaración.'
                                     : _entryComplete
                                     ? _exitComplete
@@ -9951,11 +10156,12 @@ class _DailyLogEntryDetailDialogState
                         ),
                       ),
                     ],
-                    if (checklistPending)
+                    if (movementNeedsDeclaration &&
+                        _declaration?['status'] != 'Enviada')
                       const Padding(
                         padding: EdgeInsets.only(top: 7),
                         child: Text(
-                          'Completa el checklist para habilitar este movimiento.',
+                          'El contratista debe enviar su declaración antes de continuar.',
                           style: TextStyle(
                             color: Color(0xFFE0A437),
                             fontSize: 10,
@@ -9980,10 +10186,10 @@ class _DailyLogEntryDetailDialogState
                 if (nextEvent != null) ...[
                   const SizedBox(width: 8),
                   Expanded(
-                    flex: 2,
+                    flex: canLeaveWithoutEntering ? 1 : 2,
                     child: FilledButton.icon(
                       onPressed: canPerformMovement
-                          ? () => Navigator.pop(context, nextEvent)
+                          ? () => _performMovement(nextEvent)
                           : null,
                       icon: Icon(
                         nextEvent == 'Ingreso'
@@ -9995,6 +10201,20 @@ class _DailyLogEntryDetailDialogState
                       style: _logPrimaryButtonStyle(context),
                     ),
                   ),
+                  if (canLeaveWithoutEntering) ...[
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _performMovement('Retiro'),
+                        icon: const Icon(Icons.logout_rounded, size: 17),
+                        label: const Text(
+                          'Registrar salida',
+                          textAlign: TextAlign.center,
+                        ),
+                        style: _logOutlinedButtonStyle(context),
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),

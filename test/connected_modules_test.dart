@@ -451,33 +451,153 @@ void main() {
             find.widgetWithText(FilledButton, 'Dar entrada'),
           )
           .onPressed,
-      isNull,
+      isNotNull,
     );
 
-    await tester.tap(find.text('Completar checklist de entrada'));
+    await tester.tap(find.text('Dar entrada'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Laptop'), findsOneWidget);
-    await tester.tap(find.byType(Checkbox).first);
-    await tester.pumpAndSettle();
     await tester.tap(find.text('Resguardar en recepción'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Confirmar revisión'));
     await tester.pumpAndSettle();
 
     expect(submittedInspection?['items']?[0]['keepAtReception'], isTrue);
+    expect(submittedInspection?['items']?[0]['checked'], isTrue);
     expect(find.text('Completar checklist de entrada'), findsNothing);
-    expect(
-      tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Dar entrada'),
-          )
-          .onPressed,
-      isNotNull,
+    expect(recordedEntry?['event'], 'Ingreso');
+    expect(find.text('Cita programada'), findsOneWidget);
+    expect(find.text('Registrar salida'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('mantiene la cita abierta y permite salida desde llegada', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    String? latestEvent;
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 42,
+                'businessPartnerId': 8,
+                'date': today,
+                'time': '10:30',
+                'visitor': 'Personal externo',
+                'email': 'contractor@example.test',
+                'referenceCode': 'ARRIVAL42',
+                'company': 'Empresa contratista',
+                'partnerType': 'Contratista',
+                'host': 'Anfitrión de prueba',
+                'status': 'Pendiente',
+                'equipmentChecklistRequired': true,
+                'equipmentDeclarationId': 18,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/appointments/42/employees') {
+        final status = switch (latestEvent) {
+          'Llegada' => 'En proceso',
+          'Ingreso' => 'Dentro',
+          'Retiro' => 'Retirado',
+          _ => 'Pendiente',
+        };
+        return http.Response(
+          jsonEncode({
+            'employees': [
+              {'id': 7, 'fullName': 'Contratista de prueba', 'status': status},
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/equipment/declarations/18') {
+        return http.Response(
+          jsonEncode({
+            'declaration': {
+              'id': 18,
+              'status': 'Enviada',
+              'items': [
+                {
+                  'id': 11,
+                  'itemType': 'Equipo',
+                  'quantity': 1,
+                  'product': 'Laptop',
+                  'brand': 'Marca',
+                  'model': 'Modelo',
+                  'serialNumber': 'SERIE-11',
+                  'color': 'Negro',
+                  'notes': '',
+                },
+              ],
+              'inspections': [],
+            },
+          }),
+          200,
+        );
+      }
+      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+        latestEvent =
+            (jsonDecode(request.body) as Map<String, dynamic>)['event']
+                as String;
+        return http.Response(
+          jsonEncode({'message': 'El movimiento se registró.'}),
+          201,
+        );
+      }
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
     );
-    await tester.tap(find.text('Dar entrada'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Personal externo'));
     await tester.pumpAndSettle();
 
-    expect(recordedEntry?['event'], 'Ingreso');
+    await tester.tap(find.text('Registrar llegada'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cita programada'), findsOneWidget);
+    expect(find.text('Dar entrada'), findsOneWidget);
+    expect(find.text('Registrar salida'), findsOneWidget);
+
+    await tester.tap(find.text('Registrar salida'));
+    await tester.pumpAndSettle();
+    expect(latestEvent, 'Retiro');
+    expect(find.text('Cita programada'), findsOneWidget);
+    expect(find.text('Completar checklist de entrada'), findsNothing);
+    expect(find.text('Completar checklist de salida'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 5));
   });
@@ -603,9 +723,9 @@ void main() {
             find.widgetWithText(FilledButton, 'Registrar salida'),
           )
           .onPressed,
-      isNull,
+      isNotNull,
     );
-    await tester.tap(find.text('Completar checklist de salida'));
+    await tester.tap(find.text('Registrar salida'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(Checkbox).first);
     await tester.pumpAndSettle();
@@ -615,17 +735,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(submittedInspection?['items']?[0]['returnedToVisitor'], isTrue);
-    expect(
-      tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Registrar salida'),
-          )
-          .onPressed,
-      isNotNull,
-    );
-    await tester.tap(find.text('Registrar salida'));
-    await tester.pumpAndSettle();
     expect(recordedExit?['event'], 'Retiro');
+    expect(find.text('Cita programada'), findsOneWidget);
+    expect(find.text('Visita concluida'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 5));
   });
