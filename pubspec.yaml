@@ -72,6 +72,8 @@ flutter:
     - assets/images/walk-in-panel-frame.webp
     - assets/images/walk-in-info-panel.webp
     - assets/images/walk-in-registration-background.webp
+    - assets/images/tablet-visitor-landing-background.webp
+    - assets/images/tablet-visitor-exit-icon.webp
     - assets/images/reception-welcome-background.webp
     - assets/images/onboarding-register-background.webp
     - assets/images/onboarding-control-background.webp

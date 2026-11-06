@@ -3437,7 +3437,7 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   }
 
   Future<void> _delete(Map<String, dynamic> appointment) async {
-    if (appointment['status'] != 'Cancelada') {
+    if (!widget.isAdmin && appointment['status'] != 'Cancelada') {
       _showMessage(
         context,
         'Primero cancela la cita para poder eliminarla.',
@@ -3447,8 +3447,9 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
     }
     if (!await _confirmAction(
       context,
-      title: 'Eliminar cita cancelada',
-      message: 'Esta acción elimina la cita del listado.',
+      title: 'Eliminar cita',
+      message:
+          'Esta acción elimina la cita del listado y conserva su historial.',
       confirmLabel: 'Eliminar',
     )) {
       return;
@@ -3531,6 +3532,7 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                       _AppointmentRecordCard(
                         item: item,
                         canManage: widget.canManage,
+                        isAdmin: widget.isAdmin,
                         onEdit: () => _edit(item),
                         onCancel: () => _cancel(item),
                         onDelete: () => _delete(item),
@@ -5021,6 +5023,7 @@ class _AppointmentRecordCard extends StatelessWidget {
   const _AppointmentRecordCard({
     required this.item,
     required this.canManage,
+    required this.isAdmin,
     required this.onEdit,
     required this.onCancel,
     required this.onDelete,
@@ -5029,6 +5032,7 @@ class _AppointmentRecordCard extends StatelessWidget {
   });
   final Map<String, dynamic> item;
   final bool canManage;
+  final bool isAdmin;
   final VoidCallback onEdit, onCancel, onDelete, onSendQr, onShowCode;
 
   @override
@@ -5189,9 +5193,9 @@ class _AppointmentRecordCard extends StatelessWidget {
                   icon: Icons.delete_outline_rounded,
                   onPressed: onDelete,
                   destructive: true,
-                  enabled: canceled,
-                  tooltip: canceled
-                      ? 'Eliminar cita cancelada'
+                  enabled: isAdmin || canceled,
+                  tooltip: isAdmin || canceled
+                      ? 'Eliminar cita'
                       : 'Primero cancela la cita para poder eliminarla',
                 ),
             ],
@@ -6010,14 +6014,45 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   }
 
   Future<void> _showHistory() async {
-    final today = DateTime.now();
+    final range = _data['historyRange'];
+    final firstDate = range is Map<String, dynamic>
+        ? DateTime.tryParse('${range['firstDate'] ?? ''}')
+        : null;
+    final lastDate = range is Map<String, dynamic>
+        ? DateTime.tryParse('${range['lastDate'] ?? ''}')
+        : null;
+    if (firstDate == null || lastDate == null) {
+      _showMessage(
+        context,
+        'Aún no hay registros para consultar el historial.',
+      );
+      return;
+    }
     setState(() {
-      _fromDate = DateTime(today.year, today.month, today.day - 29);
-      _toDate = today;
+      _fromDate = firstDate;
+      _toDate = lastDate;
       _page = 1;
       _recentPage = 1;
     });
     await _load();
+  }
+
+  Future<void> _showCurrentDay() async {
+    final today = DateTime.now();
+    setState(() {
+      _fromDate = DateTime(today.year, today.month, today.day);
+      _toDate = DateTime(today.year, today.month, today.day);
+      _page = 1;
+      _recentPage = 1;
+    });
+    await _load();
+  }
+
+  bool _isPastEntry(Map<String, dynamic> entry) {
+    if (widget.isAdmin) return false;
+    final date = entry['date']?.toString();
+    if (date == null || date.length < 10) return true;
+    return date.substring(0, 10).compareTo(_dateString(DateTime.now())) < 0;
   }
 
   Future<void> _register() async {
@@ -6118,11 +6153,14 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   }
 
   Future<void> _openVisitorRegistration(
-    Map<String, dynamic> registration,
-  ) async {
+    Map<String, dynamic> registration, {
+    bool readOnly = false,
+  }) async {
     bool? isInside;
     final items = (registration['items'] as List? ?? const []);
-    if (registration['authorizationStatus'] == 'Autorizada' && items.isEmpty) {
+    if (!readOnly &&
+        registration['authorizationStatus'] == 'Autorizada' &&
+        items.isEmpty) {
       try {
         final today = _dateString(DateTime.now());
         final data = await widget.authService.getDailyLog(
@@ -6161,6 +6199,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
         authService: widget.authService,
         isAdmin: widget.isAdmin,
         isInside: isInside,
+        forceReadOnly: readOnly,
       ),
     );
     if (changed == true && mounted) await _load();
@@ -6425,6 +6464,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   }
 
   Future<void> _openEntry(Map<String, dynamic> entry) async {
+    final readOnly = _isPastEntry(entry);
     final visitorRecordId = entry['visitorRecordId'];
     if (visitorRecordId is num) {
       try {
@@ -6434,7 +6474,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
             .where((item) => item['visitorRecordId'] == visitorRecordId)
             .firstOrNull;
         if (registration != null) {
-          await _openVisitorRegistration(registration);
+          await _openVisitorRegistration(registration, readOnly: readOnly);
           return;
         }
       } on AuthApiException catch (error) {
@@ -6450,10 +6490,22 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
         : null;
     final event = await showDialog<String>(
       context: context,
-      builder: (context) =>
-          _DailyLogEntryDetailDialog(entry: entry, appointment: appointment),
+      builder: (context) => _DailyLogEntryDetailDialog(
+        entry: entry,
+        appointment: appointment,
+        authService: widget.authService,
+        showRegisteredBy: widget.isAdmin,
+        readOnly: readOnly,
+      ),
     );
     if (event == null || !mounted) return;
+    if (readOnly) {
+      _showMessage(
+        context,
+        'Los movimientos de días anteriores son de solo lectura.',
+      );
+      return;
+    }
     await _recordMovement(
       event: event,
       person: '${entry['person'] ?? 'Visitante'}',
@@ -6514,6 +6566,14 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   }
 
   Future<void> _delete(Map<String, dynamic> entry) async {
+    if (_isPastEntry(entry)) {
+      _showMessage(
+        context,
+        'Los movimientos de días anteriores son de solo lectura.',
+        error: true,
+      );
+      return;
+    }
     final id = entry['id'];
     if (id is! num || id <= 0) {
       _showMessage(
@@ -6779,18 +6839,40 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
                                 ),
                               ),
                             ),
-                            TextButton.icon(
-                              onPressed: _showHistory,
-                              icon: const Icon(Icons.history_rounded, size: 16),
-                              label: const Text('30 días'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: _isLightTheme(context)
-                                    ? const Color(0xFF1769AA)
-                                    : const Color(0xFF8ACBFF),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                            ),
                           ],
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Wrap(
+                            spacing: 4,
+                            children: [
+                              TextButton.icon(
+                                onPressed: _showHistory,
+                                icon: const Icon(
+                                  Icons.history_rounded,
+                                  size: 16,
+                                ),
+                                label: const Text('Historial'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _isLightTheme(context)
+                                      ? const Color(0xFF1769AA)
+                                      : const Color(0xFF8ACBFF),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                              TextButton.icon(
+                                onPressed: _showCurrentDay,
+                                icon: const Icon(Icons.today_rounded, size: 16),
+                                label: const Text('Actualmente'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _isLightTheme(context)
+                                      ? const Color(0xFF1769AA)
+                                      : const Color(0xFF8ACBFF),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -7133,7 +7215,10 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
                         entry: entry,
                         onTap: () => _openEntry(entry),
                         onQr: () => _openEntryQr(entry),
-                        onDelete: widget.isAdmin ? () => _delete(entry) : null,
+                        showRegisteredBy: widget.isAdmin,
+                        onDelete: widget.isAdmin && !_isPastEntry(entry)
+                            ? () => _delete(entry)
+                            : null,
                       ),
                       const SizedBox(height: 9),
                     ],
@@ -7173,6 +7258,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
                         entry: entry,
                         onTap: () => _openEntry(entry),
                         onQr: () => _openEntryQr(entry),
+                        showRegisteredBy: widget.isAdmin,
                         onDelete: null,
                       ),
                       const SizedBox(height: 8),
@@ -7489,12 +7575,14 @@ class _DailyLogMovementCard extends StatelessWidget {
     required this.onTap,
     required this.onQr,
     required this.onDelete,
+    this.showRegisteredBy = false,
   });
 
   final Map<String, dynamic> entry;
   final VoidCallback onTap;
   final VoidCallback onQr;
   final VoidCallback? onDelete;
+  final bool showRegisteredBy;
 
   @override
   Widget build(BuildContext context) {
@@ -7639,44 +7727,76 @@ class _DailyLogMovementCard extends StatelessWidget {
                   ),
                 ),
               ],
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Registró: ${entry['actorName'] ?? 'Sin registro'}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: _secondaryTextColor(context),
-                        fontSize: 9,
+              if (showRegisteredBy &&
+                  '${entry['actorName'] ?? ''}'.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Registró: ${entry['actorName']}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _secondaryTextColor(context),
+                          fontSize: 9,
+                        ),
                       ),
                     ),
-                  ),
-                  if (appointmentId is num)
-                    IconButton(
-                      tooltip: 'Ver QR de visita',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onQr,
-                      icon: const Icon(
-                        Icons.qr_code_2_rounded,
-                        color: Color(0xFF8ACBFF),
-                        size: 20,
+                    if (appointmentId is num)
+                      IconButton(
+                        tooltip: 'Ver QR de visita',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: onQr,
+                        icon: const Icon(
+                          Icons.qr_code_2_rounded,
+                          color: Color(0xFF8ACBFF),
+                          size: 20,
+                        ),
                       ),
-                    ),
-                  if (onDelete != null)
-                    IconButton(
-                      tooltip: 'Eliminar movimiento',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: onDelete,
-                      icon: const Icon(
-                        Icons.delete_outline_rounded,
-                        color: Color(0xFFFF7189),
-                        size: 20,
+                    if (onDelete != null)
+                      IconButton(
+                        tooltip: 'Eliminar movimiento',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: onDelete,
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: Color(0xFFFF7189),
+                          size: 20,
+                        ),
                       ),
-                    ),
-                ],
-              ),
+                  ],
+                ),
+              ] else if (appointmentId is num || onDelete != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (appointmentId is num)
+                      IconButton(
+                        tooltip: 'Ver QR de visita',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: onQr,
+                        icon: const Icon(
+                          Icons.qr_code_2_rounded,
+                          color: Color(0xFF8ACBFF),
+                          size: 20,
+                        ),
+                      ),
+                    if (onDelete != null)
+                      IconButton(
+                        tooltip: 'Eliminar movimiento',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: onDelete,
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: Color(0xFFFF7189),
+                          size: 20,
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -8436,6 +8556,10 @@ class _AppointmentReceptionDialogState
   bool _loading = false;
   String? _error;
   List<Map<String, dynamic>> _employees = [];
+  bool _checklistLoading = false;
+  bool _checklistSaving = false;
+  String? _checklistError;
+  Map<String, dynamic>? _equipmentDeclaration;
 
   @override
   void initState() {
@@ -8443,6 +8567,133 @@ class _AppointmentReceptionDialogState
     final id = widget.appointment['id'];
     if (widget.appointment['businessPartnerId'] is num && id is num) {
       _loadEmployees(id.toInt());
+    }
+    final declarationId = widget.appointment['equipmentDeclarationId'];
+    if (declarationId is num && declarationId > 0) {
+      _loadEquipmentDeclaration(declarationId.toInt());
+    }
+  }
+
+  Future<void> _loadEquipmentDeclaration(int declarationId) async {
+    setState(() {
+      _checklistLoading = true;
+      _checklistError = null;
+    });
+    try {
+      final response = await widget.authService.getEquipmentDeclaration(
+        declarationId,
+      );
+      final declaration = response['declaration'];
+      if (declaration is! Map<String, dynamic>) {
+        throw const AuthApiException(
+          'No se encontró la declaración de equipo de esta cita.',
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _equipmentDeclaration = declaration;
+        _checklistLoading = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checklistError = error.message;
+        _checklistLoading = false;
+      });
+    }
+  }
+
+  bool get _entryChecklistComplete =>
+      widget.appointment['equipmentEntryChecklistComplete'] == true;
+
+  bool get _exitChecklistComplete =>
+      widget.appointment['equipmentExitChecklistComplete'] == true;
+
+  String? get _pendingChecklistPhase {
+    if (_equipmentDeclaration?['status'] != 'Enviada') return null;
+    final status = '${widget.appointment['status'] ?? ''}';
+    if (status == 'En proceso' && !_entryChecklistComplete) return 'entrada';
+    if (status == 'Dentro' &&
+        _entryChecklistComplete &&
+        !_exitChecklistComplete) {
+      return 'salida';
+    }
+    return null;
+  }
+
+  Future<void> _openChecklist(String phase) async {
+    final declaration = _equipmentDeclaration;
+    if (declaration == null || _checklistSaving) return;
+    final items = (declaration['items'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    if (items.isEmpty) {
+      _showMessage(
+        context,
+        'La declaración todavía no incluye artículos para verificar.',
+        error: true,
+      );
+      return;
+    }
+    final inspectionItems = await showDialog<List<Map<String, Object?>>>(
+      context: context,
+      builder: (_) => _AppointmentEquipmentChecklistDialog(
+        declaration: declaration,
+        phase: phase,
+      ),
+    );
+    if (inspectionItems == null || !mounted) return;
+    final id = declaration['id'];
+    if (id is! num || id <= 0) {
+      _showMessage(
+        context,
+        'La declaración seleccionada no es válida.',
+        error: true,
+      );
+      return;
+    }
+    setState(() {
+      _checklistSaving = true;
+      _checklistError = null;
+    });
+    try {
+      await widget.authService.submitEquipmentInspection(
+        id.toInt(),
+        phase,
+        inspectionItems,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (phase == 'entrada') {
+          widget.appointment['equipmentEntryChecklistComplete'] = true;
+        } else {
+          widget.appointment['equipmentExitChecklistComplete'] = true;
+        }
+        _equipmentDeclaration = {
+          ...declaration,
+          'inspections': [
+            ...(declaration['inspections'] as List? ?? const []),
+            {
+              'phase': phase == 'entrada' ? 'Entrada' : 'Salida',
+              'status': 'Completada',
+            },
+          ],
+        };
+        _checklistSaving = false;
+      });
+      _showMessage(
+        context,
+        phase == 'entrada'
+            ? 'Checklist de entrada completado. Ya puedes registrar el ingreso.'
+            : 'Checklist de salida completado. Ya puedes registrar la salida.',
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checklistSaving = false;
+        _checklistError = error.message;
+      });
+      _showMessage(context, error.message, error: true);
     }
   }
 
@@ -8487,6 +8738,10 @@ class _AppointmentReceptionDialogState
       widget.appointment['equipmentChecklistRequired'] != true ||
       widget.appointment['equipmentEntryChecklistComplete'] == true;
 
+  bool _canExit() =>
+      widget.appointment['equipmentChecklistRequired'] != true ||
+      widget.appointment['equipmentExitChecklistComplete'] == true;
+
   List<Map<String, dynamic>> get _visibleEmployees {
     final staffId = widget.externalStaffId;
     if (staffId == null) return _employees;
@@ -8512,7 +8767,9 @@ class _AppointmentReceptionDialogState
         ),
       );
     }
-    final blocked = event == 'Ingreso' && !_canEnter();
+    final blocked =
+        (event == 'Ingreso' && !_canEnter()) ||
+        (event == 'Retiro' && !_canExit());
     return FilledButton(
       onPressed: blocked
           ? null
@@ -8673,6 +8930,174 @@ class _AppointmentReceptionDialogState
                       ],
                     ),
                   ),
+                  if (appointment['equipmentChecklistRequired'] == true) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _logInsetColor(context),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: _logBorderColor(context)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.fact_check_rounded,
+                                size: 18,
+                                color: Color(0xFF168BFF),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'CHECKLIST DE EQUIPO',
+                                  style: TextStyle(
+                                    color: _primaryTextColor(context),
+                                    fontSize: 10,
+                                    letterSpacing: .7,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              if (_entryChecklistComplete)
+                                const Icon(
+                                  Icons.check_circle_rounded,
+                                  size: 18,
+                                  color: Color(0xFF18A889),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            _checklistLoading
+                                ? 'Cargando los artículos de la declaración…'
+                                : _checklistError ??
+                                      (_equipmentDeclaration == null
+                                          ? 'No se encontró la declaración de equipo de esta cita.'
+                                          : _equipmentDeclaration!['status'] !=
+                                                'Enviada'
+                                          ? 'El contratista aún debe enviar su declaración de equipo.'
+                                          : _entryChecklistComplete
+                                          ? _exitChecklistComplete
+                                                ? 'Inspección de entrada y salida completadas.'
+                                                : 'Entrada completada${_pendingChecklistPhase == 'salida' ? '. Verifica los artículos antes de registrar la salida.' : '.'}'
+                                          : 'Verifica cada artículo antes de autorizar la entrada. Puedes indicar cuáles quedarán resguardados en recepción.'),
+                            style: TextStyle(
+                              color: _checklistError != null
+                                  ? const Color(0xFFFF7189)
+                                  : _secondaryTextColor(context),
+                              fontSize: 10,
+                              height: 1.4,
+                            ),
+                          ),
+                          if (_checklistError != null &&
+                              appointment['equipmentDeclarationId'] is num) ...[
+                            const SizedBox(height: 7),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton.icon(
+                                onPressed: _checklistLoading
+                                    ? null
+                                    : () => _loadEquipmentDeclaration(
+                                        (appointment['equipmentDeclarationId']
+                                                as num)
+                                            .toInt(),
+                                      ),
+                                icon: const Icon(
+                                  Icons.refresh_rounded,
+                                  size: 15,
+                                ),
+                                label: const Text('Reintentar'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF168BFF),
+                                  textStyle: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (_pendingChecklistPhase != null) ...[
+                            const SizedBox(height: 9),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: _checklistLoading || _checklistSaving
+                                    ? null
+                                    : () => _openChecklist(
+                                        _pendingChecklistPhase!,
+                                      ),
+                                icon: _checklistSaving
+                                    ? const SizedBox(
+                                        width: 15,
+                                        height: 15,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : Icon(
+                                        _pendingChecklistPhase == 'entrada'
+                                            ? Icons.login_rounded
+                                            : Icons.assignment_return_rounded,
+                                        size: 16,
+                                      ),
+                                label: Text(
+                                  _pendingChecklistPhase == 'entrada'
+                                      ? 'Completar checklist de entrada'
+                                      : 'Completar checklist de salida',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                style: _logPrimaryButtonStyle(
+                                  context,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 9,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (appointment['status'] == 'En proceso' &&
+                              !_canEnter() &&
+                              !_checklistLoading &&
+                              _equipmentDeclaration?['status'] == 'Enviada')
+                            Padding(
+                              padding: const EdgeInsets.only(top: 7),
+                              child: Text(
+                                'El ingreso se habilitará al completar este checklist.',
+                                style: TextStyle(
+                                  color: const Color(0xFFE0A437),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          if (appointment['status'] == 'Dentro' &&
+                              !_canExit() &&
+                              _entryChecklistComplete &&
+                              !_checklistLoading &&
+                              _equipmentDeclaration?['status'] == 'Enviada')
+                            Padding(
+                              padding: const EdgeInsets.only(top: 7),
+                              child: Text(
+                                'La salida se habilitará al verificar los artículos resguardados.',
+                                style: TextStyle(
+                                  color: const Color(0xFFE0A437),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
                   if (partner) ...[
                     const SizedBox(height: 13),
                     Text(
@@ -8826,15 +9251,512 @@ class _AppointmentReceptionDialogState
   }
 }
 
-class _DailyLogEntryDetailDialog extends StatelessWidget {
-  const _DailyLogEntryDetailDialog({required this.entry, this.appointment});
+class _AppointmentEquipmentChecklistDialog extends StatefulWidget {
+  const _AppointmentEquipmentChecklistDialog({
+    required this.declaration,
+    required this.phase,
+  });
 
-  final Map<String, dynamic> entry;
-  final Map<String, dynamic>? appointment;
+  final Map<String, dynamic> declaration;
+  final String phase;
+
+  @override
+  State<_AppointmentEquipmentChecklistDialog> createState() =>
+      _AppointmentEquipmentChecklistDialogState();
+}
+
+class _AppointmentEquipmentChecklistDialogState
+    extends State<_AppointmentEquipmentChecklistDialog> {
+  final Set<int> _checkedIds = {};
+  final Set<int> _retainedIds = {};
+  final Set<int> _returnedIds = {};
+
+  List<Map<String, dynamic>> get _items =>
+      (widget.declaration['items'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+  Set<int> get _itemsKeptAtReception {
+    final retained = <int>{};
+    for (final inspection
+        in (widget.declaration['inspections'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()) {
+      if (inspection['phase'] != 'Entrada') continue;
+      for (final item
+          in (inspection['items'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()) {
+        final itemId = item['declarationItemId'];
+        if (item['keepAtReception'] == true && itemId is num) {
+          retained.add(itemId.toInt());
+        }
+      }
+    }
+    return retained;
+  }
+
+  List<Map<String, Object?>> _buildInspectionItems() => _items.map((item) {
+    final id = (item['id'] as num).toInt();
+    return <String, Object?>{
+      'declarationItemId': id,
+      'quantity': (item['quantity'] as num).toInt(),
+      'product': '${item['product'] ?? ''}',
+      'brand': '${item['brand'] ?? ''}',
+      'model': '${item['model'] ?? ''}',
+      'serialNumber': '${item['serialNumber'] ?? ''}',
+      'color': '${item['color'] ?? ''}',
+      'notes': '',
+      'incident': false,
+      'checked': _checkedIds.contains(id),
+      'keepAtReception': widget.phase == 'entrada' && _retainedIds.contains(id),
+      'returnedToVisitor':
+          widget.phase == 'salida' && _returnedIds.contains(id),
+    };
+  }).toList();
 
   @override
   Widget build(BuildContext context) {
-    final event = '${entry['event'] ?? ''}';
+    final isEntry = widget.phase == 'entrada';
+    final retainedAtReception = _itemsKeptAtReception;
+    final isLight = _isLightTheme(context);
+    final canComplete =
+        _items.isNotEmpty &&
+        _items.every(
+          (item) =>
+              item['id'] is num &&
+              _checkedIds.contains((item['id'] as num).toInt()),
+        );
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * .86,
+        ),
+        decoration: BoxDecoration(
+          color: _logDialogColor(context),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: _logBorderColor(context)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isLight ? .1 : .38),
+              blurRadius: 28,
+              offset: const Offset(0, 14),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(height: 4, color: const Color(0xFFE32636)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(17, 15, 10, 13),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF168BFF).withValues(alpha: .13),
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: Icon(
+                      isEntry
+                          ? Icons.login_rounded
+                          : Icons.assignment_return_rounded,
+                      color: const Color(0xFF168BFF),
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isEntry
+                              ? 'CHECKLIST DE ENTRADA'
+                              : 'CHECKLIST DE SALIDA',
+                          style: TextStyle(
+                            color: isLight
+                                ? const Color(0xFF1769AA)
+                                : const Color(0xFF78BFFF),
+                            fontSize: 9,
+                            letterSpacing: .8,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${widget.declaration['personName'] ?? 'Personal externo'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Cerrar',
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      color: _secondaryTextColor(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(17, 11, 17, 5),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      isEntry
+                          ? 'Confirma cada artículo. Marca si debe quedarse resguardado.'
+                          : 'Confirma cada artículo y registra las devoluciones del resguardo.',
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 10,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${_checkedIds.length}/${_items.length}',
+                    style: const TextStyle(
+                      color: Color(0xFF168BFF),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(15, 6, 15, 12),
+                itemCount: _items.length,
+                itemBuilder: (context, index) {
+                  final item = _items[index];
+                  final rawId = item['id'];
+                  if (rawId is! num) return const SizedBox.shrink();
+                  final id = rawId.toInt();
+                  final retained = retainedAtReception.contains(id);
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 9),
+                    padding: const EdgeInsets.all(11),
+                    decoration: BoxDecoration(
+                      color: _logInsetColor(context),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: _checkedIds.contains(id)
+                            ? const Color(0x663EB98E)
+                            : _logBorderColor(context),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        InkWell(
+                          borderRadius: BorderRadius.circular(10),
+                          onTap: () => setState(() {
+                            if (!_checkedIds.add(id)) _checkedIds.remove(id);
+                          }),
+                          child: Row(
+                            children: [
+                              Checkbox(
+                                value: _checkedIds.contains(id),
+                                activeColor: const Color(0xFF18A889),
+                                onChanged: (value) => setState(() {
+                                  if (value == true) {
+                                    _checkedIds.add(id);
+                                  } else {
+                                    _checkedIds.remove(id);
+                                  }
+                                }),
+                              ),
+                              const SizedBox(width: 3),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${item['itemType'] ?? 'Artículo'} · ${item['quantity'] ?? 0} × ${item['product'] ?? ''}',
+                                      style: TextStyle(
+                                        color: _primaryTextColor(context),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      '${item['brand'] ?? ''} · ${item['model'] ?? ''} · Serie: ${item['serialNumber'] ?? '—'} · ${item['color'] ?? '—'}',
+                                      style: TextStyle(
+                                        color: _secondaryTextColor(context),
+                                        fontSize: 9,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if ((isEntry && _checkedIds.contains(id)) ||
+                            (!isEntry && retained))
+                          Padding(
+                            padding: const EdgeInsets.only(left: 44, top: 4),
+                            child: InkWell(
+                              onTap: () => setState(() {
+                                final selection = isEntry
+                                    ? _retainedIds
+                                    : _returnedIds;
+                                if (!selection.add(id)) selection.remove(id);
+                              }),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    (isEntry ? _retainedIds : _returnedIds)
+                                            .contains(id)
+                                        ? Icons.check_box_rounded
+                                        : Icons.check_box_outline_blank_rounded,
+                                    size: 18,
+                                    color: isEntry
+                                        ? const Color(0xFFE0A437)
+                                        : const Color(0xFF18A889),
+                                  ),
+                                  const SizedBox(width: 7),
+                                  Expanded(
+                                    child: Text(
+                                      isEntry
+                                          ? 'Resguardar en recepción'
+                                          : 'Confirmar devolución al visitante',
+                                      style: TextStyle(
+                                        color: _secondaryTextColor(context),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 10, 15, 13),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: _logOutlinedButtonStyle(context),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed: canComplete
+                          ? () =>
+                                Navigator.pop(context, _buildInspectionItems())
+                          : null,
+                      icon: const Icon(Icons.verified_rounded, size: 17),
+                      label: const Text('Confirmar revisión'),
+                      style: _logPrimaryButtonStyle(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DailyLogEntryDetailDialog extends StatefulWidget {
+  const _DailyLogEntryDetailDialog({
+    required this.entry,
+    required this.authService,
+    required this.showRegisteredBy,
+    this.readOnly = false,
+    this.appointment,
+  });
+
+  final Map<String, dynamic> entry;
+  final Map<String, dynamic>? appointment;
+  final AuthService authService;
+  final bool showRegisteredBy;
+  final bool readOnly;
+
+  @override
+  State<_DailyLogEntryDetailDialog> createState() =>
+      _DailyLogEntryDetailDialogState();
+}
+
+class _DailyLogEntryDetailDialogState
+    extends State<_DailyLogEntryDetailDialog> {
+  bool _loadingChecklist = false;
+  bool _savingChecklist = false;
+  String? _checklistError;
+  Map<String, dynamic>? _declaration;
+
+  bool get _requiresChecklist =>
+      widget.appointment?['equipmentChecklistRequired'] == true;
+
+  bool get _entryComplete =>
+      widget.appointment?['equipmentEntryChecklistComplete'] == true;
+
+  bool get _exitComplete =>
+      widget.appointment?['equipmentExitChecklistComplete'] == true;
+
+  String? get _checklistPhase {
+    if (widget.readOnly) return null;
+    final event = '${widget.entry['event'] ?? ''}';
+    if (event == 'Llegada' && !_entryComplete) return 'entrada';
+    if (event == 'Ingreso' && _entryComplete && !_exitComplete) return 'salida';
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.appointment?['equipmentDeclarationId'];
+    if (id is num && id > 0) _loadDeclaration(id.toInt());
+  }
+
+  Future<void> _loadDeclaration(int id) async {
+    setState(() {
+      _loadingChecklist = true;
+      _checklistError = null;
+    });
+    try {
+      final response = await widget.authService.getEquipmentDeclaration(id);
+      final declaration = response['declaration'];
+      if (declaration is! Map<String, dynamic>) {
+        throw const AuthApiException(
+          'No se encontró la declaración de equipo de esta cita.',
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _declaration = declaration;
+        _loadingChecklist = false;
+      });
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checklistError = error.message;
+        _loadingChecklist = false;
+      });
+    }
+  }
+
+  Future<void> _completeChecklist(String phase) async {
+    final declaration = widget.readOnly ? null : _declaration;
+    if (declaration == null || _savingChecklist) return;
+    final items = (declaration['items'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    if (items.isEmpty) {
+      _showMessage(
+        context,
+        'La declaración todavía no incluye artículos para verificar.',
+        error: true,
+      );
+      return;
+    }
+    final result = await showDialog<List<Map<String, Object?>>>(
+      context: context,
+      builder: (_) => _AppointmentEquipmentChecklistDialog(
+        declaration: declaration,
+        phase: phase,
+      ),
+    );
+    if (result == null || !mounted) return;
+    final id = declaration['id'];
+    if (id is! num || id <= 0) {
+      _showMessage(
+        context,
+        'La declaración seleccionada no es válida.',
+        error: true,
+      );
+      return;
+    }
+    setState(() {
+      _savingChecklist = true;
+      _checklistError = null;
+    });
+    try {
+      await widget.authService.submitEquipmentInspection(
+        id.toInt(),
+        phase,
+        result,
+      );
+      if (!mounted) return;
+      setState(() {
+        final field = phase == 'entrada'
+            ? 'equipmentEntryChecklistComplete'
+            : 'equipmentExitChecklistComplete';
+        widget.appointment![field] = true;
+        _declaration = {
+          ...declaration,
+          'inspections': [
+            ...(declaration['inspections'] as List? ?? const []),
+            {
+              'phase': phase == 'entrada' ? 'Entrada' : 'Salida',
+              'status': 'Completada',
+              'items': result
+                  .map(
+                    (item) => {
+                      'declarationItemId': item['declarationItemId'],
+                      'keepAtReception': item['keepAtReception'],
+                    },
+                  )
+                  .toList(),
+            },
+          ],
+        };
+        _savingChecklist = false;
+      });
+      _showMessage(
+        context,
+        phase == 'entrada'
+            ? 'Checklist de entrada completado.'
+            : 'Checklist de salida completado.',
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingChecklist = false;
+        _checklistError = error.message;
+      });
+      _showMessage(context, error.message, error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final event = '${widget.entry['event'] ?? ''}';
     final nextEvent = event == 'Llegada'
         ? 'Ingreso'
         : event == 'Ingreso'
@@ -8845,6 +9767,19 @@ class _DailyLogEntryDetailDialog extends StatelessWidget {
         : nextEvent == 'Retiro'
         ? 'Registrar salida'
         : 'Cerrar';
+    final checklistPending =
+        _requiresChecklist &&
+        ((nextEvent == 'Ingreso' && !_entryComplete) ||
+            (nextEvent == 'Retiro' && !_exitComplete));
+    final declarationNotReady =
+        _requiresChecklist && _declaration?['status'] != 'Enviada';
+    final canPerformMovement =
+        nextEvent != null &&
+        !widget.readOnly &&
+        !checklistPending &&
+        !declarationNotReady &&
+        !_loadingChecklist &&
+        !_savingChecklist;
     return Dialog(
       backgroundColor: Colors.transparent,
       child: Container(
@@ -8870,19 +9805,165 @@ class _DailyLogEntryDetailDialog extends StatelessWidget {
               subtitle: 'Consulta la visita y registra el siguiente paso.',
             ),
             const SizedBox(height: 13),
+            if (widget.readOnly) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(11),
+                decoration: BoxDecoration(
+                  color: _logInsetColor(context),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(color: _logBorderColor(context)),
+                ),
+                child: const Text(
+                  'Registro histórico · solo lectura',
+                  style: TextStyle(
+                    color: Color(0xFF8ACBFF),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             _DailyLogMovementCard(
-              entry: entry,
+              entry: widget.entry,
               onTap: () {},
               onQr: () {},
               onDelete: null,
+              showRegisteredBy: widget.showRegisteredBy,
             ),
-            if (appointment != null) ...[
+            if (widget.appointment != null) ...[
               const SizedBox(height: 8),
               Text(
-                'Cita · ${appointment!['date'] ?? ''} · ${appointment!['time'] ?? ''}',
+                'Cita · ${widget.appointment!['date'] ?? ''} · ${widget.appointment!['time'] ?? ''}',
                 style: TextStyle(
                   color: _secondaryTextColor(context),
                   fontSize: 10,
+                ),
+              ),
+            ],
+            if (_requiresChecklist) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _logInsetColor(context),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _logBorderColor(context)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.fact_check_rounded,
+                          size: 18,
+                          color: Color(0xFF168BFF),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'CHECKLIST DE EQUIPO Y HERRAMIENTAS',
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
+                              fontSize: 9,
+                              letterSpacing: .45,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        if (_entryComplete)
+                          const Icon(
+                            Icons.check_circle_rounded,
+                            size: 17,
+                            color: Color(0xFF18A889),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      _loadingChecklist
+                          ? 'Cargando la declaración de equipo…'
+                          : _checklistError ??
+                                (_declaration == null
+                                    ? 'No se encontró la declaración asociada a esta cita.'
+                                    : declarationNotReady
+                                    ? 'El contratista aún debe enviar su declaración.'
+                                    : _entryComplete
+                                    ? _exitComplete
+                                          ? 'Checklist de entrada y salida completados.'
+                                          : 'Entrada verificada. Antes de registrar la salida, confirma las devoluciones del resguardo.'
+                                    : 'Verifica los artículos antes de dar entrada. Puedes marcar cuáles se quedan en recepción.'),
+                      style: TextStyle(
+                        color: _checklistError == null
+                            ? _secondaryTextColor(context)
+                            : const Color(0xFFFF7189),
+                        fontSize: 10,
+                        height: 1.4,
+                      ),
+                    ),
+                    if (_checklistError != null &&
+                        widget.appointment?['equipmentDeclarationId'] is num)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: _loadingChecklist
+                              ? null
+                              : () => _loadDeclaration(
+                                  (widget.appointment!['equipmentDeclarationId']
+                                          as num)
+                                      .toInt(),
+                                ),
+                          icon: const Icon(Icons.refresh_rounded, size: 15),
+                          label: const Text('Reintentar'),
+                        ),
+                      ),
+                    if (_checklistPhase != null &&
+                        _declaration?['status'] == 'Enviada') ...[
+                      const SizedBox(height: 9),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _loadingChecklist || _savingChecklist
+                              ? null
+                              : () => _completeChecklist(_checklistPhase!),
+                          icon: _savingChecklist
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Icon(
+                                  _checklistPhase == 'entrada'
+                                      ? Icons.login_rounded
+                                      : Icons.assignment_return_rounded,
+                                  size: 16,
+                                ),
+                          label: Text(
+                            _checklistPhase == 'entrada'
+                                ? 'Hacer checklist de entrada'
+                                : 'Hacer checklist de salida',
+                          ),
+                          style: _logPrimaryButtonStyle(context),
+                        ),
+                      ),
+                    ],
+                    if (checklistPending)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 7),
+                        child: Text(
+                          'Completa el checklist para habilitar este movimiento.',
+                          style: TextStyle(
+                            color: Color(0xFFE0A437),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
@@ -8901,7 +9982,9 @@ class _DailyLogEntryDetailDialog extends StatelessWidget {
                   Expanded(
                     flex: 2,
                     child: FilledButton.icon(
-                      onPressed: () => Navigator.pop(context, nextEvent),
+                      onPressed: canPerformMovement
+                          ? () => Navigator.pop(context, nextEvent)
+                          : null,
                       icon: Icon(
                         nextEvent == 'Ingreso'
                             ? Icons.login_rounded
@@ -9010,12 +10093,14 @@ class _VisitorRegistrationReceptionDialog extends StatefulWidget {
     required this.authService,
     required this.isAdmin,
     required this.isInside,
+    required this.forceReadOnly,
   });
 
   final Map<String, dynamic> registration;
   final AuthService authService;
   final bool isAdmin;
   final bool? isInside;
+  final bool forceReadOnly;
 
   @override
   State<_VisitorRegistrationReceptionDialog> createState() =>
@@ -9033,7 +10118,8 @@ class _VisitorRegistrationReceptionDialogState
           .toList();
 
   bool get _readOnly {
-    if (widget.isAdmin) return false;
+    if (widget.isAdmin && !widget.forceReadOnly) return false;
+    if (widget.forceReadOnly) return true;
     final createdAt = '${_registration['createdAt'] ?? ''}';
     return !createdAt.startsWith(_dateString(DateTime.now()));
   }
@@ -9201,6 +10287,11 @@ class _VisitorRegistrationReceptionDialogState
     final exitComplete = _registration['exitChecklistComplete'] == true;
     final hasItems = _items.isNotEmpty;
     final isPending = authorization == 'Pendiente';
+    final authorizationColor = switch (authorization) {
+      'Autorizada' => const Color(0xFF18A889),
+      'Rechazada' => const Color(0xFFFF536D),
+      _ => const Color(0xFFE0A437),
+    };
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
@@ -9216,75 +10307,168 @@ class _VisitorRegistrationReceptionDialogState
               : const LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                  colors: [Color(0xFF1A2E4C), Color(0xFF0A1426)],
                 ),
           borderRadius: BorderRadius.circular(23),
-          border: Border.all(color: const Color(0x663D9DFF)),
+          border: Border.all(
+            color: _isLightTheme(context)
+                ? const Color(0xFFD4E3F3)
+                : const Color(0x664A9FEA),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(
+                alpha: _isLightTheme(context) ? .12 : .42,
+              ),
+              blurRadius: 32,
+              offset: const Offset(0, 16),
+            ),
+          ],
         ),
+        clipBehavior: Clip.antiAlias,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Container(
+              height: 4,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFF1595FF), Color(0xFF32C6D7)],
+                ),
+              ),
+            ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 11, 8, 8),
+              padding: const EdgeInsets.fromLTRB(16, 11, 8, 10),
               child: _LogDialogHeader(
                 icon: Icons.how_to_reg_rounded,
                 title: 'Registro de visitante',
                 subtitle: 'Folio ${_registration['folio'] ?? 'Sin folio'}',
               ),
             ),
+            Divider(height: 1, color: _logBorderColor(context)),
             Flexible(
               child: ListView(
                 shrinkWrap: true,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                padding: const EdgeInsets.fromLTRB(16, 13, 16, 14),
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(13),
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: _logInsetColor(context),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0x333D9DFF)),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: _isLightTheme(context)
+                            ? const [Color(0xFFF7FAFE), Color(0xFFEFF5FC)]
+                            : const [Color(0xFF0D1A2E), Color(0xFF0A1425)],
+                      ),
+                      borderRadius: BorderRadius.circular(17),
+                      border: Border.all(color: _logBorderColor(context)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '${_registration['visitorName'] ?? 'Visitante'}',
-                          style: TextStyle(
-                            color: _primaryTextColor(context),
-                            fontSize: 15,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 42,
+                              height: 42,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF168BFF)
+                                    .withValues(alpha: .14),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: const Icon(
+                                Icons.person_rounded,
+                                color: Color(0xFF69B8FF),
+                                size: 22,
+                              ),
+                            ),
+                            const SizedBox(width: 11),
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  '${_registration['visitorName'] ?? 'Visitante'}',
+                                  style: TextStyle(
+                                    color: _primaryTextColor(context),
+                                    fontSize: 16,
+                                    height: 1.15,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            _AppointmentStatusBadge(
+                              label: authorization,
+                              color: authorizationColor,
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 8),
-                        _LogInfoBadge(
-                          icon: Icons.business_outlined,
-                          label:
-                              '${_registration['companyName'] ?? 'Sin empresa'}',
-                        ),
-                        const SizedBox(height: 6),
-                        _LogInfoBadge(
-                          icon: Icons.badge_outlined,
-                          label:
-                              'Identificación: ${_registration['identificationType'] ?? 'No indicada'}',
-                        ),
-                        const SizedBox(height: 6),
-                        _LogInfoBadge(
-                          icon: Icons.flag_outlined,
-                          label: 'Estado: $authorization',
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            _LogInfoBadge(
+                              icon: Icons.business_outlined,
+                              label:
+                                  '${_registration['companyName'] ?? 'Público general'}',
+                            ),
+                            _LogInfoBadge(
+                              icon: Icons.badge_outlined,
+                              label:
+                                  'Identificación: ${_registration['identificationType'] ?? 'No indicada'}',
+                            ),
+                          ],
                         ),
                         if ('${_registration['visitReason'] ?? ''}'
                             .isNotEmpty) ...[
-                          const SizedBox(height: 9),
-                          Text(
-                            'Motivo: ${_registration['visitReason']}',
-                            style: TextStyle(
-                              color: _secondaryTextColor(context),
-                              fontSize: 11,
+                          const SizedBox(height: 11),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.only(top: 10),
+                            decoration: BoxDecoration(
+                              border: Border(
+                                top: BorderSide(
+                                  color: _logBorderColor(context),
+                                ),
+                              ),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  Icons.short_text_rounded,
+                                  size: 17,
+                                  color: _secondaryTextColor(context),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'Motivo · ${_registration['visitReason']}',
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 11,
+                                      height: 1.35,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
                       ],
                     ),
+                  ),
+                  const SizedBox(height: 13),
+                  _VisitorProcessProgress(
+                    authorization: authorization,
+                    entryComplete: entryComplete,
+                    exitComplete: exitComplete,
+                    hasItems: hasItems,
+                    isInside: widget.isInside == true,
                   ),
                   if (_readOnly) ...[
                     const SizedBox(height: 9),
@@ -9296,36 +10480,54 @@ class _VisitorRegistrationReceptionDialogState
                   if (_items.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     Text(
-                      'EQUIPO Y HERRAMIENTAS DECLARADOS',
+                      'EQUIPO Y HERRAMIENTAS',
                       style: TextStyle(
                         color: _isLightTheme(context)
                             ? const Color(0xFF1769AA)
                             : const Color(0xFF68B7FF),
                         fontSize: 9,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 1,
+                        letterSpacing: .9,
                       ),
                     ),
-                    const SizedBox(height: 7),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${_items.length} ${_items.length == 1 ? 'artículo declarado' : 'artículos declarados'}',
+                      style: TextStyle(
+                        color: _secondaryTextColor(context),
+                        fontSize: 10,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     for (final item in _items)
                       Container(
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.all(10),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(11),
                         decoration: BoxDecoration(
                           color: _logInsetColor(context),
-                          borderRadius: BorderRadius.circular(11),
-                          border: Border.all(color: const Color(0x223D9DFF)),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: _logBorderColor(context)),
                         ),
                         child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(
-                              item['type'] == 'Herramienta'
-                                  ? Icons.handyman_outlined
-                                  : Icons.devices_other_rounded,
-                              color: const Color(0xFF68B7FF),
-                              size: 18,
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF168BFF)
+                                    .withValues(alpha: .13),
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                              child: Icon(
+                                item['type'] == 'Herramienta'
+                                    ? Icons.handyman_rounded
+                                    : Icons.devices_other_rounded,
+                                color: const Color(0xFF68B7FF),
+                                size: 18,
+                              ),
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 10),
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -9334,15 +10536,16 @@ class _VisitorRegistrationReceptionDialogState
                                     '${item['description'] ?? 'Artículo'}',
                                     style: TextStyle(
                                       color: _primaryTextColor(context),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w800,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
                                     ),
                                   ),
+                                  const SizedBox(height: 3),
                                   Text(
                                     '${item['brand'] ?? ''} ${item['model'] ?? ''} · Cantidad ${item['quantity'] ?? 1}',
                                     style: TextStyle(
                                       color: _secondaryTextColor(context),
-                                      fontSize: 9,
+                                      fontSize: 10,
                                     ),
                                   ),
                                   if ('${item['serialNumber'] ?? ''}'
@@ -9357,6 +10560,11 @@ class _VisitorRegistrationReceptionDialogState
                                 ],
                               ),
                             ),
+                            const SizedBox(width: 7),
+                            _AppointmentStatusBadge(
+                              label: '${item['type'] ?? 'Equipo'}',
+                              color: const Color(0xFF4A9FEA),
+                            ),
                           ],
                         ),
                       ),
@@ -9365,36 +10573,127 @@ class _VisitorRegistrationReceptionDialogState
                       authorization == 'Autorizada' &&
                       hasItems) ...[
                     const SizedBox(height: 9),
-                    if (!entryComplete)
-                      _actionButton(
-                        label: 'Revisar entrada',
-                        icon: Icons.login_rounded,
-                        color: const Color(0xFF168BFF),
-                        primary: true,
-                        onPressed: _busy
-                            ? null
-                            : () => _process('complete-entry-checklist'),
-                      ),
-                    if (entryComplete && !exitComplete)
-                      _actionButton(
-                        label: 'Revisar salida',
-                        icon: Icons.logout_rounded,
-                        color: const Color(0xFFFF536D),
-                        onPressed: _busy
-                            ? null
-                            : () => _process('complete-exit-checklist'),
-                      ),
-                    if (entryComplete && !exitComplete)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 5),
-                        child: Text(
-                          'La salida se registra al completar el checklist.',
-                          style: TextStyle(
-                            color: _secondaryTextColor(context),
-                            fontSize: 9,
-                          ),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color:
+                            (entryComplete
+                                    ? const Color(0xFFFF536D)
+                                    : const Color(0xFF168BFF))
+                                .withValues(alpha: .08),
+                        borderRadius: BorderRadius.circular(15),
+                        border: Border.all(
+                          color:
+                              (entryComplete
+                                      ? const Color(0xFFFF536D)
+                                      : const Color(0xFF168BFF))
+                                  .withValues(alpha: .28),
                         ),
                       ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                entryComplete
+                                    ? Icons.assignment_return_rounded
+                                    : Icons.fact_check_rounded,
+                                color: entryComplete
+                                    ? const Color(0xFFFF647C)
+                                    : const Color(0xFF168BFF),
+                                size: 18,
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  entryComplete
+                                      ? 'Revisión de salida'
+                                      : 'Inspección de entrada',
+                                  style: TextStyle(
+                                    color: _primaryTextColor(context),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                entryComplete ? '2 DE 2' : '1 DE 2',
+                                style: TextStyle(
+                                  color: entryComplete
+                                      ? const Color(0xFFFF647C)
+                                      : const Color(0xFF168BFF),
+                                  fontSize: 8,
+                                  letterSpacing: .6,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            entryComplete
+                                ? 'Confirma qué artículos resguardados se devuelven al visitante.'
+                                : 'Confirma físicamente los artículos y marca lo que se quedará en recepción.',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                              height: 1.35,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: _actionButton(
+                              label: _busy
+                                  ? 'Guardando revisión…'
+                                  : entryComplete
+                                  ? 'Revisar salida'
+                                  : 'Revisar entrada',
+                              icon: _busy
+                                  ? Icons.hourglass_top_rounded
+                                  : entryComplete
+                                  ? Icons.logout_rounded
+                                  : Icons.login_rounded,
+                              color: entryComplete
+                                  ? const Color(0xFFFF536D)
+                                  : const Color(0xFF168BFF),
+                              primary: !entryComplete,
+                              onPressed: _busy
+                                  ? null
+                                  : () => _process(
+                                      entryComplete
+                                          ? 'complete-exit-checklist'
+                                          : 'complete-entry-checklist',
+                                    ),
+                            ),
+                          ),
+                          if (entryComplete && !exitComplete) ...[
+                            const SizedBox(height: 7),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.lock_outline_rounded,
+                                  size: 13,
+                                  color: Color(0xFFFF647C),
+                                ),
+                                const SizedBox(width: 5),
+                                Expanded(
+                                  child: Text(
+                                    'La salida se registra al completar el checklist.',
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   ],
                   if (!_readOnly &&
                       authorization == 'Autorizada' &&
@@ -9419,14 +10718,14 @@ class _VisitorRegistrationReceptionDialogState
                       (_registration['audit'] as List).isNotEmpty) ...[
                     const SizedBox(height: 13),
                     Text(
-                      'HISTORIAL',
+                      'ACTIVIDAD DEL REGISTRO',
                       style: TextStyle(
                         color: _isLightTheme(context)
                             ? const Color(0xFF1769AA)
                             : const Color(0xFF68B7FF),
                         fontSize: 9,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 1,
+                        letterSpacing: .8,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -9435,13 +10734,31 @@ class _VisitorRegistrationReceptionDialogState
                             .whereType<Map<String, dynamic>>()
                             .take(5))
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 5),
-                        child: Text(
-                          '${event['action'] ?? 'Actualización'} · ${event['actorName'] ?? 'Recepción'} · ${event['createdAt'] ?? ''}',
-                          style: TextStyle(
-                            color: _secondaryTextColor(context),
-                            fontSize: 9,
-                          ),
+                        padding: const EdgeInsets.only(bottom: 7),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              margin: const EdgeInsets.only(top: 3),
+                              width: 7,
+                              height: 7,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF3C9CFF),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '${event['action'] ?? 'Actualización'} · ${event['actorName'] ?? 'Recepción'} · ${event['createdAt'] ?? ''}',
+                                style: TextStyle(
+                                  color: _secondaryTextColor(context),
+                                  fontSize: 9,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                   ],
@@ -9480,10 +10797,15 @@ class _VisitorRegistrationReceptionDialogState
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton(
+                  child: OutlinedButton.icon(
                     onPressed: _busy ? null : () => Navigator.pop(context),
-                    style: _logOutlinedButtonStyle(context),
-                    child: Text(_busy ? 'Procesando...' : 'Cerrar'),
+                    style: _logOutlinedButtonStyle(context).copyWith(
+                      padding: const WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(vertical: 13),
+                      ),
+                    ),
+                    icon: const Icon(Icons.check_rounded, size: 17),
+                    label: Text(_busy ? 'Procesando...' : 'Listo, cerrar'),
                   ),
                 ),
               ),
@@ -9513,6 +10835,176 @@ class _LogNotice extends StatelessWidget {
       style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700),
     ),
   );
+}
+
+class _VisitorProcessProgress extends StatelessWidget {
+  const _VisitorProcessProgress({
+    required this.authorization,
+    required this.entryComplete,
+    required this.exitComplete,
+    required this.hasItems,
+    required this.isInside,
+  });
+
+  final String authorization;
+  final bool entryComplete;
+  final bool exitComplete;
+  final bool hasItems;
+  final bool isInside;
+
+  @override
+  Widget build(BuildContext context) {
+    final authorized = authorization == 'Autorizada';
+    final rejected = authorization == 'Rechazada';
+    final inspectedEntry = !hasItems || entryComplete;
+    final inspectedExit = !hasItems ? !isInside : exitComplete;
+    final currentStep = rejected
+        ? 0
+        : !authorized
+        ? 0
+        : inspectedExit
+        ? 2
+        : inspectedEntry
+        ? 2
+        : 1;
+    final colors = [
+      authorization == 'Autorizada'
+          ? const Color(0xFF18A889)
+          : rejected
+          ? const Color(0xFFFF536D)
+          : const Color(0xFFE0A437),
+      inspectedEntry ? const Color(0xFF18A889) : const Color(0xFF168BFF),
+      inspectedExit ? const Color(0xFF18A889) : const Color(0xFFFF536D),
+    ];
+    final done = [
+      authorized || rejected,
+      authorized && inspectedEntry,
+      authorized && inspectedEntry && inspectedExit,
+    ];
+    final labels = ['Autorización', 'Entrada', 'Salida'];
+    final icons = [
+      Icons.verified_user_rounded,
+      Icons.fact_check_rounded,
+      Icons.logout_rounded,
+    ];
+    final isLight = _isLightTheme(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 11),
+      decoration: BoxDecoration(
+        color: _logInsetColor(context),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: _logBorderColor(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.route_rounded,
+                size: 15,
+                color: isLight
+                    ? const Color(0xFF1769AA)
+                    : const Color(0xFF68B7FF),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'PROCESO DE VISITA',
+                style: TextStyle(
+                  color: isLight
+                      ? const Color(0xFF1769AA)
+                      : const Color(0xFF68B7FF),
+                  fontSize: 8,
+                  letterSpacing: .8,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                rejected
+                    ? 'DETENIDO'
+                    : done.last
+                    ? 'COMPLETADO'
+                    : 'PASO ${currentStep + 1} DE 3',
+                style: TextStyle(
+                  color: rejected
+                      ? const Color(0xFFFF536D)
+                      : done.last
+                      ? const Color(0xFF18A889)
+                      : const Color(0xFF168BFF),
+                  fontSize: 8,
+                  letterSpacing: .45,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              for (var index = 0; index < labels.length; index++) ...[
+                Expanded(
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 29,
+                        height: 29,
+                        decoration: BoxDecoration(
+                          color: colors[index].withValues(
+                            alpha: done[index] ? .18 : .1,
+                          ),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: colors[index].withValues(
+                              alpha: done[index] || index == currentStep
+                                  ? .65
+                                  : .25,
+                            ),
+                          ),
+                        ),
+                        child: Icon(
+                          done[index] ? Icons.check_rounded : icons[index],
+                          color: colors[index],
+                          size: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        labels[index],
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: done[index] || index == currentStep
+                              ? _primaryTextColor(context)
+                              : _secondaryTextColor(context),
+                          fontSize: 8,
+                          fontWeight: done[index] || index == currentStep
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (index < labels.length - 1)
+                  Container(
+                    width: 24,
+                    height: 2,
+                    margin: const EdgeInsets.only(bottom: 15),
+                    decoration: BoxDecoration(
+                      color: done[index]
+                          ? const Color(0xFF18A889).withValues(alpha: .7)
+                          : _logBorderColor(context),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _VisitorChecklistDialog extends StatefulWidget {
@@ -9558,223 +11050,622 @@ class _VisitorChecklistDialogState extends State<_VisitorChecklistDialog> {
     super.dispose();
   }
 
-  bool get _complete => _checked.every((value) => value);
+  bool get _complete => _checked.isNotEmpty && _checked.every((value) => value);
 
   @override
-  Widget build(BuildContext context) => Dialog(
-    backgroundColor: Colors.transparent,
-    insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-    child: Container(
-      constraints: BoxConstraints(
-        maxWidth: 480,
-        maxHeight: MediaQuery.sizeOf(context).height * .9,
-      ),
-      decoration: BoxDecoration(
-        color: _isLightTheme(context) ? Colors.white : null,
-        gradient: _isLightTheme(context)
-            ? null
-            : const LinearGradient(
-                colors: [Color(0xFF172844), Color(0xFF091426)],
-              ),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0x663D9DFF)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(15, 11, 8, 8),
-            child: _LogDialogHeader(
-              icon: widget.phase == 'Entrada'
-                  ? Icons.login_rounded
-                  : Icons.logout_rounded,
-              title: widget.title,
-              subtitle: 'Confirma cada artículo para continuar.',
-            ),
+  Widget build(BuildContext context) {
+    final isEntry = widget.phase == 'Entrada';
+    final accent = isEntry ? const Color(0xFF168BFF) : const Color(0xFFFF536D);
+    final checkedCount = _checked.where((value) => value).length;
+    final progress = _checked.isEmpty ? 0.0 : checkedCount / _checked.length;
+    final isLight = _isLightTheme(context);
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * .9,
+        ),
+        decoration: BoxDecoration(
+          color: _logDialogColor(context),
+          gradient: isLight
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(
+            color: isLight
+                ? const Color(0xFFD4E3F3)
+                : accent.withValues(alpha: .48),
           ),
-          Flexible(
-            child: ListView.separated(
-              shrinkWrap: true,
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-              itemCount: widget.items.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final item = widget.items[index];
-                final itemId = item['id'] is num
-                    ? (item['id'] as num).toInt()
-                    : 0;
-                final canReturn =
-                    widget.phase == 'Salida' &&
-                    widget.retainedIds.contains(itemId);
-                return Container(
-                  padding: const EdgeInsets.all(11),
-                  decoration: BoxDecoration(
-                    color: _logInsetColor(context),
-                    borderRadius: BorderRadius.circular(13),
-                    border: Border.all(color: const Color(0x333D9DFF)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isLight ? .12 : .4),
+              blurRadius: 30,
+              offset: const Offset(0, 15),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              height: 4,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [accent, accent.withValues(alpha: .55)],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 43,
+                    height: 43,
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: .13),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(
+                      isEntry
+                          ? Icons.login_rounded
+                          : Icons.assignment_return_rounded,
+                      color: accent,
+                      size: 21,
+                    ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '${item['description'] ?? 'Artículo'} · ${item['quantity'] ?? 1}',
-                              style: TextStyle(
-                                color: _primaryTextColor(context),
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isEntry
+                              ? 'INSPECCIÓN DE ENTRADA'
+                              : 'CONTROL DE SALIDA',
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 8,
+                            letterSpacing: .75,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.title,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Cerrar',
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      color: _secondaryTextColor(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 12, 15, 7),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: isLight ? .07 : .1),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: accent.withValues(alpha: .22)),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.rule_rounded, color: accent, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                isEntry
+                                    ? 'Verificación de artículos'
+                                    : 'Devoluciones y revisión final',
+                                style: TextStyle(
+                                  color: _primaryTextColor(context),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                isEntry
+                                    ? 'Marca los artículos revisados y define si alguno se resguarda.'
+                                    : 'Revisa cada artículo. Confirma la devolución de los resguardados.',
+                                style: TextStyle(
+                                  color: _secondaryTextColor(context),
+                                  fontSize: 9,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: .13),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            '$checkedCount/${widget.items.length}',
+                            style: TextStyle(
+                              color: accent,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: LinearProgressIndicator(
+                        value: checkedCount / widget.items.length,
+                        minHeight: 5,
+                        backgroundColor: _logBorderColor(context),
+                        valueColor: AlwaysStoppedAnimation<Color>(accent),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(15, 3, 15, 12),
+                itemCount: widget.items.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 9),
+                itemBuilder: (context, index) {
+                  final item = widget.items[index];
+                  final itemId = item['id'] is num
+                      ? (item['id'] as num).toInt()
+                      : 0;
+                  final canReturn =
+                      widget.phase == 'Salida' &&
+                      widget.retainedIds.contains(itemId);
+                  final checked = _checked[index];
+                  final itemAccent = _results[index] == 'Coincide'
+                      ? const Color(0xFF18A889)
+                      : _results[index] == 'Faltante'
+                      ? const Color(0xFFE0A437)
+                      : const Color(0xFFFF536D);
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: checked
+                          ? itemAccent.withValues(alpha: isLight ? .045 : .08)
+                          : _logInsetColor(context),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: checked
+                            ? itemAccent.withValues(alpha: .42)
+                            : _logBorderColor(context),
+                        width: checked ? 1.2 : 1,
+                      ),
+                      boxShadow: checked
+                          ? [
+                              BoxShadow(
+                                color: itemAccent.withValues(alpha: .06),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
+                              ),
+                            ]
+                          : null,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: accent.withValues(alpha: .12),
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                              alignment: Alignment.center,
+                              child: Icon(
+                                item['type'] == 'Herramienta'
+                                    ? Icons.handyman_rounded
+                                    : Icons.devices_other_rounded,
+                                color: accent,
+                                size: 17,
+                              ),
+                            ),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${item['description'] ?? 'Artículo'}',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _primaryTextColor(context),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${item['brand'] ?? 'Sin marca'} ${item['model'] ?? ''}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _secondaryTextColor(context),
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF168BFF)
+                                    .withValues(alpha: .1),
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              child: Text(
+                                '× ${item['quantity'] ?? 1}',
+                                style: const TextStyle(
+                                  color: Color(0xFF168BFF),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Checkbox(
+                              value: checked,
+                              activeColor: const Color(0xFF18A889),
+                              onChanged: (value) => setState(
+                                () => _checked[index] = value ?? false,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 9),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isLight
+                                ? Colors.white.withValues(alpha: .72)
+                                : const Color(0xFF081326)
+                                      .withValues(alpha: .62),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.qr_code_2_rounded,
+                                color: _secondaryTextColor(context),
+                                size: 14,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'Serie · ${item['serialNumber'] ?? 'No indicada'}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: _secondaryTextColor(context),
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              _AppointmentStatusBadge(
+                                label: _results[index],
+                                color: itemAccent,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 9),
+                        Text(
+                          'RESULTADO DE LA REVISIÓN',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 8,
+                            letterSpacing: .6,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final result in const [
+                              'Coincide',
+                              'Faltante',
+                              'Dañado',
+                            ])
+                              _LogChoiceChip(
+                                label: result,
+                                icon: result == 'Coincide'
+                                    ? Icons.check_circle_outline_rounded
+                                    : result == 'Faltante'
+                                    ? Icons.help_outline_rounded
+                                    : Icons.warning_amber_rounded,
+                                selected: _results[index] == result,
+                                onTap: () =>
+                                    setState(() => _results[index] = result),
+                              ),
+                          ],
+                        ),
+                        if (widget.phase == 'Entrada' || canReturn) ...[
+                          const SizedBox(height: 8),
+                          Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(11),
+                              onTap: () => setState(() {
+                                if (widget.phase == 'Entrada') {
+                                  _kept[index] = !_kept[index];
+                                } else {
+                                  _returned[index] = !_returned[index];
+                                }
+                              }),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color:
+                                      (widget.phase == 'Entrada'
+                                              ? const Color(0xFFE0A437)
+                                              : const Color(0xFF18A889))
+                                          .withValues(alpha: .08),
+                                  borderRadius: BorderRadius.circular(11),
+                                  border: Border.all(
+                                    color:
+                                        (widget.phase == 'Entrada'
+                                                ? const Color(0xFFE0A437)
+                                                : const Color(0xFF18A889))
+                                            .withValues(alpha: .2),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      widget.phase == 'Entrada'
+                                          ? Icons.inventory_2_outlined
+                                          : Icons.assignment_return_rounded,
+                                      size: 16,
+                                      color: widget.phase == 'Entrada'
+                                          ? const Color(0xFFE0A437)
+                                          : const Color(0xFF18A889),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            widget.phase == 'Entrada'
+                                                ? 'Resguardar en recepción'
+                                                : 'Confirmar devolución',
+                                            style: TextStyle(
+                                              color: _primaryTextColor(context),
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                          Text(
+                                            widget.phase == 'Entrada'
+                                                ? 'El artículo permanecerá bajo resguardo.'
+                                                : 'El artículo vuelve con el visitante.',
+                                            style: TextStyle(
+                                              color: _secondaryTextColor(
+                                                context,
+                                              ),
+                                              fontSize: 8,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Checkbox(
+                                      value: widget.phase == 'Entrada'
+                                          ? _kept[index]
+                                          : _returned[index],
+                                      activeColor: widget.phase == 'Entrada'
+                                          ? const Color(0xFFE0A437)
+                                          : const Color(0xFF18A889),
+                                      onChanged: (value) => setState(() {
+                                        if (widget.phase == 'Entrada') {
+                                          _kept[index] = value ?? false;
+                                        } else {
+                                          _returned[index] = value ?? false;
+                                        }
+                                      }),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                          Checkbox(
-                            value: _checked[index],
-                            activeColor: const Color(0xFF168BFF),
-                            onChanged: (value) => setState(
-                              () => _checked[index] = value ?? false,
-                            ),
-                          ),
                         ],
-                      ),
-                      Text(
-                        '${item['brand'] ?? ''} ${item['model'] ?? ''} · Serie ${item['serialNumber'] ?? 'N/A'}',
-                        style: TextStyle(
-                          color: _secondaryTextColor(context),
-                          fontSize: 9,
-                        ),
-                      ),
-                      const SizedBox(height: 7),
-                      Wrap(
-                        spacing: 5,
-                        runSpacing: 5,
-                        children: [
-                          for (final result in const [
-                            'Coincide',
-                            'Faltante',
-                            'Dañado',
-                          ])
-                            _LogChoiceChip(
-                              label: result,
-                              icon: result == 'Coincide'
-                                  ? Icons.check_circle_outline_rounded
-                                  : result == 'Faltante'
-                                  ? Icons.help_outline_rounded
-                                  : Icons.warning_amber_rounded,
-                              selected: _results[index] == result,
-                              onTap: () =>
-                                  setState(() => _results[index] = result),
-                            ),
-                        ],
-                      ),
-                      if (widget.phase == 'Entrada')
-                        CheckboxListTile(
-                          value: _kept[index],
-                          onChanged: (value) =>
-                              setState(() => _kept[index] = value ?? false),
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          contentPadding: EdgeInsets.zero,
-                          activeColor: const Color(0xFF168BFF),
-                          title: Text(
-                            'Resguardar en recepción',
-                            style: TextStyle(
-                              color: _secondaryTextColor(context),
-                              fontSize: 10,
-                            ),
-                          ),
-                        )
-                      else if (canReturn)
-                        CheckboxListTile(
-                          value: _returned[index],
-                          onChanged: (value) =>
-                              setState(() => _returned[index] = value ?? false),
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          contentPadding: EdgeInsets.zero,
-                          activeColor: const Color(0xFF168BFF),
-                          title: Text(
-                            'Devolver artículo resguardado',
-                            style: TextStyle(
-                              color: _secondaryTextColor(context),
-                              fontSize: 10,
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: 3),
-                      TextField(
-                        controller: _notes[index],
-                        maxLength: 1000,
-                        style: TextStyle(
-                          color: _primaryTextColor(context),
-                          fontSize: 10,
-                        ),
-                        decoration: InputDecoration(
-                          hintText: 'Observación opcional',
-                          hintStyle: TextStyle(
-                            color: _secondaryTextColor(context),
+                        const SizedBox(height: 9),
+                        TextField(
+                          controller: _notes[index],
+                          maxLength: 1000,
+                          minLines: 1,
+                          maxLines: 2,
+                          style: TextStyle(
+                            color: _primaryTextColor(context),
                             fontSize: 10,
                           ),
-                          counterText: '',
-                          isDense: true,
-                          filled: true,
-                          fillColor: _logInsetColor(context),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            borderSide: BorderSide.none,
+                          decoration: InputDecoration(
+                            hintText: 'Agregar observación (opcional)',
+                            hintStyle: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 9,
+                            ),
+                            prefixIcon: Icon(
+                              Icons.edit_note_rounded,
+                              color: _secondaryTextColor(context),
+                              size: 17,
+                            ),
+                            counterText: '',
+                            isDense: true,
+                            filled: true,
+                            fillColor: _logDialogColor(context),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 11,
+                              vertical: 10,
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(11),
+                              borderSide: BorderSide(
+                                color: _logBorderColor(context),
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(11),
+                              borderSide: BorderSide(color: accent, width: 1.3),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Divider(height: 1, color: _logBorderColor(context)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(15, 10, 15, 13),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        _complete
+                            ? Icons.verified_rounded
+                            : Icons.pending_actions_rounded,
+                        color: _complete
+                            ? const Color(0xFF18A889)
+                            : const Color(0xFFE0A437),
+                        size: 17,
+                      ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          _complete
+                              ? 'Todos los artículos están revisados'
+                              : 'Revisa ${widget.items.length - checkedCount} artículo(s) para continuar',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '${(progress * 100).round()}%',
+                        style: TextStyle(
+                          color: accent,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: _logOutlinedButtonStyle(context),
+                          child: const Text('Cancelar'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: FilledButton.icon(
+                          onPressed: _complete
+                              ? () => Navigator.pop(
+                                  context,
+                                  List<Map<String, Object?>>.generate(
+                                    widget.items.length,
+                                    (index) => {
+                                      'itemId':
+                                          (widget.items[index]['id'] as num)
+                                              .toInt(),
+                                      'result': _results[index],
+                                      'notes': _notes[index].text.trim(),
+                                      'checked': true,
+                                      'keepAtReception': _kept[index],
+                                      'returnedToVisitor': _returned[index],
+                                    },
+                                  ),
+                                )
+                              : null,
+                          icon: const Icon(Icons.fact_check_rounded, size: 17),
+                          label: const Text('Confirmar inspección'),
+                          style: _logPrimaryButtonStyle(context).copyWith(
+                            backgroundColor: WidgetStatePropertyAll(accent),
                           ),
                         ),
                       ),
                     ],
                   ),
-                );
-              },
+                ],
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () => Navigator.pop(context),
-                    style: _logOutlinedButtonStyle(context),
-                    child: const Text('Cancelar'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  flex: 2,
-                  child: FilledButton.icon(
-                    onPressed: _complete
-                        ? () => Navigator.pop(
-                            context,
-                            List<Map<String, Object?>>.generate(
-                              widget.items.length,
-                              (index) => {
-                                'itemId': (widget.items[index]['id'] as num)
-                                    .toInt(),
-                                'result': _results[index],
-                                'notes': _notes[index].text.trim(),
-                                'checked': true,
-                                'keepAtReception': _kept[index],
-                                'returnedToVisitor': _returned[index],
-                              },
-                            ),
-                          )
-                        : null,
-                    icon: const Icon(Icons.fact_check_rounded, size: 17),
-                    label: const Text('Completar revisión'),
-                    style: _logPrimaryButtonStyle(context),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class ConnectedEquipmentPage extends StatefulWidget {

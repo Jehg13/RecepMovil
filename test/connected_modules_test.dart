@@ -89,7 +89,169 @@ const _admin = AuthenticatedUser(
   sectionAccess: ['administrador', 'recepcion', 'anfitriones'],
 );
 
+const _reception = AuthenticatedUser(
+  login: 'recepcion',
+  name: 'Personal de recepción',
+  email: 'recepcion@example.test',
+  role: 'Recepción',
+  isAdmin: false,
+  sectionAccess: ['recepcion'],
+);
+
 void main() {
+  testWidgets('solo administración ve quién registró movimientos en móvil', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    var actorName = '';
+    final service = _service((request) async {
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(
+          jsonEncode({
+            ..._dailyLog,
+            'entries': [
+              {
+                'id': 87,
+                'date': today,
+                'time': '09:15',
+                'event': 'Llegada',
+                'person': 'Registro de prueba',
+                'company': 'Empresa de prueba',
+                'details': '',
+                'actorName': actorName.isEmpty ? null : actorName,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.url.path == '/api/appointments') {
+        return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    Widget buildPage(AuthenticatedUser user) => MaterialApp(
+      home: Scaffold(
+        body: ConnectedDailyLogbookPage(
+          key: ValueKey('${user.login}-$actorName'),
+          authService: service,
+          isAdmin: user.isAdmin,
+          user: user,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildPage(_admin));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Sin registro'), findsNothing);
+    expect(find.textContaining('Registró:'), findsNothing);
+
+    actorName = 'Administración';
+    await tester.pumpWidget(buildPage(_admin));
+    await tester.pumpAndSettle();
+    expect(find.text('Registró: Administración'), findsOneWidget);
+
+    await tester.pumpWidget(buildPage(_reception));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Registró:'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('cambia entre historial completo, hoy y solo lectura anterior', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now();
+    final todayString = today.toIso8601String().substring(0, 10);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final yesterdayString = yesterday.toIso8601String().substring(0, 10);
+    final requestedUris = <Uri>[];
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/daily-log') {
+        requestedUris.add(request.url);
+        final response = Map<String, dynamic>.from(_dailyLog)
+          ..['historyRange'] = {
+            'firstDate': '2020-01-03',
+            'lastDate': yesterdayString,
+          }
+          ..['entries'] = [
+            {
+              'id': 87,
+              'date': yesterdayString,
+              'time': '09:15',
+              'event': 'Llegada',
+              'person': 'Registro anterior',
+              'company': 'Empresa de prueba',
+              'details': '',
+              'actorName': 'Recepción',
+            },
+          ];
+        return http.Response(jsonEncode(response), 200);
+      }
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Historial'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    await tester.tap(find.text('Historial'));
+    await tester.pumpAndSettle();
+    expect(requestedUris.last.queryParameters['from'], '2020-01-03');
+    expect(requestedUris.last.queryParameters['to'], yesterdayString);
+
+    await tester.tap(find.text('Actualmente'));
+    await tester.pumpAndSettle();
+    expect(requestedUris.last.queryParameters['from'], todayString);
+    expect(requestedUris.last.queryParameters['to'], todayString);
+
+    await tester.scrollUntilVisible(
+      find.text('Registro anterior'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Registro anterior'));
+    await tester.pumpAndSettle();
+    expect(find.text('Registro histórico · solo lectura'), findsOneWidget);
+    expect(find.byTooltip('Eliminar movimiento'), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Dar entrada'),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('registra la entrada de una cita activa', (tester) async {
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1;
@@ -169,6 +331,610 @@ void main() {
     expect(recordedEntry, containsPair('appointmentId', 19));
     expect(recordedEntry, containsPair('personName', 'Visita de prueba'));
     expect(find.text('Visita de prueba: entrada registrada.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('completa checklist de entrada antes de registrar ingreso', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    Map<String, dynamic>? recordedEntry;
+    Map<String, dynamic>? submittedInspection;
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 29,
+                'businessPartnerId': null,
+                'date': today,
+                'time': '10:30',
+                'visitor': 'Contratista de prueba',
+                'email': 'contractor@example.test',
+                'referenceCode': 'ENTRY29',
+                'company': 'Empresa de prueba',
+                'host': 'Anfitrión de prueba',
+                'status': 'En proceso',
+                'equipmentChecklistRequired': true,
+                'equipmentDeclarationId': 9,
+                'equipmentEntryChecklistComplete': false,
+                'equipmentExitChecklistComplete': false,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/equipment/declarations/9') {
+        return http.Response(
+          jsonEncode({
+            'declaration': {
+              'id': 9,
+              'personName': 'Contratista de prueba',
+              'companyName': 'Empresa de prueba',
+              'status': 'Enviada',
+              'items': [
+                {
+                  'id': 3,
+                  'itemType': 'Equipo',
+                  'quantity': 1,
+                  'product': 'Laptop',
+                  'brand': 'Marca',
+                  'model': 'Modelo',
+                  'serialNumber': 'SERIE-3',
+                  'color': 'Negro',
+                  'notes': '',
+                },
+              ],
+              'inspections': [],
+            },
+          }),
+          200,
+        );
+      }
+      if (request.method == 'PUT' &&
+          request.url.path ==
+              '/api/equipment/declarations/9/inspections/entrada') {
+        submittedInspection = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'Checklist guardado.'}),
+          200,
+        );
+      }
+      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+        recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'El movimiento se registró.'}),
+          201,
+        );
+      }
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Contratista de prueba'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Completar checklist de entrada'), findsOneWidget);
+    expect(find.text('Dar entrada'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Dar entrada'),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.text('Completar checklist de entrada'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Laptop'), findsOneWidget);
+    await tester.tap(find.byType(Checkbox).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Resguardar en recepción'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar revisión'));
+    await tester.pumpAndSettle();
+
+    expect(submittedInspection?['items']?[0]['keepAtReception'], isTrue);
+    expect(find.text('Completar checklist de entrada'), findsNothing);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Dar entrada'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.text('Dar entrada'));
+    await tester.pumpAndSettle();
+
+    expect(recordedEntry?['event'], 'Ingreso');
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('confirma devolución antes de registrar salida', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    Map<String, dynamic>? submittedInspection;
+    Map<String, dynamic>? recordedExit;
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 30,
+                'businessPartnerId': null,
+                'date': today,
+                'time': '10:30',
+                'visitor': 'Contratista en sitio',
+                'email': 'contractor@example.test',
+                'referenceCode': 'EXIT30',
+                'company': 'Empresa de prueba',
+                'host': 'Anfitrión de prueba',
+                'status': 'Dentro',
+                'equipmentChecklistRequired': true,
+                'equipmentDeclarationId': 10,
+                'equipmentEntryChecklistComplete': true,
+                'equipmentExitChecklistComplete': false,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/equipment/declarations/10') {
+        return http.Response(
+          jsonEncode({
+            'declaration': {
+              'id': 10,
+              'personName': 'Contratista en sitio',
+              'companyName': 'Empresa de prueba',
+              'status': 'Enviada',
+              'items': [
+                {
+                  'id': 4,
+                  'itemType': 'Herramienta',
+                  'quantity': 1,
+                  'product': 'Llave',
+                  'brand': 'Marca',
+                  'model': 'Modelo',
+                  'serialNumber': 'SERIE-4',
+                  'color': 'Gris',
+                  'notes': '',
+                },
+              ],
+              'inspections': [
+                {
+                  'phase': 'Entrada',
+                  'status': 'Completada',
+                  'items': [
+                    {'declarationItemId': 4, 'keepAtReception': true},
+                  ],
+                },
+              ],
+            },
+          }),
+          200,
+        );
+      }
+      if (request.method == 'PUT' &&
+          request.url.path ==
+              '/api/equipment/declarations/10/inspections/salida') {
+        submittedInspection = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'Checklist guardado.'}),
+          200,
+        );
+      }
+      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+        recordedExit = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'El movimiento se registró.'}),
+          201,
+        );
+      }
+      if (request.url.path == '/api/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Contratista en sitio'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Completar checklist de salida'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Registrar salida'),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.text('Completar checklist de salida'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar devolución al visitante'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar revisión'));
+    await tester.pumpAndSettle();
+
+    expect(submittedInspection?['items']?[0]['returnedToVisitor'], isTrue);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Registrar salida'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.text('Registrar salida'));
+    await tester.pumpAndSettle();
+    expect(recordedExit?['event'], 'Retiro');
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('muestra checklist en el detalle del movimiento de bitácora', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    final yesterday = DateTime.now()
+        .subtract(const Duration(days: 1))
+        .toIso8601String()
+        .substring(0, 10);
+    Map<String, dynamic>? recordedEntry;
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 31,
+                'businessPartnerId': null,
+                'date': yesterday,
+                'time': '10:30',
+                'visitor': 'Contratista desde bitácora',
+                'email': 'contractor@example.test',
+                'referenceCode': 'ENTRY31',
+                'company': 'Empresa de prueba',
+                'host': 'Anfitrión de prueba',
+                'status': 'En proceso',
+                'equipmentChecklistRequired': true,
+                'equipmentDeclarationId': 11,
+                'equipmentEntryChecklistComplete': false,
+                'equipmentExitChecklistComplete': false,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/equipment/declarations/11') {
+        return http.Response(
+          jsonEncode({
+            'declaration': {
+              'id': 11,
+              'personName': 'Contratista desde bitácora',
+              'companyName': 'Empresa de prueba',
+              'status': 'Enviada',
+              'items': [
+                {
+                  'id': 5,
+                  'itemType': 'Equipo',
+                  'quantity': 1,
+                  'product': 'Laptop',
+                  'brand': 'Marca',
+                  'model': 'Modelo',
+                  'serialNumber': 'SERIE-5',
+                  'color': 'Negro',
+                  'notes': '',
+                },
+              ],
+              'inspections': [],
+            },
+          }),
+          200,
+        );
+      }
+      if (request.method == 'PUT' &&
+          request.url.path ==
+              '/api/equipment/declarations/11/inspections/entrada') {
+        return http.Response(
+          jsonEncode({'message': 'Checklist guardado.'}),
+          200,
+        );
+      }
+      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+        recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'El movimiento se registró.'}),
+          201,
+        );
+      }
+      if (request.url.path == '/api/daily-log') {
+        final response = Map<String, dynamic>.from(_dailyLog);
+        response['entries'] = [
+          {
+            'id': 40,
+            'date': today,
+            'time': '09:30',
+            'event': 'Llegada',
+            'person': 'Contratista desde bitácora',
+            'company': 'Empresa de prueba',
+            'details': '',
+            'actorName': 'Recepción',
+            'appointmentId': 31,
+          },
+        ];
+        return http.Response(jsonEncode(response), 200);
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Contratista desde bitácora'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Contratista desde bitácora'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Hacer checklist de entrada'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Dar entrada'),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.text('Hacer checklist de entrada'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(Checkbox).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar revisión'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Dar entrada'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.text('Dar entrada'));
+    await tester.pumpAndSettle();
+    expect(recordedEntry?['event'], 'Ingreso');
+    expect(recordedEntry?['sourceEntryId'], 40);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('rediseña el registro manual y el checklist de salida', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    Map<String, dynamic>? checklistRequest;
+    final service = _service((request) async {
+      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+        return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
+      }
+      if (request.method == 'GET' && request.url.path == '/api/daily-log') {
+        final response = Map<String, dynamic>.from(_dailyLog);
+        response['entries'] = [
+          {
+            'id': 42,
+            'date': today,
+            'time': '10:15',
+            'event': 'Ingreso',
+            'person': 'Alberto Gutiérrez',
+            'company': 'Público general',
+            'details': 'Registro manual · Folio 33872179',
+            'actorName': 'Recepción',
+            'visitorRecordId': 77,
+          },
+        ];
+        return http.Response(jsonEncode(response), 200);
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/visitor-kiosk/registrations') {
+        return http.Response(
+          jsonEncode({
+            'registrations': [
+              {
+                'id': 55,
+                'visitorRecordId': 77,
+                'folio': '33872179',
+                'visitorName': 'Alberto Gutiérrez',
+                'companyName': 'Público general',
+                'visitReason': 'Entrevista',
+                'identificationType': 'INE, Gafete',
+                'authorizationStatus': 'Autorizada',
+                'createdAt': '${today}T10:00:00',
+                'entryChecklistComplete': true,
+                'exitChecklistComplete': false,
+                'items': [
+                  {
+                    'id': 8,
+                    'type': 'Herramienta',
+                    'description': 'Taladro inalámbrico',
+                    'brand': 'Dewalt',
+                    'model': 'DCD791',
+                    'quantity': 1,
+                    'serialNumber': 'DW-24018',
+                  },
+                ],
+                'inspections': [
+                  {
+                    'phase': 'Entrada',
+                    'items': [
+                      {'itemId': 8, 'keepAtReception': true},
+                    ],
+                  },
+                ],
+                'audit': [
+                  {
+                    'action': 'Checklist de entrada completado',
+                    'actorName': 'Recepción',
+                    'createdAt': '$today 10:05',
+                  },
+                ],
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'PATCH' &&
+          request.url.path == '/api/visitor-kiosk/registrations/55') {
+        checklistRequest = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({'message': 'Checklist guardado.'}),
+          200,
+        );
+      }
+      if (request.url.path == '/api/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Alberto Gutiérrez'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Alberto Gutiérrez').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Registro de visitante'), findsOneWidget);
+    expect(find.text('PROCESO DE VISITA'), findsOneWidget);
+    expect(find.text('ACTIVIDAD DEL REGISTRO'), findsOneWidget);
+    expect(find.text('Revisar salida'), findsOneWidget);
+    final registrationDialog = tester.widget<Dialog>(find.byType(Dialog).last);
+    final registrationSurface = registrationDialog.child! as Container;
+    final registrationDecoration =
+        registrationSurface.decoration! as BoxDecoration;
+    expect(registrationDecoration.color, Colors.white);
+
+    await tester.tap(find.text('Revisar salida'));
+    await tester.pumpAndSettle();
+    expect(find.text('CONTROL DE SALIDA'), findsOneWidget);
+    expect(find.text('Devoluciones y revisión final'), findsOneWidget);
+    expect(find.text('Taladro inalámbrico'), findsWidgets);
+    expect(find.text('Confirmar devolución'), findsOneWidget);
+    expect(find.text('Confirmar inspección'), findsOneWidget);
+
+    await tester.tap(find.byType(Checkbox).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar devolución'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirmar inspección'));
+    await tester.pumpAndSettle();
+
+    expect(checklistRequest?['action'], 'complete-exit-checklist');
+    expect(checklistRequest?['items']?[0]['returnedToVisitor'], isTrue);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 5));
   });
@@ -725,7 +1491,7 @@ void main() {
           final deleteAppointmentButton = tester.widget<OutlinedButton>(
             find.widgetWithText(OutlinedButton, 'Eliminar'),
           );
-          expect(deleteAppointmentButton.onPressed, isNull);
+          expect(deleteAppointmentButton.onPressed, isNotNull);
           expect(find.text('Ver QR'), findsOneWidget);
           await tester.tap(find.text('Ver QR'));
           await tester.pumpAndSettle();

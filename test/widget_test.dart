@@ -8,10 +8,59 @@ import 'package:visitas_recep_mobile/auth_service.dart';
 
 import 'package:visitas_recep_mobile/main.dart';
 
+class _MemoryOnboardingStorage implements MobileOnboardingStorage {
+  bool seen = false;
+
+  @override
+  Future<bool> hasSeenOnboarding() async => seen;
+
+  @override
+  Future<void> markOnboardingSeen() async {
+    seen = true;
+  }
+}
+
+class _MemorySessionCookieStorage implements SessionCookieStorage {
+  @override
+  Future<String?> read() async => null;
+
+  @override
+  Future<void> write(String value) async {}
+
+  @override
+  Future<void> clear() async {}
+}
+
+class _MemoryVisitorKioskDraftStorage implements VisitorKioskDraftStorage {
+  Map<String, dynamic>? draft;
+
+  @override
+  Future<Map<String, dynamic>?> readDraft() async =>
+      draft == null ? null : Map<String, dynamic>.from(draft!);
+
+  @override
+  Future<void> saveDraft(Map<String, dynamic> draft) async {
+    this.draft = Map<String, dynamic>.from(draft);
+  }
+
+  @override
+  Future<void> clearDraft() async {
+    draft = null;
+  }
+}
+
+void _usePhoneViewport(WidgetTester tester) {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(390, 844);
+}
+
 void main() {
   testWidgets('Muestra la bienvenida de Recepción', (
     WidgetTester tester,
   ) async {
+    _usePhoneViewport(tester);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(const ReceptionApp(showSplash: false));
 
     expect(find.text('Bienvenido'), findsOneWidget);
@@ -52,7 +101,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const ReceptionApp());
+    await tester.pumpWidget(
+      ReceptionApp(visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage()),
+    );
 
     expect(
       find.byWidgetPredicate(
@@ -87,7 +138,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
-    await tester.pumpWidget(const ReceptionApp());
+    await tester.pumpWidget(
+      ReceptionApp(visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage()),
+    );
 
     expect(
       find.byWidgetPredicate(
@@ -108,7 +161,11 @@ void main() {
 
     await tester.pump(const Duration(milliseconds: 2400));
     await tester.pump();
-    expect(find.text('Bienvenido'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('tablet-visitor-landing')),
+      findsOneWidget,
+    );
+    expect(find.text('Visitas sin cita'), findsOneWidget);
   });
 
   testWidgets('Se adapta a una pantalla pequeña', (WidgetTester tester) async {
@@ -145,13 +202,25 @@ void main() {
     ]) {
       tester.view.physicalSize = size;
       await tester.pumpWidget(
-        ReceptionApp(key: ValueKey(size), showSplash: false),
+        ReceptionApp(
+          key: ValueKey(size),
+          showSplash: false,
+          visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+        ),
       );
       await tester.pumpAndSettle();
 
       expect(tester.takeException(), isNull, reason: 'Welcome: $size');
       if (size.width >= 600 && size.height > size.width) {
-        expect(find.text('Voltea tu tablet'), findsOneWidget);
+        expect(find.text('Gira tu tablet'), findsOneWidget);
+        expect(find.text('Volver al inicio de sesión'), findsNothing);
+      } else if (size.shortestSide >= 600) {
+        expect(
+          find.byKey(const ValueKey('tablet-visitor-landing')),
+          findsOneWidget,
+        );
+        expect(find.text('Visitas sin cita'), findsOneWidget);
+        expect(find.text('Iniciar sesión'), findsNothing);
       } else {
         expect(find.text('Comenzar'), findsOneWidget);
       }
@@ -344,6 +413,7 @@ void main() {
         (brandLogo.image as AssetImage).assetName,
         'assets/images/cymez-visitor-logo.webp',
       );
+      expect(find.byType(ImageFiltered), findsWidgets);
       expect(
         tester
             .getSize(find.byKey(const ValueKey('walk-in-tablet-header')))
@@ -389,6 +459,195 @@ void main() {
     );
   });
 
+  testWidgets('Completa registro sin cita y muestra estado del checklist', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1366, 1024);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    Map<String, dynamic>? submittedRegistration;
+    String? registrationKey;
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.url.path == '/api/visitor-kiosk/registrations' &&
+            request.method == 'POST') {
+          registrationKey = request.headers['Idempotency-Key'];
+          submittedRegistration =
+              jsonDecode(request.body) as Map<String, dynamic>;
+          return http.Response(
+            jsonEncode({'folio': '12345678', 'visitorName': 'Ana Pérez'}),
+            201,
+          );
+        }
+        if (request.url.path == '/api/visitor-kiosk/status') {
+          expect(request.headers['Idempotency-Key'], registrationKey);
+          return http.Response(
+            jsonEncode({
+              'folio': '12345678',
+              'visitorName': 'Ana Pérez',
+              'authorizationStatus': 'Autorizada',
+              'entryChecklistComplete': true,
+              'entered': true,
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/visitor-kiosk/events') {
+          expect(request.url.queryParameters['key'], registrationKey);
+          return http.Response(': connected\n\ndata: update\n\n', 200);
+        }
+        return http.Response('{}', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+    final storage = _MemoryVisitorKioskDraftStorage();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WalkInVisitorPage(authService: service, draftStorage: storage),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('tablet-kiosk-welcome-start-button')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).at(0), 'Ana Pérez');
+    await tester.enterText(find.byType(TextField).at(1), 'Público general');
+    await tester.enterText(find.byType(TextField).at(2), 'Entrega');
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Equipo y herramientas'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('tablet-equipment-no')));
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('tablet-identification-title')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('tablet-identification-option-INE')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('tablet-identification-option-Pasaporte')),
+    );
+    await tester.tap(find.text('Continuar'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('tablet-review-title')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('tablet-review-confirmation')));
+    await tester.pump();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('tablet-review-submit')),
+    );
+    expect(
+      tester
+          .widget<ElevatedButton>(
+            find.byKey(const ValueKey('tablet-review-submit')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const ValueKey('tablet-review-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump();
+
+    expect(submittedRegistration?['visitorName'], 'Ana Pérez');
+    expect(submittedRegistration?['carriesItems'], isFalse);
+    expect(submittedRegistration?['identificationTypes'], ['INE', 'Pasaporte']);
+    expect(
+      submittedRegistration?.containsKey('identificationHeldForSafekeeping'),
+      isFalse,
+    );
+    expect(find.text('Visita registrada correctamente'), findsOneWidget);
+    expect(find.text('12345678'.split('').join(' ')), findsOneWidget);
+    expect(storage.draft?['step'], 5);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('Restaura una visita enviada después de reabrir el kiosco', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1366, 1024);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    const idempotencyKey = '123e4567-e89b-42d3-a456-426614174000';
+    final storage = _MemoryVisitorKioskDraftStorage()
+      ..draft = {
+        'started': true,
+        'step': 5,
+        'visitorName': 'Ana Pérez',
+        'companyName': 'Público general',
+        'visitReason': 'Entrega',
+        'publicGeneral': true,
+        'carriesItems': true,
+        'items': <Object>[],
+        'editingItem': <String, Object?>{},
+        'identificationType': 'INE',
+        'identificationHeldForSafekeeping': false,
+        'idempotencyKey': idempotencyKey,
+        'folio': '12345678',
+        'authorizationStatus': 'Pendiente',
+        'entryChecklistComplete': false,
+        'entered': false,
+      };
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.url.path == '/api/visitor-kiosk/status') {
+          expect(request.headers['Idempotency-Key'], idempotencyKey);
+          return http.Response(
+            jsonEncode({
+              'folio': '12345678',
+              'visitorName': 'Ana Pérez',
+              'authorizationStatus': 'Pendiente',
+              'entryChecklistComplete': false,
+              'entered': false,
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/visitor-kiosk/events') {
+          expect(request.url.queryParameters['key'], idempotencyKey);
+          return http.Response(': connected\n\n', 200);
+        }
+        return http.Response('{}', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WalkInVisitorPage(authService: service, draftStorage: storage),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump();
+
+    expect(find.text('Esperando autorización de entrada'), findsOneWidget);
+    expect(find.text('Ana Pérez'), findsOneWidget);
+    expect(find.text('1 2 3 4 5 6 7 8'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   testWidgets('El kiosco tolera una ventana temporalmente diminuta', (
     WidgetTester tester,
   ) async {
@@ -406,6 +665,58 @@ void main() {
     expect(
       find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
       findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('El teclado no reduce el formulario del kiosco ni el login', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetViewInsets);
+
+    tester.view.physicalSize = const Size(390, 844);
+    await tester.pumpWidget(const MaterialApp(home: ReceptionLoginPage()));
+    await tester.pumpAndSettle();
+    final loginFormSize = tester.getSize(
+      find.byKey(const ValueKey('mobile-login-form-card')),
+    );
+    final loginLogoSize = tester.getSize(
+      find.byKey(const ValueKey('mobile-login-logo')),
+    );
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byKey(const ValueKey('mobile-login-form-card'))),
+      loginFormSize,
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('mobile-login-logo'))),
+      loginLogoSize,
+    );
+
+    tester.view.viewInsets = FakeViewPadding.zero;
+    tester.view.physicalSize = const Size(1366, 1024);
+    await tester.pumpWidget(const MaterialApp(home: WalkInVisitorPage()));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('tablet-kiosk-welcome-start-button')),
+    );
+    await tester.pumpAndSettle();
+    final kioskCardSize = tester.getSize(
+      find.byKey(const ValueKey('tablet-walk-in-form-card')),
+    );
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byKey(const ValueKey('tablet-walk-in-form-card'))),
+      kioskCardSize,
     );
     expect(tester.takeException(), isNull);
   });
@@ -472,6 +783,9 @@ void main() {
         find.byKey(const ValueKey('tablet-kiosk-welcome-start-button')),
       );
       await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).at(0), 'Ana Pérez');
+      await tester.enterText(find.byType(TextField).at(1), 'Cymez');
+      await tester.enterText(find.byType(TextField).at(2), 'Visita de prueba');
       await tester.ensureVisible(find.text('Continuar'));
       await tester.tap(find.text('Continuar'));
       await tester.pumpAndSettle();
@@ -548,6 +862,23 @@ void main() {
       await tester.tap(find.text('Agregar artículo'));
       await tester.pumpAndSettle();
       expect(find.text('Herramienta: Laptop'), findsOneWidget, reason: '$size');
+      await tester.tap(find.byKey(const ValueKey('tablet-equipment-edit-0')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).first, 'Laptop de prueba');
+      await tester.tap(find.text('Guardar cambios'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Herramienta: Laptop de prueba'),
+        findsOneWidget,
+        reason: '$size',
+      );
+      await tester.tap(find.byKey(const ValueKey('tablet-equipment-delete-0')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Herramienta: Laptop de prueba'),
+        findsNothing,
+        reason: '$size',
+      );
 
       await tester.tap(find.byKey(const ValueKey('tablet-equipment-no')));
       await tester.pumpAndSettle();
@@ -584,8 +915,13 @@ void main() {
         find.byKey(const ValueKey('tablet-kiosk-welcome-start-button')),
       );
       await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).at(0), 'Ana Pérez');
+      await tester.enterText(find.byType(TextField).at(1), 'Cymez');
+      await tester.enterText(find.byType(TextField).at(2), 'Visita de prueba');
       await tester.ensureVisible(find.text('Continuar'));
       await tester.tap(find.text('Continuar'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('tablet-equipment-no')));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Continuar'));
       await tester.tap(find.text('Continuar'));
@@ -599,7 +935,7 @@ void main() {
       );
       expect(
         find.byKey(const ValueKey('tablet-identification-safekeeping')),
-        findsOneWidget,
+        findsNothing,
         reason: '$size',
       );
       for (final type in [
@@ -620,9 +956,11 @@ void main() {
         find.byKey(const ValueKey('tablet-identification-option-Pasaporte')),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Sí, las entregué para resguardo'));
+      await tester.tap(
+        find.byKey(const ValueKey('tablet-identification-option-INE')),
+      );
       await tester.pumpAndSettle();
-      expect(find.byIcon(Icons.radio_button_checked_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_rounded), findsNWidgets(2));
       expect(tester.takeException(), isNull, reason: '$size');
 
       await tester.ensureVisible(find.text('Continuar'));
@@ -630,13 +968,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('PASO 4 DE 4'), findsOneWidget, reason: '$size');
       expect(find.text('Revisa tu registro'), findsOneWidget, reason: '$size');
+      expect(find.text('Pasaporte, INE'), findsOneWidget, reason: '$size');
       for (final section in [
         'NOMBRE',
         'EMPRESA O PROCEDENCIA',
         'ASUNTO',
         'EQUIPO Y HERRAMIENTAS',
         'IDENTIFICACIÓN',
-        'DECLARACIÓN DE RESGUARDO',
       ]) {
         expect(
           find.byKey(ValueKey('tablet-review-summary-$section')),
@@ -644,29 +982,7 @@ void main() {
           reason: '$size',
         );
       }
-      final submitButton = tester.widget<ElevatedButton>(
-        find.byKey(const ValueKey('tablet-review-submit')),
-      );
-      expect(submitButton.onPressed, isNull);
-      await tester.tap(
-        find.byKey(const ValueKey('tablet-review-confirmation')),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<ElevatedButton>(
-              find.byKey(const ValueKey('tablet-review-submit')),
-            )
-            .onPressed,
-        isNotNull,
-      );
-      await tester.tap(find.byKey(const ValueKey('tablet-review-submit')));
-      await tester.pumpAndSettle();
-      expect(
-        find.text('El envío del registro aún no está conectado.'),
-        findsOneWidget,
-        reason: '$size',
-      );
+      expect(find.text('Declaración de resguardo'), findsNothing);
       expect(tester.takeException(), isNull, reason: '$size');
 
       final cardRect = tester.getRect(
@@ -754,6 +1070,9 @@ void main() {
   testWidgets('Comenzar abre la segunda pantalla del onboarding', (
     WidgetTester tester,
   ) async {
+    _usePhoneViewport(tester);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(const ReceptionApp(showSplash: false));
 
     await tester.tap(find.text('Comenzar'));
@@ -771,6 +1090,97 @@ void main() {
     expect(find.text('Continuar'), findsOneWidget);
     expect(find.bySemanticsLabel('Página 1 de 3'), findsOneWidget);
     expect(find.byType(SingleChildScrollView), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Omitir finaliza el onboarding y evita mostrarlo otra vez', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final storage = _MemoryOnboardingStorage();
+
+    await tester.pumpWidget(
+      ReceptionApp(
+        key: const ValueKey('onboarding-first-launch'),
+        showSplash: false,
+        onboardingStorage: storage,
+      ),
+    );
+    await tester.tap(find.text('Comenzar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Omitir'));
+    await tester.pumpAndSettle();
+
+    expect(storage.seen, isTrue);
+    expect(find.text('Bienvenido de nuevo'), findsOneWidget);
+
+    await tester.pumpWidget(
+      ReceptionApp(
+        key: const ValueKey('onboarding-second-launch'),
+        showSplash: false,
+        onboardingStorage: storage,
+      ),
+    );
+    await tester.tap(find.text('Comenzar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Bienvenido de nuevo'), findsOneWidget);
+    expect(find.text('Entrada de visitantes'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Omitir funciona en las tres pantallas', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final pageBuilders = <Widget Function(MobileOnboardingStorage)>[
+      (storage) => ReceptionOnboardingPage(onboardingStorage: storage),
+      (storage) => ReceptionControlOnboardingPage(onboardingStorage: storage),
+      (storage) => ReceptionReadyOnboardingPage(onboardingStorage: storage),
+    ];
+    for (var index = 0; index < pageBuilders.length; index++) {
+      final storage = _MemoryOnboardingStorage();
+      await tester.pumpWidget(
+        MaterialApp(
+          key: ValueKey('onboarding-skip-$index'),
+          home: pageBuilders[index](storage),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Omitir'));
+      await tester.pumpAndSettle();
+      expect(storage.seen, isTrue);
+      expect(find.text('Bienvenido de nuevo'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('Completar el onboarding también se guarda como visto', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final storage = _MemoryOnboardingStorage();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ReceptionReadyOnboardingPage(onboardingStorage: storage),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Iniciar sesión'));
+    await tester.pumpAndSettle();
+
+    expect(storage.seen, isTrue);
+    expect(find.text('Bienvenido de nuevo'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1072,6 +1482,9 @@ void main() {
   testWidgets('Continuar abre la tercera pantalla del onboarding', (
     WidgetTester tester,
   ) async {
+    _usePhoneViewport(tester);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(const ReceptionApp(showSplash: false));
     await tester.tap(find.text('Comenzar'));
     await tester.pumpAndSettle();
@@ -1173,6 +1586,9 @@ void main() {
   testWidgets('Continuar abre la pantalla final del onboarding', (
     WidgetTester tester,
   ) async {
+    _usePhoneViewport(tester);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(const ReceptionApp(showSplash: false));
     await tester.tap(find.text('Comenzar'));
     await tester.pumpAndSettle();
@@ -1192,6 +1608,9 @@ void main() {
   testWidgets('Iniciar sesión abre la pantalla de acceso', (
     WidgetTester tester,
   ) async {
+    _usePhoneViewport(tester);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(const ReceptionApp(showSplash: false));
     await tester.tap(find.text('Comenzar'));
     await tester.pumpAndSettle();
@@ -1205,7 +1624,7 @@ void main() {
     expect(find.text('Bienvenido de nuevo'), findsOneWidget);
     expect(find.text('Usuario o correo electrónico'), findsOneWidget);
     expect(find.text('Contraseña'), findsOneWidget);
-    expect(find.text('Visitas sin cita'), findsOneWidget);
+    expect(find.text('Visitas sin cita'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -1273,68 +1692,64 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('El registro sin cita se destaca solo en el login de tablet', (
+  testWidgets('La bienvenida de tablet se adapta y abre el registro', (
     WidgetTester tester,
   ) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
+    for (final size in [
+      const Size(800, 600),
+      const Size(900, 600),
+      const Size(1024, 768),
+      const Size(1366, 910),
+    ]) {
+      tester.view.physicalSize = size;
+      await tester.pumpWidget(
+        ReceptionApp(
+          key: ValueKey(size),
+          showSplash: false,
+          visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('tablet-visitor-landing')),
+        findsOneWidget,
+        reason: '$size',
+      );
+      expect(find.text('Visitas sin cita'), findsOneWidget, reason: '$size');
+      expect(
+        find.text('Registra tu visita aquí'),
+        findsOneWidget,
+        reason: '$size',
+      );
+      expect(find.text('Iniciar sesión'), findsNothing, reason: '$size');
+      expect(
+        find.byKey(const ValueKey('tablet-visitor-landing-background')),
+        findsOneWidget,
+        reason: '$size',
+      );
+      expect(tester.takeException(), isNull, reason: '$size');
+    }
+
     tester.view.physicalSize = const Size(1024, 768);
-    await tester.pumpWidget(const MaterialApp(home: ReceptionLoginPage()));
+    await tester.pumpWidget(
+      ReceptionApp(
+        showSplash: false,
+        visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+      ),
+    );
     await tester.pumpAndSettle();
-
-    expect(find.text('Registro de visitantes'), findsOneWidget);
-    expect(find.text('Visitas sin cita'), findsOneWidget);
-    expect(find.text('Ingresa tu visita sin iniciar sesión'), findsOneWidget);
-    expect(find.text('Iniciar registro'), findsOneWidget);
-    expect(tester.widget<Icon>(find.byIcon(Icons.shield_outlined)).size, 48);
-    expect(
-      tester
-          .getSize(find.byKey(const ValueKey('tablet-login-form-card')))
-          .width,
-      greaterThan(420),
-    );
-    expect(
-      tester
-          .getBottomRight(find.byKey(const ValueKey('tablet-walk-in-card')))
-          .dy,
-      lessThanOrEqualTo(752),
-    );
-    expect(
-      tester.widget<Text>(find.text('Registro de visitantes')).style?.fontSize,
-      21,
-    );
-    expect(
-      tester.getTopLeft(find.byKey(const ValueKey('tablet-walk-in-card'))).dy -
-          tester
-              .getBottomLeft(
-                find.byKey(const ValueKey('tablet-visitor-divider')),
-              )
-              .dy,
-      greaterThanOrEqualTo(20),
-    );
-    expect(tester.takeException(), isNull);
-
-    await tester.tap(find.text('Iniciar registro'));
+    await tester.tap(find.byKey(const ValueKey('tablet-visitor-landing-cta')));
     await tester.pumpAndSettle();
     expect(
       find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
       findsOneWidget,
     );
-
-    tester.view.physicalSize = const Size(375, 667);
-    await tester.pumpWidget(
-      const MaterialApp(
-        key: ValueKey('mobile-login'),
-        home: ReceptionLoginPage(),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('Registro de visitantes'), findsNothing);
-    expect(find.text('Visitas sin cita'), findsNothing);
-    expect(find.text('Iniciar registro'), findsNothing);
+    expect(find.text('Comenzar registro'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1367,6 +1782,7 @@ void main() {
       expect(find.text('Contraseña'), findsOneWidget);
       expect(find.text('Registro de visitantes'), findsOneWidget);
       expect(find.text('Visitas sin cita'), findsOneWidget);
+      expect(find.byKey(const ValueKey('login-forgot-password')), findsNothing);
 
       final formCard = tester.getRect(
         find.byKey(const ValueKey('tablet-login-form-card')),
@@ -1527,6 +1943,104 @@ void main() {
         reason: 'Login action text is not scaled down: $size',
       );
     }
+  });
+
+  testWidgets('La recuperación de contraseña móvil envía el correo', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    Map<String, dynamic>? recoveryRequest;
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/auth/password-recovery');
+        recoveryRequest = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'message': 'Si el correo está asociado a una cuenta activa, recibirás instrucciones para recuperar tu contraseña.',
+          }),
+          202,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: ReceptionLoginPage(authService: service)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('login-forgot-password')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Recuperar contraseña'), findsOneWidget);
+    expect(find.textContaining('cada 2 minutos'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('password-recovery-email')),
+      'persona@example.test',
+    );
+    await tester.tap(find.byKey(const ValueKey('password-recovery-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(recoveryRequest, {'email': 'persona@example.test'});
+    expect(
+      find.byKey(const ValueKey('password-recovery-success')),
+      findsOneWidget,
+    );
+    expect(find.text('Volver al inicio de sesión'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('El login bloquea nuevos intentos durante el Retry-After', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final service = AuthService(
+      client: MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'error': 'Demasiados intentos fallidos. Espera 5 minutos antes de volver a intentarlo.',
+          }),
+          429,
+          headers: {'retry-after': '300'},
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: ReceptionLoginPage(authService: service)),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'persona');
+    await tester.enterText(find.byType(TextField).last, 'incorrecta');
+    await tester.tap(find.text('Iniciar sesión').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('Espera 5 minutos'), findsOneWidget);
+    expect(find.text('Intenta de nuevo en 05:00'), findsOneWidget);
+    expect(
+      tester
+          .widget<InkWell>(find.byKey(const ValueKey('login-submit-action')))
+          .onTap,
+      isNull,
+    );
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Intenta de nuevo en 04:59'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('El panel móvil se adapta sin desbordamientos', (

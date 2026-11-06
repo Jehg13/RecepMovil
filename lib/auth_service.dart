@@ -13,7 +13,58 @@ import 'src/web_realtime_client_stub.dart'
 
 const _sessionCookieName = 'visitas_session';
 const _sessionCookieStorageKey = 'reception_session_cookie';
+const _mobileOnboardingStorageKey = 'reception_mobile_onboarding_seen';
+const _walkInDraftStorageKey = 'reception_walk_in_draft';
 const _requestTimeout = Duration(seconds: 15);
+
+abstract interface class MobileOnboardingStorage {
+  Future<bool> hasSeenOnboarding();
+  Future<void> markOnboardingSeen();
+}
+
+class SecureMobileOnboardingStorage implements MobileOnboardingStorage {
+  SecureMobileOnboardingStorage({this._storage = const FlutterSecureStorage()});
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<bool> hasSeenOnboarding() async =>
+      await _storage.read(key: _mobileOnboardingStorageKey) == 'true';
+
+  @override
+  Future<void> markOnboardingSeen() =>
+      _storage.write(key: _mobileOnboardingStorageKey, value: 'true');
+}
+
+abstract interface class VisitorKioskDraftStorage {
+  Future<Map<String, dynamic>?> readDraft();
+  Future<void> saveDraft(Map<String, dynamic> draft);
+  Future<void> clearDraft();
+}
+
+class SecureVisitorKioskDraftStorage implements VisitorKioskDraftStorage {
+  SecureVisitorKioskDraftStorage({this.storage = const FlutterSecureStorage()});
+
+  final FlutterSecureStorage storage;
+
+  @override
+  Future<Map<String, dynamic>?> readDraft() async {
+    final value = await storage.read(key: _walkInDraftStorageKey);
+    if (value == null) return null;
+    final decoded = jsonDecode(value);
+    if (decoded is! Map<String, dynamic>) {
+      throw const AuthApiException('El avance del registro no es válido.');
+    }
+    return decoded;
+  }
+
+  @override
+  Future<void> saveDraft(Map<String, dynamic> draft) =>
+      storage.write(key: _walkInDraftStorageKey, value: jsonEncode(draft));
+
+  @override
+  Future<void> clearDraft() => storage.delete(key: _walkInDraftStorageKey);
+}
 
 class AuthenticatedUser {
   const AuthenticatedUser({
@@ -33,6 +84,9 @@ class AuthenticatedUser {
   final List<String> sectionAccess;
 
   bool get canAccessReception => isAdmin || sectionAccess.contains('recepcion');
+
+  bool get canAccessApp =>
+      canAccessReception || sectionAccess.contains('anfitriones');
 
   factory AuthenticatedUser.fromJson(Object? value) {
     if (value is! Map<String, dynamic> ||
@@ -86,6 +140,8 @@ class AccessAccount {
       ? 'Administrador'
       : sectionAccess.contains('recepcion')
       ? 'Recepción'
+      : sectionAccess.contains('anfitriones')
+      ? 'Anfitrión'
       : 'Sin acceso';
 
   factory AccessAccount.fromJson(Object? value) {
@@ -380,9 +436,15 @@ class DashboardData {
 }
 
 class AuthApiException implements Exception {
-  const AuthApiException(this.message);
+  const AuthApiException(
+    this.message, {
+    this.statusCode,
+    this.retryAfterSeconds,
+  });
 
   final String message;
+  final int? statusCode;
+  final int? retryAfterSeconds;
 
   @override
   String toString() => message;
@@ -492,12 +554,12 @@ class AuthService {
 
     final data = _decodeObject(response.body);
     final user = AuthenticatedUser.fromJson(data['user']);
-    if (!user.canAccessReception) {
+    if (!user.canAccessApp) {
       if (_isWeb) {
         await _send(() => _client.post(_uri('/api/auth/logout')));
       }
       throw const AuthApiException(
-        'Tu cuenta no tiene permiso para usar Recepción.',
+        'Tu cuenta no tiene permisos habilitados para usar la aplicación.',
       );
     }
 
@@ -512,6 +574,22 @@ class AuthService {
     }
 
     return user;
+  }
+
+  Future<String> requestPasswordRecovery(String email) async {
+    final data = await _requestApi(
+      'POST',
+      '/api/auth/password-recovery',
+      body: {'email': email.trim()},
+      successCodes: const {202},
+    );
+    final message = data['message'];
+    if (message is! String || message.isEmpty) {
+      throw const AuthApiException(
+        'La respuesta de recuperación de contraseña no es válida.',
+      );
+    }
+    return message;
   }
 
   Future<AuthenticatedUser?> restoreSession() async {
@@ -532,7 +610,7 @@ class AuthService {
     }
 
     final user = AuthenticatedUser.fromJson(data['user']);
-    if (!user.canAccessReception) {
+    if (!user.canAccessApp) {
       await logout();
       return null;
     }
@@ -968,6 +1046,45 @@ class AuthService {
     );
   }
 
+  Future<Map<String, dynamic>> createVisitorKioskRegistration({
+    required String idempotencyKey,
+    required Map<String, Object?> registration,
+  }) async {
+    final data = await _requestApi(
+      'POST',
+      '/api/visitor-kiosk/registrations',
+      body: registration,
+      extraHeaders: {'Idempotency-Key': idempotencyKey},
+      successCodes: const {200, 201},
+    );
+    if (data['folio'] is! String || data['visitorName'] is! String) {
+      throw const AuthApiException(
+        'La respuesta del registro de visitante no es válida.',
+      );
+    }
+    return data;
+  }
+
+  Future<Map<String, dynamic>> getVisitorKioskStatus(
+    String idempotencyKey,
+  ) async {
+    final data = await _requestApi(
+      'GET',
+      '/api/visitor-kiosk/status',
+      extraHeaders: {'Idempotency-Key': idempotencyKey},
+    );
+    if (data['authorizationStatus'] is! String ||
+        data['entryChecklistComplete'] is! bool ||
+        data['entered'] is! bool ||
+        data['folio'] is! String ||
+        data['visitorName'] is! String) {
+      throw const AuthApiException(
+        'La respuesta del estado de la visita no es válida.',
+      );
+    }
+    return data;
+  }
+
   Future<List<Map<String, dynamic>>> getAppointmentEmployees(int id) async {
     if (id <= 0) {
       throw const AuthApiException('La cita seleccionada no es válida.');
@@ -1201,11 +1318,13 @@ class AuthService {
     String method,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String> extraHeaders = const {},
     Set<int> successCodes = const {200},
   }) async {
     final headers = <String, String>{
       'Accept': 'application/json',
       ...await _sessionHeaders(),
+      ...extraHeaders,
       if (body != null) 'Content-Type': 'application/json',
     };
     final uri = _uri(path);
@@ -1227,9 +1346,27 @@ class AuthService {
     return _decodeObject(response.body);
   }
 
-  Stream<RealtimeEvent> watchRealtimeUpdates() async* {
+  Stream<RealtimeEvent> watchRealtimeUpdates() =>
+      _watchRealtimeEventStream(_uri('/api/events'), authenticated: true);
+
+  Stream<RealtimeEvent> watchVisitorKioskUpdates(String idempotencyKey) {
+    if (!RegExp(
+      r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+      caseSensitive: false,
+    ).hasMatch(idempotencyKey)) {
+      throw const AuthApiException('La clave del registro no es válida.');
+    }
+    final uri = _uri('/api/visitor-kiosk/events')
+        .replace(queryParameters: {'key': idempotencyKey});
+    return _watchRealtimeEventStream(uri);
+  }
+
+  Stream<RealtimeEvent> _watchRealtimeEventStream(
+    Uri uri, {
+    bool authenticated = false,
+  }) async* {
     if (_isWeb) {
-      await for (final event in watchWebRealtimeEvents(_uri('/api/events'))) {
+      await for (final event in watchWebRealtimeEvents(uri)) {
         yield switch (event) {
           'connected' => RealtimeEvent.connected,
           'update' => RealtimeEvent.update,
@@ -1239,12 +1376,12 @@ class AuthService {
       return;
     }
 
-    final request = http.Request('GET', _uri('/api/events'))
-      ..headers.addAll({
-        'Accept': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        ...await _sessionHeaders(),
-      });
+    final headers = {
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      if (authenticated) ...await _sessionHeaders(),
+    };
+    final request = http.Request('GET', uri)..headers.addAll(headers);
     final response = await _client.send(request).timeout(_requestTimeout);
     if (response.statusCode != 200) {
       final body = await response.stream.bytesToString();
@@ -1285,23 +1422,6 @@ class AuthService {
     return List<HostAccountOption>.unmodifiable(
       accounts.map(HostAccountOption.fromJson),
     );
-  }
-
-  Future<void> grantHostAccess(String login) async {
-    final normalizedLogin = login.trim();
-    if (normalizedLogin.isEmpty || normalizedLogin.length > 255) {
-      throw const AuthApiException('La cuenta de anfitrión no es válida.');
-    }
-    final headers = await _sessionHeaders();
-    final response = await _send(
-      () => _client.post(
-        _uri('/api/host-access/${Uri.encodeComponent(normalizedLogin)}'),
-        headers: headers,
-      ),
-    );
-    if (response.statusCode != 200) {
-      throw _responseError(response);
-    }
   }
 
   Future<List<DepartmentHost>> createDepartmentHost({
@@ -1497,18 +1617,29 @@ class AuthService {
       final data = _decodeObject(response.body);
       final message = data['error'];
       if (message is String && message.isNotEmpty) {
-        return AuthApiException(message);
+        return AuthApiException(
+          message,
+          statusCode: response.statusCode,
+          retryAfterSeconds: int.tryParse(
+            response.headers['retry-after'] ?? '',
+          ),
+        );
       }
     } on AuthApiException {
       // Use the status-specific message below when the error body is invalid.
     }
 
     if (response.statusCode >= 500) {
-      return const AuthApiException(
+      return AuthApiException(
         'No se pudo validar el acceso. Inténtalo de nuevo.',
+        statusCode: response.statusCode,
       );
     }
-    return AuthApiException('La solicitud falló (${response.statusCode}).');
+    return AuthApiException(
+      'La solicitud falló (${response.statusCode}).',
+      statusCode: response.statusCode,
+      retryAfterSeconds: int.tryParse(response.headers['retry-after'] ?? ''),
+    );
   }
 
   Future<http.Response> _send(Future<http.Response> Function() request) async {

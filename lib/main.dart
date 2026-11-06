@@ -2,7 +2,8 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -227,6 +228,18 @@ Future<ui.Image> _loadSplashImage(String assetPath) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS)) {
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final isTablet =
+        view.physicalSize.shortestSide / view.devicePixelRatio >= 600;
+    await SystemChrome.setPreferredOrientations(
+      isTablet
+          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+          : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
+    );
+  }
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -245,6 +258,8 @@ Future<void> main() async {
   runApp(
     ReceptionApp(
       authService: AuthService.shared,
+      onboardingStorage: SecureMobileOnboardingStorage(),
+      visitorKioskDraftStorage: SecureVisitorKioskDraftStorage(),
       mobileSplashImage: mobileSplashImage,
       tabletSplashImage: tabletSplashImage,
     ),
@@ -256,19 +271,23 @@ class ReceptionApp extends StatelessWidget {
     super.key,
     this.showSplash = true,
     this.authService,
+    this.onboardingStorage,
+    this.visitorKioskDraftStorage,
     this.mobileSplashImage,
     this.tabletSplashImage,
   });
 
   final bool showSplash;
   final AuthService? authService;
+  final MobileOnboardingStorage? onboardingStorage;
+  final VisitorKioskDraftStorage? visitorKioskDraftStorage;
   final ui.Image? mobileSplashImage;
   final ui.Image? tabletSplashImage;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'CYMEZ Recepción',
+      title: 'Cymez Recep',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -314,12 +333,365 @@ class ReceptionApp extends StatelessWidget {
       home: showSplash && !kIsWeb
           ? _ReceptionStartupPage(
               authService: authService,
+              onboardingStorage: onboardingStorage,
+              visitorKioskDraftStorage: visitorKioskDraftStorage,
               mobileSplashImage: mobileSplashImage,
               tabletSplashImage: tabletSplashImage,
             )
-          : authService == null
-          ? const ReceptionWelcomePage()
-          : _ReceptionSessionGate(authService: authService!),
+          : _ResponsiveReceptionEntry(
+              authService: authService,
+              onboardingStorage: onboardingStorage,
+              visitorKioskDraftStorage: visitorKioskDraftStorage,
+            ),
+    );
+  }
+}
+
+class _ResponsiveReceptionEntry extends StatelessWidget {
+  const _ResponsiveReceptionEntry({
+    this.authService,
+    this.onboardingStorage,
+    this.visitorKioskDraftStorage,
+  });
+
+  final AuthService? authService;
+  final MobileOnboardingStorage? onboardingStorage;
+  final VisitorKioskDraftStorage? visitorKioskDraftStorage;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (!kIsWeb && constraints.biggest.shortestSide >= 600) {
+          return _TabletVisitorLandingPage(
+            authService: authService ?? AuthService.shared,
+            draftStorage: visitorKioskDraftStorage,
+          );
+        }
+        return authService == null
+            ? ReceptionWelcomePage(onboardingStorage: onboardingStorage)
+            : _ReceptionSessionGate(
+                authService: authService!,
+                onboardingStorage: onboardingStorage,
+              );
+      },
+    );
+  }
+}
+
+class _TabletVisitorLandingPage extends StatefulWidget {
+  const _TabletVisitorLandingPage({
+    required this.authService,
+    this.draftStorage,
+  });
+
+  final AuthService authService;
+  final VisitorKioskDraftStorage? draftStorage;
+
+  @override
+  State<_TabletVisitorLandingPage> createState() =>
+      _TabletVisitorLandingPageState();
+}
+
+class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
+  bool _landscapeRequested = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_landscapeRequested) {
+      _landscapeRequested = true;
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
+  }
+
+  Future<void> _openWalkInRegistration() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => WalkInVisitorPage(
+          authService: widget.authService,
+          draftStorage: widget.draftStorage,
+          allowExit: false,
+        ),
+      ),
+    );
+    if (mounted) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    if (size.height > size.width) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF020817),
+        body: _WalkInRotatePrompt(tablet: true, allowExit: false),
+      );
+    }
+    return Scaffold(
+      key: const ValueKey('tablet-visitor-landing'),
+      backgroundColor: const Color(0xFF020817),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(
+            'assets/images/tablet-visitor-landing-background.webp',
+            key: const ValueKey('tablet-visitor-landing-background'),
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+            filterQuality: FilterQuality.high,
+          ),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth;
+                final height = constraints.maxHeight;
+                final buttonWidth = math.min(width * .68, 980.0).toDouble();
+                final buttonHeight = (height * .208)
+                    .clamp(110.0, 174.0)
+                    .toDouble();
+                return Stack(
+                  children: [
+                    Positioned(
+                      top: height * .655 - buttonHeight / 2,
+                      left: (width - buttonWidth) / 2,
+                      width: buttonWidth,
+                      height: buttonHeight,
+                      child: _TabletVisitorLandingButton(
+                        onTap: _openWalkInRegistration,
+                        width: buttonWidth,
+                        height: buttonHeight,
+                      ),
+                    ),
+                    Positioned(
+                      right: width * .08,
+                      bottom: height * .1,
+                      left: width * .08,
+                      child: const _TabletVisitorLandingFooter(),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabletVisitorLandingButton extends StatelessWidget {
+  const _TabletVisitorLandingButton({
+    required this.onTap,
+    required this.width,
+    required this.height,
+  });
+
+  final VoidCallback onTap;
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = (width / 696).clamp(.65, 1.4).toDouble();
+    final radius = 30 * scale;
+    return Container(
+      padding: EdgeInsets.all(2 * scale),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        gradient: const LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [Color(0xFF00AFFF), Color(0xFF62C8FF), Color(0xFFFF193B)],
+          stops: [0, .48, 1],
+        ),
+        boxShadow: const [
+          BoxShadow(color: Color(0xCC00AFFF), blurRadius: 18, spreadRadius: -3),
+          BoxShadow(color: Color(0xAAFF193B), blurRadius: 22, spreadRadius: -5),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(radius - scale),
+        child: InkWell(
+          key: const ValueKey('tablet-visitor-landing-cta'),
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(radius - scale),
+          child: Ink(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(radius - scale),
+              gradient: const LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Color(0xF2020D24),
+                  Color(0xED03132D),
+                  Color(0xF20A0D23),
+                ],
+              ),
+            ),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: width * .2,
+                  height: height * .76,
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      border: Border(
+                        right: BorderSide(color: Color(0xFF42C3FF), width: 1.5),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.all(10 * scale),
+                      child: Image.asset(
+                        'assets/images/tablet-visitor-exit-icon.webp',
+                        fit: BoxFit.contain,
+                        filterQuality: FilterQuality.high,
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 20 * scale),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Visitas sin cita',
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: const Color(0xFFF5F7FC),
+                              fontSize: 44 * scale,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -.8 * scale,
+                            ),
+                          ),
+                        ),
+                        SizedBox(height: 4 * scale),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Registra tu visita aquí',
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: const Color(0xFFA9BFDC),
+                              fontSize: 26 * scale,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: EdgeInsets.only(right: 24 * scale),
+                  child: Container(
+                    width: 68 * scale,
+                    height: 68 * scale,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0x77434D78),
+                      border: Border.all(color: const Color(0x336E83BB)),
+                    ),
+                    child: Icon(
+                      Icons.chevron_right_rounded,
+                      color: Colors.white,
+                      size: 52 * scale,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabletVisitorLandingFooter extends StatelessWidget {
+  const _TabletVisitorLandingFooter();
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    final scale = (width / 1024).clamp(.65, 1.3).toDouble();
+    return Row(
+      children: [
+        const Expanded(child: _TabletVisitorLandingFooterLine(reverse: false)),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 26 * scale),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'CYMEZ RECEP',
+                style: TextStyle(
+                  color: const Color(0xFFB6C8E1),
+                  fontSize: 16 * scale,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 4 * scale,
+                ),
+              ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 22 * scale),
+                child: Container(
+                  width: 7 * scale,
+                  height: 7 * scale,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFF193B),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+              Text(
+                'CONTROL DE VISITAS',
+                style: TextStyle(
+                  color: const Color(0xFFB6C8E1),
+                  fontSize: 16 * scale,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 4 * scale,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Expanded(child: _TabletVisitorLandingFooterLine(reverse: true)),
+      ],
+    );
+  }
+}
+
+class _TabletVisitorLandingFooterLine extends StatelessWidget {
+  const _TabletVisitorLandingFooterLine({required this.reverse});
+
+  final bool reverse;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 1,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: reverse ? Alignment.centerRight : Alignment.centerLeft,
+          end: reverse ? Alignment.centerLeft : Alignment.centerRight,
+          colors: const [Color(0x000080FF), Color(0xFF287CBA)],
+        ),
+      ),
     );
   }
 }
@@ -327,11 +699,15 @@ class ReceptionApp extends StatelessWidget {
 class _ReceptionStartupPage extends StatefulWidget {
   const _ReceptionStartupPage({
     this.authService,
+    this.onboardingStorage,
+    this.visitorKioskDraftStorage,
     this.mobileSplashImage,
     this.tabletSplashImage,
   });
 
   final AuthService? authService;
+  final MobileOnboardingStorage? onboardingStorage;
+  final VisitorKioskDraftStorage? visitorKioskDraftStorage;
   final ui.Image? mobileSplashImage;
   final ui.Image? tabletSplashImage;
 
@@ -368,9 +744,11 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
       future: _splashDelay,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.done) {
-          return widget.authService == null
-              ? const ReceptionWelcomePage()
-              : _ReceptionSessionGate(authService: widget.authService!);
+          return _ResponsiveReceptionEntry(
+            authService: widget.authService,
+            onboardingStorage: widget.onboardingStorage,
+            visitorKioskDraftStorage: widget.visitorKioskDraftStorage,
+          );
         }
 
         return Scaffold(
@@ -483,9 +861,13 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
 }
 
 class _ReceptionSessionGate extends StatefulWidget {
-  const _ReceptionSessionGate({required this.authService});
+  const _ReceptionSessionGate({
+    required this.authService,
+    this.onboardingStorage,
+  });
 
   final AuthService authService;
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   State<_ReceptionSessionGate> createState() => _ReceptionSessionGateState();
@@ -510,7 +892,9 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
 
   @override
   Widget build(BuildContext context) {
-    if (_continueWithoutSession) return const ReceptionWelcomePage();
+    if (_continueWithoutSession) {
+      return ReceptionWelcomePage(onboardingStorage: widget.onboardingStorage);
+    }
 
     return FutureBuilder<AuthenticatedUser?>(
       future: _session,
@@ -576,7 +960,11 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
         }
 
         final user = snapshot.data;
-        if (user == null) return const ReceptionWelcomePage();
+        if (user == null) {
+          return ReceptionWelcomePage(
+            onboardingStorage: widget.onboardingStorage,
+          );
+        }
         return ReceptionHomePage(authService: widget.authService, user: user);
       },
     );
@@ -584,7 +972,32 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
 }
 
 class ReceptionWelcomePage extends StatelessWidget {
-  const ReceptionWelcomePage({super.key});
+  const ReceptionWelcomePage({super.key, this.onboardingStorage});
+
+  final MobileOnboardingStorage? onboardingStorage;
+
+  bool _isPhone(BuildContext context) =>
+      !kIsWeb && MediaQuery.sizeOf(context).shortestSide < 600;
+
+  Future<void> _startOnboarding(BuildContext context) async {
+    final storage = onboardingStorage;
+    if (_isPhone(context) &&
+        storage != null &&
+        await storage.hasSeenOnboarding()) {
+      if (!context.mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const ReceptionLoginPage()),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            ReceptionOnboardingPage(onboardingStorage: onboardingStorage),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -748,14 +1161,7 @@ class ReceptionWelcomePage extends StatelessWidget {
                                     child: _StartButton(
                                       compact: compact,
                                       veryCompact: veryCompact,
-                                      onStart: () {
-                                        Navigator.of(context).push(
-                                          MaterialPageRoute<void>(
-                                            builder: (_) =>
-                                                const ReceptionOnboardingPage(),
-                                          ),
-                                        );
-                                      },
+                                      onStart: () => _startOnboarding(context),
                                     ),
                                   ),
                                 ],
@@ -766,14 +1172,7 @@ class ReceptionWelcomePage extends StatelessWidget {
                                 child: _StartButton(
                                   compact: compact,
                                   veryCompact: veryCompact,
-                                  onStart: () {
-                                    Navigator.of(context).push(
-                                      MaterialPageRoute<void>(
-                                        builder: (_) =>
-                                            const ReceptionOnboardingPage(),
-                                      ),
-                                    );
-                                  },
+                                  onStart: () => _startOnboarding(context),
                                 ),
                               ),
                             if (kIsWeb) const _WebHomeIndicator(),
@@ -793,7 +1192,9 @@ class ReceptionWelcomePage extends StatelessWidget {
 }
 
 class ReceptionOnboardingPage extends StatelessWidget {
-  const ReceptionOnboardingPage({super.key});
+  const ReceptionOnboardingPage({super.key, this.onboardingStorage});
+
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -801,6 +1202,7 @@ class ReceptionOnboardingPage extends StatelessWidget {
     return Scaffold(
       body: _OnboardingSwipeDetector(
         activeIndex: 0,
+        onboardingStorage: onboardingStorage,
         child: _TabletLandscapeGuard(
           child: Stack(
             fit: StackFit.expand,
@@ -899,14 +1301,19 @@ class ReceptionOnboardingPage extends StatelessWidget {
                               logoWidth: (constraints.maxWidth * 0.17)
                                   .clamp(140.0, 220.0)
                                   .toDouble(),
+                              onboardingStorage: onboardingStorage,
                               onContinue: () {
                                 Navigator.of(context).push(
                                   MaterialPageRoute<void>(
                                     builder: (_) =>
-                                        const ReceptionControlOnboardingPage(),
+                                        ReceptionControlOnboardingPage(
+                                          onboardingStorage: onboardingStorage,
+                                        ),
                                   ),
                                 );
                               },
+                              onSkip: () =>
+                                  _finishOnboarding(context, onboardingStorage),
                             )
                           : Column(
                               key: const ValueKey(
@@ -944,10 +1351,13 @@ class ReceptionOnboardingPage extends StatelessWidget {
                                       child: Align(
                                         alignment: Alignment.centerLeft,
                                         child: TextButton(
-                                          onPressed: () {},
+                                          onPressed: () => _finishOnboarding(
+                                            context,
+                                            onboardingStorage,
+                                          ),
                                           style: TextButton.styleFrom(
                                             foregroundColor: _mutedWhite,
-                                            padding: const EdgeInsets.symmetric(
+                                            padding: EdgeInsets.symmetric(
                                               horizontal: 4,
                                               vertical: 12,
                                             ),
@@ -962,7 +1372,10 @@ class ReceptionOnboardingPage extends StatelessWidget {
                                         Navigator.of(context).push(
                                           MaterialPageRoute<void>(
                                             builder: (_) =>
-                                                const ReceptionControlOnboardingPage(),
+                                                ReceptionControlOnboardingPage(
+                                                  onboardingStorage:
+                                                      onboardingStorage,
+                                                ),
                                           ),
                                         );
                                       },
@@ -977,6 +1390,7 @@ class ReceptionOnboardingPage extends StatelessWidget {
                                         context,
                                         0,
                                         index,
+                                        onboardingStorage: onboardingStorage,
                                       ),
                                 ),
                                 if (kIsWeb) const _WebHomeIndicator(),
@@ -997,11 +1411,15 @@ class ReceptionOnboardingPage extends StatelessWidget {
 class _TabletRegistrationOnboardingLayout extends StatelessWidget {
   const _TabletRegistrationOnboardingLayout({
     required this.logoWidth,
+    required this.onboardingStorage,
     required this.onContinue,
+    required this.onSkip,
   });
 
   final double logoWidth;
+  final MobileOnboardingStorage? onboardingStorage;
   final VoidCallback onContinue;
+  final VoidCallback onSkip;
 
   @override
   Widget build(BuildContext context) {
@@ -1078,7 +1496,7 @@ class _TabletRegistrationOnboardingLayout extends StatelessWidget {
                         child: Align(
                           alignment: Alignment.centerLeft,
                           child: TextButton(
-                            onPressed: () {},
+                            onPressed: onSkip,
                             style: TextButton.styleFrom(
                               foregroundColor: _mutedWhite,
                               padding: EdgeInsets.zero,
@@ -1097,8 +1515,12 @@ class _TabletRegistrationOnboardingLayout extends StatelessWidget {
                           child: _PageIndicator(
                             key: ValueKey('tablet-registration-page-indicator'),
                             activeIndex: 0,
-                            onSelected: (index) =>
-                                _navigateToOnboardingPage(context, 0, index),
+                            onSelected: (index) => _navigateToOnboardingPage(
+                              context,
+                              0,
+                              index,
+                              onboardingStorage: onboardingStorage,
+                            ),
                           ),
                         ),
                       ),
@@ -1129,6 +1551,8 @@ class _TabletOnboardingSplitLayout extends StatelessWidget {
   const _TabletOnboardingSplitLayout({
     required this.step,
     required this.activeIndex,
+    required this.onboardingStorage,
+    required this.onSkip,
     required this.content,
     required this.action,
     required this.logoWidth,
@@ -1136,6 +1560,8 @@ class _TabletOnboardingSplitLayout extends StatelessWidget {
 
   final String step;
   final int activeIndex;
+  final MobileOnboardingStorage? onboardingStorage;
+  final VoidCallback onSkip;
   final Widget content;
   final Widget action;
   final double logoWidth;
@@ -1214,7 +1640,7 @@ class _TabletOnboardingSplitLayout extends StatelessWidget {
                             child: Align(
                               alignment: Alignment.centerLeft,
                               child: TextButton(
-                                onPressed: () {},
+                                onPressed: onSkip,
                                 style: TextButton.styleFrom(
                                   foregroundColor: _mutedWhite,
                                   padding: EdgeInsets.zero,
@@ -1238,6 +1664,7 @@ class _TabletOnboardingSplitLayout extends StatelessWidget {
                                       context,
                                       activeIndex,
                                       index,
+                                      onboardingStorage: onboardingStorage,
                                     ),
                               ),
                             ),
@@ -1456,7 +1883,9 @@ class _RegistrationOnboardingCopy extends StatelessWidget {
 }
 
 class ReceptionControlOnboardingPage extends StatelessWidget {
-  const ReceptionControlOnboardingPage({super.key});
+  const ReceptionControlOnboardingPage({super.key, this.onboardingStorage});
+
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -1464,6 +1893,7 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
     return Scaffold(
       body: _OnboardingSwipeDetector(
         activeIndex: 1,
+        onboardingStorage: onboardingStorage,
         child: _TabletLandscapeGuard(
           child: Stack(
             fit: StackFit.expand,
@@ -1530,6 +1960,9 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
                       return _TabletOnboardingSplitLayout(
                         step: '02',
                         activeIndex: 1,
+                        onboardingStorage: onboardingStorage,
+                        onSkip: () =>
+                            _finishOnboarding(context, onboardingStorage),
                         content: const _ControlOnboardingCopy(tablet: true),
                         action: _OnboardingContinueButton(
                           compact: compact,
@@ -1537,8 +1970,9 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    const ReceptionReadyOnboardingPage(),
+                                builder: (_) => ReceptionReadyOnboardingPage(
+                                  onboardingStorage: onboardingStorage,
+                                ),
                               ),
                             );
                           },
@@ -1589,7 +2023,10 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
                                 child: Align(
                                   alignment: Alignment.centerLeft,
                                   child: TextButton(
-                                    onPressed: () {},
+                                    onPressed: () => _finishOnboarding(
+                                      context,
+                                      onboardingStorage,
+                                    ),
                                     style: TextButton.styleFrom(
                                       foregroundColor: _mutedWhite,
                                       padding: const EdgeInsets.symmetric(
@@ -1607,7 +2044,10 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
                                   Navigator.of(context).push(
                                     MaterialPageRoute<void>(
                                       builder: (_) =>
-                                          const ReceptionReadyOnboardingPage(),
+                                          ReceptionReadyOnboardingPage(
+                                            onboardingStorage:
+                                                onboardingStorage,
+                                          ),
                                     ),
                                   );
                                 },
@@ -1617,8 +2057,12 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
                           SizedBox(height: compact ? 8 : 14),
                           _PageIndicator(
                             activeIndex: 1,
-                            onSelected: (index) =>
-                                _navigateToOnboardingPage(context, 1, index),
+                            onSelected: (index) => _navigateToOnboardingPage(
+                              context,
+                              1,
+                              index,
+                              onboardingStorage: onboardingStorage,
+                            ),
                           ),
                           if (kIsWeb) const _WebHomeIndicator(),
                         ],
@@ -1636,7 +2080,9 @@ class ReceptionControlOnboardingPage extends StatelessWidget {
 }
 
 class ReceptionReadyOnboardingPage extends StatelessWidget {
-  const ReceptionReadyOnboardingPage({super.key});
+  const ReceptionReadyOnboardingPage({super.key, this.onboardingStorage});
+
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -1644,6 +2090,7 @@ class ReceptionReadyOnboardingPage extends StatelessWidget {
     return Scaffold(
       body: _OnboardingSwipeDetector(
         activeIndex: 2,
+        onboardingStorage: onboardingStorage,
         child: _TabletLandscapeGuard(
           child: Stack(
             fit: StackFit.expand,
@@ -1692,8 +2139,13 @@ class ReceptionReadyOnboardingPage extends StatelessWidget {
                       return _TabletOnboardingSplitLayout(
                         step: '03',
                         activeIndex: 2,
+                        onboardingStorage: onboardingStorage,
+                        onSkip: () =>
+                            _finishOnboarding(context, onboardingStorage),
                         content: const _ReadyOnboardingCopy(tablet: true),
-                        action: const _LoginButton(),
+                        action: _LoginButton(
+                          onboardingStorage: onboardingStorage,
+                        ),
                         logoWidth: (constraints.maxWidth * 0.17)
                             .clamp(140.0, 220.0)
                             .toDouble(),
@@ -1741,7 +2193,10 @@ class ReceptionReadyOnboardingPage extends StatelessWidget {
                                 child: Align(
                                   alignment: Alignment.centerLeft,
                                   child: TextButton(
-                                    onPressed: () {},
+                                    onPressed: () => _finishOnboarding(
+                                      context,
+                                      onboardingStorage,
+                                    ),
                                     style: TextButton.styleFrom(
                                       foregroundColor: _mutedWhite,
                                       padding: const EdgeInsets.symmetric(
@@ -1753,14 +2208,20 @@ class ReceptionReadyOnboardingPage extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                              const _LoginButton(),
+                              _LoginButton(
+                                onboardingStorage: onboardingStorage,
+                              ),
                             ],
                           ),
                           SizedBox(height: compact ? 4 : 14),
                           _PageIndicator(
                             activeIndex: 2,
-                            onSelected: (index) =>
-                                _navigateToOnboardingPage(context, 2, index),
+                            onSelected: (index) => _navigateToOnboardingPage(
+                              context,
+                              2,
+                              index,
+                              onboardingStorage: onboardingStorage,
+                            ),
                           ),
                           if (kIsWeb && !compact) const _WebHomeIndicator(),
                         ],
@@ -1896,7 +2357,9 @@ class _ReadyOnboardingCopy extends StatelessWidget {
 }
 
 class _LoginButton extends StatelessWidget {
-  const _LoginButton();
+  const _LoginButton({this.onboardingStorage});
+
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -1919,13 +2382,7 @@ class _LoginButton extends StatelessWidget {
           color: Colors.transparent,
           child: InkWell(
             borderRadius: BorderRadius.circular(14),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => const ReceptionLoginPage(),
-                ),
-              );
-            },
+            onTap: () => _finishOnboarding(context, onboardingStorage),
             child: const Padding(
               padding: EdgeInsets.symmetric(horizontal: 12),
               child: FittedBox(
@@ -1972,17 +2429,64 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isSubmitting = false;
+  int _loginLockoutSeconds = 0;
+  DateTime? _loginLockoutEndsAt;
+  Timer? _loginLockoutTimer;
   String? _errorMessage;
 
   @override
   void dispose() {
+    _loginLockoutTimer?.cancel();
     _identifierController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
+  void _startLoginLockout(int retryAfterSeconds) {
+    if (retryAfterSeconds <= 0) return;
+    _loginLockoutTimer?.cancel();
+    _loginLockoutEndsAt = DateTime.now().add(
+      Duration(seconds: retryAfterSeconds),
+    );
+    setState(() => _loginLockoutSeconds = retryAfterSeconds);
+    _loginLockoutTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      final remaining = _loginLockoutEndsAt!
+          .difference(DateTime.now())
+          .inSeconds;
+      if (!mounted || remaining <= 0) {
+        timer.cancel();
+        if (mounted) {
+          setState(() {
+            _loginLockoutSeconds = 0;
+            _loginLockoutEndsAt = null;
+            _errorMessage = null;
+          });
+        }
+        return;
+      }
+      setState(() => _loginLockoutSeconds = remaining);
+    });
+  }
+
+  String get _loginLockoutLabel {
+    final minutes = (_loginLockoutSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_loginLockoutSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  Future<void> _openPasswordRecovery() async {
+    if (MediaQuery.sizeOf(context).shortestSide >= 600) return;
+    await showDialog<void>(
+      context: context,
+      barrierColor: const Color(0xC8010814),
+      builder: (_) => _PasswordRecoveryDialog(
+        authService: widget.authService ?? AuthService.shared,
+      ),
+    );
+  }
+
   Future<void> _submitLogin() async {
-    if (_isSubmitting) return;
+    if (_isSubmitting || _loginLockoutSeconds > 0) return;
     if (_identifierController.text.trim().isEmpty ||
         _passwordController.text.isEmpty) {
       setState(() {
@@ -2009,7 +2513,12 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
         ),
       );
     } on AuthApiException catch (error) {
-      if (mounted) setState(() => _errorMessage = error.message);
+      if (mounted) {
+        if (error.statusCode == 429 && error.retryAfterSeconds != null) {
+          _startLoginLockout(error.retryAfterSeconds!);
+        }
+        setState(() => _errorMessage = error.message);
+      }
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -2018,6 +2527,7 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       body: _TabletLandscapeGuard(
         child: Stack(
           fit: StackFit.expand,
@@ -2098,6 +2608,8 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                 identifierController: _identifierController,
                                 passwordController: _passwordController,
                                 isSubmitting: _isSubmitting,
+                                loginLockoutSeconds: _loginLockoutSeconds,
+                                loginLockoutLabel: _loginLockoutLabel,
                                 errorMessage: _errorMessage,
                                 onLogin: _submitLogin,
                                 onTogglePassword: () {
@@ -2159,7 +2671,10 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                           _identifierController,
                                       passwordController: _passwordController,
                                       isSubmitting: _isSubmitting,
+                                      loginLockoutSeconds: _loginLockoutSeconds,
+                                      loginLockoutLabel: _loginLockoutLabel,
                                       errorMessage: _errorMessage,
+                                      onForgotPassword: _openPasswordRecovery,
                                       onLogin: _submitLogin,
                                       onTogglePassword: () {
                                         setState(() {
@@ -2188,8 +2703,12 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
                                             onTap: () {
                                               Navigator.of(context).push(
                                                 MaterialPageRoute<void>(
-                                                  builder: (_) =>
-                                                      const WalkInVisitorPage(),
+                                                  builder: (_) => WalkInVisitorPage(
+                                                    authService:
+                                                        AuthService.shared,
+                                                    draftStorage:
+                                                        SecureVisitorKioskDraftStorage(),
+                                                  ),
                                                 ),
                                               );
                                             },
@@ -2212,12 +2731,373 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
   }
 }
 
+class _PasswordRecoveryDialog extends StatefulWidget {
+  const _PasswordRecoveryDialog({required this.authService});
+
+  final AuthService authService;
+
+  @override
+  State<_PasswordRecoveryDialog> createState() =>
+      _PasswordRecoveryDialogState();
+}
+
+class _PasswordRecoveryDialogState extends State<_PasswordRecoveryDialog> {
+  final _emailController = TextEditingController();
+  bool _isSubmitting = false;
+  String? _message;
+  String? _errorMessage;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_isSubmitting) return;
+    final email = _emailController.text.trim();
+    if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
+      setState(() {
+        _errorMessage = 'Escribe un correo electrónico válido.';
+        _message = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+      _errorMessage = null;
+      _message = null;
+    });
+    try {
+      final message = await widget.authService.requestPasswordRecovery(email);
+      if (!mounted) return;
+      setState(() => _message = message);
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _errorMessage = error.message);
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = MediaQuery.sizeOf(context).height * .9;
+    return Dialog(
+      key: const ValueKey('password-recovery-dialog'),
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 650, maxHeight: maxHeight),
+        child: Container(
+          padding: const EdgeInsets.all(1.2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(17),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF087FFF), Color(0xFF294B82), Color(0xFFD9263F)],
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x66000000),
+                blurRadius: 34,
+                offset: Offset(0, 20),
+              ),
+              BoxShadow(color: Color(0x220087FF), blurRadius: 28),
+            ],
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xFF061831),
+                  Color(0xFF07152C),
+                  Color(0xFF141327),
+                ],
+              ),
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 26, 20, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Align(
+                    alignment: Alignment.topRight,
+                    heightFactor: 0,
+                    child: IconButton(
+                      key: const ValueKey('password-recovery-close'),
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: IconButton.styleFrom(
+                        foregroundColor: const Color(0xFFBAD1EE),
+                        backgroundColor: const Color(0xFF0A2141),
+                        side: const BorderSide(color: Color(0xFF24446A)),
+                        minimumSize: const Size(36, 36),
+                      ),
+                      icon: const Icon(Icons.close_rounded, size: 20),
+                    ),
+                  ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF7F5E9F),
+                            width: 1.6,
+                          ),
+                          color: const Color(0xFF071831),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x552A8DFF), blurRadius: 16),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.lock_outline_rounded,
+                          color: Color(0xFFF4F8FF),
+                          size: 25,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: const [
+                            Text(
+                              'Recuperar contraseña',
+                              key: ValueKey('password-recovery-title'),
+                              style: TextStyle(
+                                color: Color(0xFFF7F9FD),
+                                fontSize: 21,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -.5,
+                              ),
+                            ),
+                            SizedBox(height: 5),
+                            Text(
+                              'No te preocupes, te ayudaremos a restablecerla. Ingresa el correo electrónico asociado a tu cuenta.',
+                              style: TextStyle(
+                                color: Color(0xFFB7C9DF),
+                                fontSize: 12,
+                                height: 1.45,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Divider(height: 1, color: Color(0xFF1B385D)),
+                  ),
+                  const Text(
+                    'Correo electrónico',
+                    style: TextStyle(
+                      color: Color(0xFFD9E8FB),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xD0020D1E),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: _errorMessage == null
+                            ? const Color(0xFF345B88)
+                            : const Color(0xFFD34B60),
+                      ),
+                    ),
+                    child: TextField(
+                      key: const ValueKey('password-recovery-email'),
+                      controller: _emailController,
+                      enabled: !_isSubmitting,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.send,
+                      autocorrect: false,
+                      onSubmitted: (_) => _submit(),
+                      style: const TextStyle(
+                        color: Color(0xFFF0F6FF),
+                        fontSize: 14,
+                      ),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(
+                          Icons.mail_outline_rounded,
+                          color: Color(0xFF9DCAFF),
+                          size: 21,
+                        ),
+                        hintText: 'Escribe tu correo electrónico',
+                        hintStyle: TextStyle(
+                          color: Color(0xFF849BB6),
+                          fontSize: 13,
+                        ),
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                  if (_errorMessage != null) ...[
+                    const SizedBox(height: 9),
+                    _PasswordRecoveryMessage(
+                      message: _errorMessage!,
+                      isError: true,
+                    ),
+                  ],
+                  if (_message != null) ...[
+                    const SizedBox(height: 9),
+                    _PasswordRecoveryMessage(message: _message!),
+                  ],
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    height: 50,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(9),
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFC91439), Color(0xFFED1742)],
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x44C51338),
+                            blurRadius: 15,
+                            offset: Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      child: ElevatedButton.icon(
+                        key: const ValueKey('password-recovery-submit'),
+                        onPressed: _isSubmitting ? null : _submit,
+                        style: ElevatedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          backgroundColor: Colors.transparent,
+                          disabledBackgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(9),
+                          ),
+                        ),
+                        icon: _isSubmitting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.send_rounded, size: 19),
+                        label: Text(
+                          _isSubmitting
+                              ? 'Enviando…'
+                              : 'Enviar enlace de recuperación',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xB80F315B),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFF214572)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.info_outline_rounded,
+                          color: Color(0xFF70B4FF),
+                          size: 20,
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Si el correo está asociado a una cuenta activa, recibirás un enlace válido por 10 minutos. Puedes solicitar uno nuevo cada 2 minutos, con un máximo de 3 solicitudes por hora.',
+                            style: TextStyle(
+                              color: Color(0xFFBFD0E6),
+                              fontSize: 11,
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextButton(
+                    key: const ValueKey('password-recovery-back'),
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF88BFFF),
+                    ),
+                    child: const Text(
+                      'Volver al inicio de sesión',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PasswordRecoveryMessage extends StatelessWidget {
+  const _PasswordRecoveryMessage({required this.message, this.isError = false});
+
+  final String message;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isError ? const Color(0xFFFF9EAC) : const Color(0xFF9BE0C3);
+    return Container(
+      key: ValueKey(
+        isError ? 'password-recovery-error' : 'password-recovery-success',
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isError ? const Color(0x22D9263F) : const Color(0x2216704F),
+        border: Border.all(
+          color: isError ? const Color(0xFF983B4C) : const Color(0xFF24765C),
+        ),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Text(
+        message,
+        style: TextStyle(color: color, fontSize: 12, height: 1.45),
+      ),
+    );
+  }
+}
+
 class _TabletLoginLayout extends StatelessWidget {
   const _TabletLoginLayout({
     required this.obscurePassword,
     required this.identifierController,
     required this.passwordController,
     required this.isSubmitting,
+    required this.loginLockoutSeconds,
+    required this.loginLockoutLabel,
     required this.errorMessage,
     required this.onLogin,
     required this.onTogglePassword,
@@ -2227,6 +3107,8 @@ class _TabletLoginLayout extends StatelessWidget {
   final TextEditingController identifierController;
   final TextEditingController passwordController;
   final bool isSubmitting;
+  final int loginLockoutSeconds;
+  final String loginLockoutLabel;
   final String? errorMessage;
   final VoidCallback onLogin;
   final VoidCallback onTogglePassword;
@@ -2311,6 +3193,8 @@ class _TabletLoginLayout extends StatelessWidget {
                                 identifierController: identifierController,
                                 passwordController: passwordController,
                                 isSubmitting: isSubmitting,
+                                loginLockoutSeconds: loginLockoutSeconds,
+                                loginLockoutLabel: loginLockoutLabel,
                                 errorMessage: errorMessage,
                                 onTogglePassword: onTogglePassword,
                                 onLogin: onLogin,
@@ -2381,7 +3265,10 @@ class _TabletLoginLayout extends StatelessWidget {
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (_) => const WalkInVisitorPage(),
+                          builder: (_) => WalkInVisitorPage(
+                            authService: AuthService.shared,
+                            draftStorage: SecureVisitorKioskDraftStorage(),
+                          ),
                         ),
                       );
                     },
@@ -2416,9 +3303,12 @@ class _LoginFormCard extends StatelessWidget {
     required this.identifierController,
     required this.passwordController,
     required this.isSubmitting,
+    required this.loginLockoutSeconds,
+    required this.loginLockoutLabel,
     required this.errorMessage,
     required this.onTogglePassword,
     required this.onLogin,
+    this.onForgotPassword,
     required this.compact,
     required this.veryCompact,
     this.tablet = false,
@@ -2428,9 +3318,12 @@ class _LoginFormCard extends StatelessWidget {
   final TextEditingController identifierController;
   final TextEditingController passwordController;
   final bool isSubmitting;
+  final int loginLockoutSeconds;
+  final String loginLockoutLabel;
   final String? errorMessage;
   final VoidCallback onTogglePassword;
   final VoidCallback onLogin;
+  final VoidCallback? onForgotPassword;
   final bool compact;
   final bool veryCompact;
   final bool tablet;
@@ -2560,24 +3453,6 @@ class _LoginFormCard extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        if (tablet) ...[
-                          Spacer(),
-                          Flexible(
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              alignment: Alignment.centerRight,
-                              child: Text(
-                                '¿Olvidaste tu contraseña?',
-                                textAlign: TextAlign.right,
-                                style: TextStyle(
-                                  color: Color(0xFFFF4A68),
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                     SizedBox(
@@ -2619,16 +3494,28 @@ class _LoginFormCard extends StatelessWidget {
                       ),
                     ),
                     if (!tablet) ...[
-                      SizedBox(height: 4),
+                      SizedBox(height: compact ? 2 : 4),
                       Align(
                         alignment: Alignment.centerRight,
-                        child: Text(
-                          '¿Olvidaste tu contraseña?',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(
-                            color: Color(0xFFFF4A68),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
+                        child: TextButton(
+                          key: const ValueKey('login-forgot-password'),
+                          onPressed: onForgotPassword,
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFFFF7189),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 2,
+                            ),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          child: const Text(
+                            '¿Olvidaste tu contraseña?',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
@@ -2643,9 +3530,9 @@ class _LoginFormCard extends StatelessWidget {
                     if (errorMessage != null) ...[
                       Container(
                         key: const ValueKey('login-error-message'),
-                        padding: const EdgeInsets.symmetric(
+                        padding: EdgeInsets.symmetric(
                           horizontal: 10,
-                          vertical: 7,
+                          vertical: loginLockoutSeconds > 0 ? 4 : 7,
                         ),
                         decoration: BoxDecoration(
                           color: const Color(0x33FF3155),
@@ -2655,11 +3542,15 @@ class _LoginFormCard extends StatelessWidget {
                         child: Text(
                           errorMessage!,
                           textAlign: TextAlign.center,
-                          maxLines: 2,
+                          maxLines: loginLockoutSeconds > 0 ? 1 : 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: const Color(0xFFFFB8C2),
-                            fontSize: tablet ? 14 : 12,
+                            fontSize: tablet
+                                ? 14
+                                : loginLockoutSeconds > 0
+                                ? 11
+                                : 12,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -2675,70 +3566,101 @@ class _LoginFormCard extends StatelessWidget {
                       child: Material(
                         color: Colors.transparent,
                         child: InkWell(
+                          key: const ValueKey('login-submit-action'),
                           borderRadius: BorderRadius.circular(14),
-                          onTap: isSubmitting ? null : onLogin,
+                          onTap: isSubmitting || loginLockoutSeconds > 0
+                              ? null
+                              : onLogin,
                           child: DecoratedBox(
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(14),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Color(0x99FF3155),
-                                  blurRadius: 10,
-                                  offset: Offset(-2, 0),
-                                ),
-                                BoxShadow(
-                                  color: Color(0x992F63FF),
-                                  blurRadius: 10,
-                                  offset: Offset(2, 0),
-                                ),
-                              ],
-                              gradient: const LinearGradient(
-                                colors: [
-                                  Color(0xFFFF3155),
-                                  Color(0xFFB80035),
-                                  Color(0xFFFF1744),
-                                ],
-                              ),
+                              boxShadow: loginLockoutSeconds > 0
+                                  ? null
+                                  : const [
+                                      BoxShadow(
+                                        color: Color(0x99FF3155),
+                                        blurRadius: 10,
+                                        offset: Offset(-2, 0),
+                                      ),
+                                      BoxShadow(
+                                        color: Color(0x992F63FF),
+                                        blurRadius: 10,
+                                        offset: Offset(2, 0),
+                                      ),
+                                    ],
+                              gradient: loginLockoutSeconds > 0
+                                  ? const LinearGradient(
+                                      colors: [
+                                        Color(0xFF4D566A),
+                                        Color(0xFF353D50),
+                                      ],
+                                    )
+                                  : const LinearGradient(
+                                      colors: [
+                                        Color(0xFFFF3155),
+                                        Color(0xFFB80035),
+                                        Color(0xFFFF1744),
+                                      ],
+                                    ),
                             ),
                             child: Center(
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (isSubmitting) ...[
-                                    SizedBox(
-                                      width: tablet ? 21 : 18,
-                                      height: tablet ? 21 : 18,
-                                      child: const CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (isSubmitting) ...[
+                                      SizedBox(
+                                        width: tablet ? 21 : 18,
+                                        height: tablet ? 21 : 18,
+                                        child: const CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Text(
-                                      'Validando...',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: tablet ? 20 : 14,
-                                        fontWeight: FontWeight.w700,
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        'Validando...',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: tablet ? 20 : 14,
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                       ),
-                                    ),
-                                  ] else ...[
-                                    Text(
-                                      'Iniciar sesión',
-                                      style: TextStyle(
+                                    ] else if (loginLockoutSeconds > 0) ...[
+                                      Icon(
+                                        Icons.lock_clock_rounded,
                                         color: Colors.white,
-                                        fontSize: tablet ? 20 : 14,
-                                        fontWeight: FontWeight.w700,
+                                        size: tablet ? 24 : 20,
                                       ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Icon(
-                                      Icons.arrow_forward_rounded,
-                                      color: Colors.white,
-                                      size: tablet ? 24 : 24,
-                                    ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Intenta de nuevo en $loginLockoutLabel',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: tablet ? 17 : 13,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ] else ...[
+                                      Text(
+                                        'Iniciar sesión',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: tablet ? 20 : 14,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Icon(
+                                        Icons.arrow_forward_rounded,
+                                        color: Colors.white,
+                                        size: tablet ? 24 : 24,
+                                      ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
                             ),
                           ),
@@ -3483,19 +4405,35 @@ class _PageIndicator extends StatelessWidget {
   }
 }
 
+Future<void> _finishOnboarding(
+  BuildContext context,
+  MobileOnboardingStorage? storage,
+) async {
+  final isPhone = !kIsWeb && MediaQuery.sizeOf(context).shortestSide < 600;
+  if (isPhone && storage != null) {
+    await storage.markOnboardingSeen();
+  }
+  if (!context.mounted) return;
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute<void>(builder: (_) => const ReceptionLoginPage()),
+    (_) => false,
+  );
+}
+
 void _navigateToOnboardingPage(
   BuildContext context,
   int currentIndex,
-  int targetIndex,
-) {
+  int targetIndex, {
+  MobileOnboardingStorage? onboardingStorage,
+}) {
   if (targetIndex == currentIndex || targetIndex < 0 || targetIndex > 2) {
     return;
   }
 
   final page = switch (targetIndex) {
-    0 => const ReceptionOnboardingPage(),
-    1 => const ReceptionControlOnboardingPage(),
-    _ => const ReceptionReadyOnboardingPage(),
+    0 => ReceptionOnboardingPage(onboardingStorage: onboardingStorage),
+    1 => ReceptionControlOnboardingPage(onboardingStorage: onboardingStorage),
+    _ => ReceptionReadyOnboardingPage(onboardingStorage: onboardingStorage),
   };
   final route = MaterialPageRoute<void>(builder: (_) => page);
   final navigator = Navigator.of(context);
@@ -3512,10 +4450,12 @@ class _OnboardingSwipeDetector extends StatefulWidget {
   const _OnboardingSwipeDetector({
     required this.activeIndex,
     required this.child,
+    this.onboardingStorage,
   });
 
   final int activeIndex;
   final Widget child;
+  final MobileOnboardingStorage? onboardingStorage;
 
   @override
   State<_OnboardingSwipeDetector> createState() =>
@@ -3537,12 +4477,14 @@ class _OnboardingSwipeDetectorState extends State<_OnboardingSwipeDetector> {
             context,
             widget.activeIndex,
             widget.activeIndex + 1,
+            onboardingStorage: widget.onboardingStorage,
           );
         } else if (_dragDistance < -72 && widget.activeIndex > 0) {
           _navigateToOnboardingPage(
             context,
             widget.activeIndex,
             widget.activeIndex - 1,
+            onboardingStorage: widget.onboardingStorage,
           );
         }
       },
@@ -3573,32 +4515,27 @@ class _WebHomeIndicator extends StatelessWidget {
 }
 
 class WalkInVisitorPage extends StatefulWidget {
-  const WalkInVisitorPage({super.key});
+  const WalkInVisitorPage({
+    super.key,
+    this.authService,
+    this.draftStorage,
+    this.allowExit = true,
+  });
+
+  final AuthService? authService;
+  final VisitorKioskDraftStorage? draftStorage;
+  final bool allowExit;
 
   @override
   State<WalkInVisitorPage> createState() => _WalkInVisitorPageState();
 }
 
 class _WalkInVisitorPageState extends State<WalkInVisitorPage> {
-  bool? _tabletOrientationConfigured;
   bool _walkInAssetsPrecached = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final size = MediaQuery.sizeOf(context);
-    final isTablet = size.shortestSide >= 600;
-    if (_tabletOrientationConfigured != isTablet) {
-      _tabletOrientationConfigured = isTablet;
-      SystemChrome.setPreferredOrientations(
-        isTablet
-            ? [
-                DeviceOrientation.landscapeLeft,
-                DeviceOrientation.landscapeRight,
-              ]
-            : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
-      );
-    }
     if (!_walkInAssetsPrecached) {
       _walkInAssetsPrecached = true;
       precacheImage(
@@ -3616,12 +4553,6 @@ class _WalkInVisitorPageState extends State<WalkInVisitorPage> {
     }
   }
 
-  @override
-  void dispose() {
-    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    super.dispose();
-  }
-
   void _back() {
     Navigator.of(context).pop();
   }
@@ -3630,19 +4561,32 @@ class _WalkInVisitorPageState extends State<WalkInVisitorPage> {
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: const Color(0xFF020817),
       body: size.shortestSide >= 600 && size.height > size.width
-          ? _WalkInRotatePrompt(onExit: _back, tablet: true)
-          : const _WalkInLandscapeKiosk(),
+          ? _WalkInRotatePrompt(
+              onExit: _back,
+              tablet: true,
+              allowExit: widget.allowExit,
+            )
+          : _WalkInLandscapeKiosk(
+              authService: widget.authService,
+              draftStorage: widget.draftStorage,
+            ),
     );
   }
 }
 
 class _WalkInRotatePrompt extends StatelessWidget {
-  const _WalkInRotatePrompt({required this.onExit, this.tablet = false});
+  const _WalkInRotatePrompt({
+    this.onExit,
+    this.tablet = false,
+    this.allowExit = true,
+  });
 
-  final VoidCallback onExit;
+  final VoidCallback? onExit;
   final bool tablet;
+  final bool allowExit;
 
   @override
   Widget build(BuildContext context) {
@@ -3705,12 +4649,14 @@ class _WalkInRotatePrompt extends StatelessWidget {
                       height: 1.45,
                     ),
                   ),
-                  const SizedBox(height: 26),
-                  TextButton.icon(
-                    onPressed: onExit,
-                    icon: const Icon(Icons.arrow_back_rounded),
-                    label: const Text('Volver al inicio de sesión'),
-                  ),
+                  if (allowExit && onExit != null) ...[
+                    const SizedBox(height: 26),
+                    TextButton.icon(
+                      onPressed: onExit,
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      label: const Text('Volver al inicio de sesión'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -3722,7 +4668,10 @@ class _WalkInRotatePrompt extends StatelessWidget {
 }
 
 class _WalkInLandscapeKiosk extends StatefulWidget {
-  const _WalkInLandscapeKiosk();
+  const _WalkInLandscapeKiosk({this.authService, this.draftStorage});
+
+  final AuthService? authService;
+  final VisitorKioskDraftStorage? draftStorage;
 
   @override
   State<_WalkInLandscapeKiosk> createState() => _WalkInLandscapeKioskState();
@@ -3875,9 +4824,376 @@ class _TabletKioskWelcomeCopy extends StatelessWidget {
 class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
   bool _started = false;
   int _tabletStep = 1;
+  bool _restoringDraft = true;
+  bool _submitting = false;
+  bool _publicGeneral = false;
+  bool? _carriesItems;
+  List<String> _identificationTypes = [];
+  String? _errorMessage;
+  String _idempotencyKey = '';
+  String? _folio;
+  String _authorizationStatus = 'Pendiente';
+  bool _entryChecklistComplete = false;
+  bool _entered = false;
+  List<Map<String, Object?>> _items = [];
+  Map<String, Object?> _editingItem = {};
+  Timer? _statusTimer;
+  Timer? _realtimeReconnectTimer;
+  Timer? _draftSaveTimer;
+  StreamSubscription<RealtimeEvent>? _realtimeSubscription;
+  bool _statusRefreshInProgress = false;
+  final _visitorNameController = TextEditingController();
+  final _companyController = TextEditingController();
+  final _reasonController = TextEditingController();
+
+  VisitorKioskDraftStorage? get _draftStorage => widget.draftStorage;
+  AuthService get _authService => widget.authService ?? AuthService.shared;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreDraft();
+    _visitorNameController.addListener(_scheduleDraftSave);
+    _companyController.addListener(_scheduleDraftSave);
+    _reasonController.addListener(_scheduleDraftSave);
+  }
+
+  @override
+  void dispose() {
+    _statusTimer?.cancel();
+    _realtimeReconnectTimer?.cancel();
+    _realtimeSubscription?.cancel();
+    _draftSaveTimer?.cancel();
+    _visitorNameController.dispose();
+    _companyController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _restoreDraft() async {
+    final storage = _draftStorage;
+    if (storage == null) {
+      if (mounted) setState(() => _restoringDraft = false);
+      return;
+    }
+    try {
+      final draft = await storage.readDraft();
+      if (!mounted) return;
+      if (draft != null) {
+        _visitorNameController.text = '${draft['visitorName'] ?? ''}';
+        _companyController.text = '${draft['companyName'] ?? ''}';
+        _reasonController.text = '${draft['visitReason'] ?? ''}';
+        _started = draft['started'] == true;
+        _tabletStep =
+            (draft['step'] is num ? (draft['step'] as num).toInt() : 1).clamp(
+              1,
+              5,
+            );
+        _publicGeneral = draft['publicGeneral'] == true;
+        _carriesItems = draft['carriesItems'] as bool?;
+        final savedIdentificationTypes = draft['identificationTypes'];
+        _identificationTypes = savedIdentificationTypes is List
+            ? savedIdentificationTypes.whereType<String>().toList()
+            : draft['identificationType'] is String
+            ? [draft['identificationType'] as String]
+            : [];
+        _idempotencyKey = '${draft['idempotencyKey'] ?? ''}';
+        _folio = draft['folio'] as String?;
+        _authorizationStatus = '${draft['authorizationStatus'] ?? 'Pendiente'}';
+        _entryChecklistComplete = draft['entryChecklistComplete'] == true;
+        _entered = draft['entered'] == true;
+        _items = (draft['items'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map((item) => Map<String, Object?>.from(item))
+            .toList();
+        _editingItem = Map<String, Object?>.from(
+          draft['editingItem'] as Map? ?? const {},
+        );
+        _started = _started || _tabletStep > 1;
+        if (_idempotencyKey.isNotEmpty && _folio != null) {
+          _tabletStep = 5;
+          _pollRegistrationStatus();
+        }
+      }
+      setState(() => _restoringDraft = false);
+    } on PlatformException {
+      if (mounted) {
+        setState(() {
+          _restoringDraft = false;
+          _errorMessage =
+              'No se pudo recuperar el avance guardado en este dispositivo.';
+        });
+      }
+    } on AuthApiException catch (error) {
+      if (mounted) {
+        setState(() {
+          _restoringDraft = false;
+          _errorMessage = error.message;
+        });
+      }
+    } on FormatException {
+      if (mounted) {
+        setState(() {
+          _restoringDraft = false;
+          _errorMessage =
+              'El avance guardado está dañado. Inicia un registro nuevo.';
+        });
+      }
+    } on TypeError {
+      if (mounted) {
+        setState(() {
+          _restoringDraft = false;
+          _errorMessage =
+              'El avance guardado no es válido. Inicia un registro nuevo.';
+        });
+      }
+    }
+  }
+
+  Map<String, dynamic> _draftData() => {
+    'started': _started,
+    'step': _tabletStep,
+    'visitorName': _visitorNameController.text,
+    'companyName': _companyController.text,
+    'visitReason': _reasonController.text,
+    'publicGeneral': _publicGeneral,
+    'carriesItems': _carriesItems,
+    'items': _items,
+    'editingItem': _editingItem,
+    'identificationTypes': _identificationTypes,
+    'idempotencyKey': _idempotencyKey,
+    'folio': _folio,
+    'authorizationStatus': _authorizationStatus,
+    'entryChecklistComplete': _entryChecklistComplete,
+    'entered': _entered,
+  };
+
+  void _scheduleDraftSave() {
+    if (_draftStorage == null || _restoringDraft || _tabletStep == 5) return;
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(const Duration(milliseconds: 350), _saveDraft);
+  }
+
+  Future<bool> _saveDraft() async {
+    final storage = _draftStorage;
+    if (storage == null) return true;
+    try {
+      await storage.saveDraft(_draftData());
+      return true;
+    } on PlatformException {
+      if (!mounted) return false;
+      setState(() {
+        _errorMessage =
+            'No se pudo guardar el avance. Mantén esta pantalla abierta.';
+      });
+      return false;
+    }
+  }
+
+  Future<void> _advanceTo(int step) async {
+    final previousStep = _tabletStep;
+    setState(() {
+      _tabletStep = step;
+      _errorMessage = null;
+    });
+    if (!await _saveDraft()) {
+      if (mounted) setState(() => _tabletStep = previousStep);
+      return;
+    }
+  }
+
+  Future<void> _submitRegistration() async {
+    if (_submitting) return;
+    if (_visitorNameController.text.trim().isEmpty ||
+        _companyController.text.trim().isEmpty ||
+        _reasonController.text.trim().isEmpty ||
+        _carriesItems == null ||
+        (_carriesItems == true && _items.isEmpty) ||
+        _identificationTypes.isEmpty) {
+      setState(() {
+        _errorMessage = 'Completa los datos obligatorios antes de enviar.';
+      });
+      return;
+    }
+    if (_idempotencyKey.isEmpty) _idempotencyKey = _newIdempotencyKey();
+    setState(() {
+      _submitting = true;
+      _errorMessage = null;
+    });
+    if (!await _saveDraft()) {
+      if (mounted) setState(() => _submitting = false);
+      return;
+    }
+    try {
+      final result = await _authService.createVisitorKioskRegistration(
+        idempotencyKey: _idempotencyKey,
+        registration: {
+          'visitorName': _visitorNameController.text.trim(),
+          'companyName': _companyController.text.trim(),
+          'visitReason': _reasonController.text.trim(),
+          'carriesItems': _carriesItems,
+          'items': _items,
+          'identificationTypes': _identificationTypes,
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _folio = result['folio'] as String;
+        _visitorNameController.text = result['visitorName'] as String;
+        _tabletStep = 5;
+        _submitting = false;
+      });
+      await _saveDraft();
+      _pollRegistrationStatus();
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _errorMessage = error.message;
+      });
+    }
+  }
+
+  String _newIdempotencyKey() {
+    final bytes = List<int>.generate(
+      16,
+      (_) => math.Random.secure().nextInt(256),
+    );
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    final hex = bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+  }
+
+  void _pollRegistrationStatus() {
+    _statusTimer?.cancel();
+    _connectRealtimeUpdates();
+    _refreshRegistrationStatus();
+    _statusTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _refreshRegistrationStatus(),
+    );
+  }
+
+  void _connectRealtimeUpdates() {
+    if (!mounted || _idempotencyKey.isEmpty) return;
+    _realtimeReconnectTimer?.cancel();
+    _realtimeSubscription?.cancel();
+    try {
+      _realtimeSubscription = _authService
+          .watchVisitorKioskUpdates(_idempotencyKey)
+          .listen(
+            (event) {
+              if (event == RealtimeEvent.update) _refreshRegistrationStatus();
+            },
+            onError: (Object error, StackTrace stackTrace) {
+              debugPrint('Se interrumpió la actualización del kiosco: $error');
+              _scheduleRealtimeReconnect();
+            },
+            onDone: _scheduleRealtimeReconnect,
+          );
+    } on AuthApiException catch (error) {
+      setState(() => _errorMessage = error.message);
+      _scheduleRealtimeReconnect();
+    }
+  }
+
+  void _scheduleRealtimeReconnect() {
+    if (!mounted ||
+        _idempotencyKey.isEmpty ||
+        _realtimeReconnectTimer != null) {
+      return;
+    }
+    _realtimeReconnectTimer = Timer(const Duration(seconds: 3), () {
+      _realtimeReconnectTimer = null;
+      _connectRealtimeUpdates();
+    });
+  }
+
+  Future<void> _refreshRegistrationStatus() async {
+    if (_idempotencyKey.isEmpty || !mounted || _statusRefreshInProgress) {
+      return;
+    }
+    _statusRefreshInProgress = true;
+    try {
+      final status = await _authService.getVisitorKioskStatus(_idempotencyKey);
+      if (!mounted) return;
+      setState(() {
+        _folio = status['folio'] as String;
+        _authorizationStatus = status['authorizationStatus'] as String;
+        _entryChecklistComplete = status['entryChecklistComplete'] as bool;
+        _entered = status['entered'] as bool;
+        _visitorNameController.text = status['visitorName'] as String;
+        _errorMessage = null;
+      });
+      await _saveDraft();
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _errorMessage = error.message);
+    } finally {
+      _statusRefreshInProgress = false;
+    }
+  }
+
+  Future<void> _startNewWalkIn() async {
+    _statusTimer?.cancel();
+    _realtimeReconnectTimer?.cancel();
+    await _realtimeSubscription?.cancel();
+    _realtimeSubscription = null;
+    try {
+      await _draftStorage?.clearDraft();
+    } on PlatformException {
+      if (mounted) {
+        setState(() {
+          _errorMessage =
+              'No se pudo limpiar el avance anterior. Inténtalo de nuevo.';
+        });
+        if (_tabletStep == 5) _pollRegistrationStatus();
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _started = false;
+      _tabletStep = 1;
+      _visitorNameController.clear();
+      _companyController.clear();
+      _reasonController.clear();
+      _publicGeneral = false;
+      _carriesItems = null;
+      _items = [];
+      _editingItem = {};
+      _identificationTypes = [];
+      _idempotencyKey = '';
+      _folio = null;
+      _authorizationStatus = 'Pendiente';
+      _entryChecklistComplete = false;
+      _entered = false;
+      _errorMessage = null;
+    });
+  }
+
+  Future<void> _goHome() async {
+    if ((_authorizationStatus == 'Autorizada' && _entryChecklistComplete) ||
+        _authorizationStatus == 'Rechazada') {
+      await _startNewWalkIn();
+      return;
+    }
+    setState(() => _started = false);
+    if (!await _saveDraft() && mounted) {
+      setState(() => _started = true);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (_restoringDraft) {
+      return const Center(
+        child: CircularProgressIndicator(color: Color(0xFF168BFF)),
+      );
+    }
     final size = MediaQuery.sizeOf(context);
     if (size.width < 240 || size.height < 160) {
       return const SizedBox.expand();
@@ -3937,29 +5253,115 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
                       final cardHeight = cardWidth / (1191 / 719);
                       final formContent = _tabletStep == 1
                           ? _TabletWalkInForm(
-                              onPrevious: () =>
-                                  setState(() => _started = false),
-                              onContinue: () => setState(() => _tabletStep = 2),
+                              nameController: _visitorNameController,
+                              companyController: _companyController,
+                              reasonController: _reasonController,
+                              publicGeneral: _publicGeneral,
+                              onPublicGeneral: () {
+                                setState(() {
+                                  _publicGeneral = !_publicGeneral;
+                                  _companyController.text = _publicGeneral
+                                      ? 'Público general'
+                                      : '';
+                                });
+                              },
+                              onPrevious: _startNewWalkIn,
+                              onContinue: () {
+                                if (_visitorNameController.text
+                                        .trim()
+                                        .isEmpty ||
+                                    _companyController.text.trim().isEmpty ||
+                                    _reasonController.text.trim().isEmpty) {
+                                  setState(() {
+                                    _errorMessage = 'Completa tu nombre, empresa o procedencia y motivo de visita.';
+                                  });
+                                  return;
+                                }
+                                _advanceTo(2);
+                              },
+                              errorMessage: _errorMessage,
                             )
                           : _tabletStep == 2
                           ? _TabletWalkInEquipmentStep(
-                              onPrevious: () => setState(() => _tabletStep = 1),
-                              onContinue: () => setState(() => _tabletStep = 3),
+                              initialCarriesItems: _carriesItems,
+                              initialItems: _items,
+                              initialEditingItem: _editingItem,
+                              onChanged: (carriesItems, items, editingItem) {
+                                _carriesItems = carriesItems;
+                                _items = items;
+                                _editingItem = editingItem;
+                                _scheduleDraftSave();
+                              },
+                              onPrevious: () => _advanceTo(1),
+                              onContinue: () {
+                                if (_carriesItems == null ||
+                                    (_carriesItems == true && _items.isEmpty)) {
+                                  setState(() {
+                                    _errorMessage = 'Indica si llevas artículos y agrega al menos uno si seleccionaste que sí.';
+                                  });
+                                  return;
+                                }
+                                _advanceTo(3);
+                              },
                             )
                           : _tabletStep == 3
                           ? _TabletWalkInIdentificationStep(
-                              onPrevious: () => setState(() => _tabletStep = 2),
-                              onContinue: () => setState(() => _tabletStep = 4),
-                            )
-                          : _TabletWalkInReviewStep(
-                              onPrevious: () => setState(() => _tabletStep = 3),
-                              onSubmit: () {
-                                AppFeedback.show(
-                                  context,
-                                  'El envío del registro aún no está conectado.',
-                                  type: AppFeedbackType.warning,
-                                );
+                              initialTypes: _identificationTypes,
+                              onChanged: (types) {
+                                _identificationTypes = types;
+                                _scheduleDraftSave();
                               },
+                              onPrevious: () => _advanceTo(2),
+                              onContinue: () {
+                                if (_identificationTypes.isEmpty) {
+                                  setState(() {
+                                    _errorMessage = 'Selecciona al menos un tipo de identificación.';
+                                  });
+                                  return;
+                                }
+                                _advanceTo(4);
+                              },
+                            )
+                          : _tabletStep == 4
+                          ? _TabletWalkInReviewStep(
+                              onPrevious: () => _advanceTo(3),
+                              onSubmit: _submitRegistration,
+                              submitting: _submitting,
+                              errorMessage: _errorMessage,
+                              summary: [
+                                (
+                                  label: 'NOMBRE',
+                                  value: _visitorNameController.text.trim(),
+                                ),
+                                (
+                                  label: 'EMPRESA O PROCEDENCIA',
+                                  value: _companyController.text.trim(),
+                                ),
+                                (
+                                  label: 'ASUNTO',
+                                  value: _reasonController.text.trim(),
+                                ),
+                                (
+                                  label: 'EQUIPO Y HERRAMIENTAS',
+                                  value: _carriesItems == true
+                                      ? '${_items.length} artículo(s)'
+                                      : 'No lleva artículos',
+                                ),
+                                (
+                                  label: 'IDENTIFICACIÓN',
+                                  value: _identificationTypes.join(', '),
+                                ),
+                              ],
+                            )
+                          : _TabletWalkInConfirmationStep(
+                              visitorName: _visitorNameController.text,
+                              folio: _folio ?? '',
+                              authorizationStatus: _authorizationStatus,
+                              entryChecklistComplete: _entryChecklistComplete,
+                              entered: _entered,
+                              hasItems: _carriesItems == true,
+                              errorMessage: _errorMessage,
+                              onHome: _goHome,
                             );
                       final card = Container(
                         key: const ValueKey('tablet-walk-in-form-card'),
@@ -4059,7 +5461,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
                               children: [
                                 Icon(
                                   Icons.person_add_alt_1_rounded,
-                                  color: const Color(0xFF087FFF),
+                                  color: Color(0xFF087FFF),
                                   size: 17,
                                 ),
                                 SizedBox(width: 7),
@@ -4452,6 +5854,319 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
   }
 }
 
+class _TabletWalkInConfirmationStep extends StatelessWidget {
+  const _TabletWalkInConfirmationStep({
+    required this.visitorName,
+    required this.folio,
+    required this.authorizationStatus,
+    required this.entryChecklistComplete,
+    required this.entered,
+    required this.hasItems,
+    required this.onHome,
+    this.errorMessage,
+  });
+
+  final String visitorName;
+  final String folio;
+  final String authorizationStatus;
+  final bool entryChecklistComplete;
+  final bool entered;
+  final bool hasItems;
+  final String? errorMessage;
+  final VoidCallback onHome;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = (constraints.maxWidth / 1180).clamp(.62, 1.08);
+        final rejected = authorizationStatus == 'Rechazada';
+        final complete =
+            authorizationStatus == 'Autorizada' && entryChecklistComplete;
+        final waitingChecklist =
+            authorizationStatus == 'Autorizada' &&
+            hasItems &&
+            !entryChecklistComplete;
+        final title = rejected
+            ? 'Visita no autorizada'
+            : complete
+            ? 'Visita registrada correctamente'
+            : waitingChecklist
+            ? 'Esperando revisión del checklist'
+            : 'Esperando autorización de entrada';
+        final detail = rejected
+            ? 'Recepción no autorizó el ingreso. Acércate al personal para recibir indicaciones.'
+            : complete
+            ? 'Tu registro y la revisión de entrada quedaron confirmados. Sigue las indicaciones del personal de recepción.'
+            : waitingChecklist
+            ? 'Recepción autorizó la visita. Ahora está verificando el equipo y las herramientas declaradas.'
+            : 'Tu llegada quedó anotada. Espera mientras recepción revisa tu registro${hasItems ? ' y el checklist de equipos' : ''}.';
+        final accent = rejected
+            ? const Color(0xFFFF7189)
+            : complete
+            ? const Color(0xFF55D6B2)
+            : const Color(0xFF72C2FF);
+
+        return Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  54 * scale,
+                  30 * scale,
+                  54 * scale,
+                  16 * scale,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 76 * scale,
+                      height: 76 * scale,
+                      decoration: BoxDecoration(
+                        color: const Color(0xB8071A32),
+                        borderRadius: BorderRadius.circular(20 * scale),
+                        border: Border.all(
+                          color: accent.withValues(alpha: .75),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: accent.withValues(alpha: .22),
+                            blurRadius: 22 * scale,
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        rejected
+                            ? Icons.cancel_outlined
+                            : complete
+                            ? Icons.verified_rounded
+                            : Icons.schedule_rounded,
+                        color: accent,
+                        size: 42 * scale,
+                      ),
+                    ),
+                    SizedBox(height: 12 * scale),
+                    Text(
+                      rejected
+                          ? 'ESTADO DE LA VISITA'
+                          : complete
+                          ? 'REGISTRO CONFIRMADO'
+                          : 'AUTORIZACIÓN EN PROCESO',
+                      style: TextStyle(
+                        color: const Color(0xFFBFD7FF),
+                        fontSize: 12 * scale,
+                        letterSpacing: 1.3 * scale,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(height: 18 * scale),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 720),
+                      child: Text(
+                        title,
+                        key: const ValueKey('tablet-walk-in-status-title'),
+                        style: TextStyle(
+                          color: const Color(0xFFF4F7FF),
+                          fontSize: 48 * scale,
+                          height: 1.08,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -1.2 * scale,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      margin: EdgeInsets.only(
+                        top: 18 * scale,
+                        bottom: 20 * scale,
+                      ),
+                      width: 134 * scale,
+                      height: 4 * scale,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8 * scale),
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFF3155), Color(0xFF087FFF)],
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 20 * scale,
+                        vertical: 13 * scale,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xD50A1E37),
+                        borderRadius: BorderRadius.circular(12 * scale),
+                        border: Border.all(color: const Color(0xAA2878B4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'FOLIO DE VISITANTE',
+                            style: TextStyle(
+                              color: const Color(0xFF7DBDF3),
+                              fontSize: 10 * scale,
+                              letterSpacing: 1.3 * scale,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          SizedBox(height: 4 * scale),
+                          Text(
+                            folio.isEmpty
+                                ? '— — — — — — — —'
+                                : folio.split('').join(' '),
+                            key: const ValueKey('tablet-walk-in-folio'),
+                            style: TextStyle(
+                              color: const Color(0xFFF4F7FF),
+                              fontSize: 28 * scale,
+                              letterSpacing: 3 * scale,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 12 * scale),
+                    Text(
+                      visitorName,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 15 * scale,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 12 * scale),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 650),
+                      child: Text(
+                        detail,
+                        style: TextStyle(
+                          color: const Color(0xFFCBD8EB),
+                          fontSize: 14 * scale,
+                          height: 1.55,
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: 15 * scale),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 12 * scale,
+                        vertical: 10 * scale,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xAA0A2039),
+                        borderRadius: BorderRadius.circular(9 * scale),
+                        border: Border.all(color: accent.withValues(alpha: .5)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (!complete && !rejected)
+                            SizedBox(
+                              width: 18 * scale,
+                              height: 18 * scale,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2 * scale,
+                                color: accent,
+                              ),
+                            )
+                          else
+                            Icon(
+                              complete
+                                  ? Icons.check_circle_outline_rounded
+                                  : Icons.info_outline_rounded,
+                              color: accent,
+                              size: 19 * scale,
+                            ),
+                          SizedBox(width: 10 * scale),
+                          Flexible(
+                            child: Text(
+                              errorMessage ??
+                                  (complete
+                                      ? 'Autorización y checklist completados por recepción.'
+                                      : rejected
+                                      ? 'Consulta con recepción para continuar.'
+                                      : waitingChecklist
+                                      ? 'Esperando checklist de entrada por recepción…'
+                                      : 'Esperando autorización de entrada por recepción…'),
+                              style: TextStyle(
+                                color: const Color(0xFFD8E4F6),
+                                fontSize: 12 * scale,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (entered && complete)
+                      Padding(
+                        padding: EdgeInsets.only(top: 10 * scale),
+                        child: Text(
+                          'Tu entrada ya quedó registrada.',
+                          style: TextStyle(
+                            color: const Color(0xFF68E0BD),
+                            fontSize: 12 * scale,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Container(height: 1, color: const Color(0x553C8DDB)),
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                54 * scale,
+                16 * scale,
+                54 * scale,
+                18 * scale,
+              ),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(11 * scale),
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF087FFF), Color(0xFFFF3155)],
+                    ),
+                  ),
+                  child: ElevatedButton.icon(
+                    key: const ValueKey('tablet-walk-in-home-button'),
+                    onPressed: onHome,
+                    style: ElevatedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 18 * scale,
+                        vertical: 13 * scale,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10 * scale),
+                      ),
+                    ),
+                    icon: Icon(Icons.home_rounded, size: 19 * scale),
+                    label: Text(
+                      'Inicio',
+                      style: TextStyle(
+                        fontSize: 14 * scale,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _TabletKioskWelcomePanel extends StatelessWidget {
   const _TabletKioskWelcomePanel({required this.onStart});
 
@@ -4633,12 +6348,45 @@ class _WalkInTabletHeader extends StatelessWidget {
         padding: EdgeInsets.symmetric(horizontal: 44 * scale),
         child: Row(
           children: [
-            Image.asset(
-              'assets/images/cymez-visitor-logo.webp',
-              key: const ValueKey('walk-in-tablet-brand-logo'),
+            SizedBox(
               width: 64 * scale,
               height: 72 * scale,
-              fit: BoxFit.contain,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned(
+                    left: -8 * scale,
+                    top: -8 * scale,
+                    right: -8 * scale,
+                    bottom: -8 * scale,
+                    child: ImageFiltered(
+                      imageFilter: ui.ImageFilter.blur(
+                        sigmaX: 6 * scale,
+                        sigmaY: 6 * scale,
+                      ),
+                      child: ColorFiltered(
+                        colorFilter: const ColorFilter.mode(
+                          Color(0xB3006FFF),
+                          BlendMode.srcIn,
+                        ),
+                        child: Image.asset(
+                          'assets/images/cymez-visitor-logo.webp',
+                          width: 80 * scale,
+                          height: 88 * scale,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Image.asset(
+                    'assets/images/cymez-visitor-logo.webp',
+                    key: const ValueKey('walk-in-tablet-brand-logo'),
+                    width: 64 * scale,
+                    height: 72 * scale,
+                    fit: BoxFit.contain,
+                  ),
+                ],
+              ),
             ),
             SizedBox(width: 12 * scale),
             Column(
@@ -4937,10 +6685,25 @@ class _WalkInForm extends StatelessWidget {
 }
 
 class _TabletWalkInForm extends StatelessWidget {
-  const _TabletWalkInForm({required this.onPrevious, required this.onContinue});
+  const _TabletWalkInForm({
+    required this.nameController,
+    required this.companyController,
+    required this.reasonController,
+    required this.publicGeneral,
+    required this.onPublicGeneral,
+    required this.onPrevious,
+    required this.onContinue,
+    this.errorMessage,
+  });
 
+  final TextEditingController nameController;
+  final TextEditingController companyController;
+  final TextEditingController reasonController;
+  final bool publicGeneral;
+  final VoidCallback onPublicGeneral;
   final VoidCallback onPrevious;
   final VoidCallback onContinue;
+  final String? errorMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -5066,6 +6829,7 @@ class _TabletWalkInForm extends StatelessWidget {
                   hint: 'Escribe el nombre completo',
                   icon: Icons.person_outline_rounded,
                   scale: scale,
+                  controller: nameController,
                 ),
                 SizedBox(height: 18 * scale),
                 _TabletWalkInField(
@@ -5073,6 +6837,7 @@ class _TabletWalkInForm extends StatelessWidget {
                   hint: 'Escribe empresa o procedencia',
                   icon: Icons.business_outlined,
                   scale: scale,
+                  controller: companyController,
                 ),
                 SizedBox(height: 10 * scale),
                 Text(
@@ -5085,11 +6850,18 @@ class _TabletWalkInForm extends StatelessWidget {
                 ),
                 SizedBox(height: 10 * scale),
                 OutlinedButton.icon(
-                  onPressed: () {},
+                  key: const ValueKey('tablet-walk-in-public-general'),
+                  onPressed: onPublicGeneral,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
-                    side: const BorderSide(color: Color(0xFF087FFF)),
-                    backgroundColor: const Color(0xCC07172E),
+                    side: BorderSide(
+                      color: publicGeneral
+                          ? const Color(0xFFFF3155)
+                          : const Color(0xFF087FFF),
+                    ),
+                    backgroundColor: publicGeneral
+                        ? const Color(0xCC3A172E)
+                        : const Color(0xCC07172E),
                     padding: EdgeInsets.symmetric(
                       horizontal: 16 * scale,
                       vertical: 10 * scale,
@@ -5104,7 +6876,9 @@ class _TabletWalkInForm extends StatelessWidget {
                     size: 18 * scale,
                   ),
                   label: Text(
-                    'Soy público general',
+                    publicGeneral
+                        ? 'Público general seleccionado'
+                        : 'Soy público general',
                     style: TextStyle(
                       fontSize: 13 * scale,
                       fontWeight: FontWeight.w800,
@@ -5118,7 +6892,19 @@ class _TabletWalkInForm extends StatelessWidget {
                   icon: Icons.chat_bubble_outline_rounded,
                   maxLines: 2,
                   scale: scale,
+                  controller: reasonController,
                 ),
+                if (errorMessage != null) ...[
+                  SizedBox(height: 12 * scale),
+                  Text(
+                    errorMessage!,
+                    style: TextStyle(
+                      color: const Color(0xFFFF7189),
+                      fontSize: 12 * scale,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
                 SizedBox(height: 24 * scale),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -5196,10 +6982,23 @@ class _TabletWalkInEquipmentStep extends StatefulWidget {
   const _TabletWalkInEquipmentStep({
     required this.onPrevious,
     required this.onContinue,
+    required this.initialCarriesItems,
+    required this.initialItems,
+    required this.initialEditingItem,
+    required this.onChanged,
   });
 
   final VoidCallback onPrevious;
   final VoidCallback onContinue;
+  final bool? initialCarriesItems;
+  final List<Map<String, Object?>> initialItems;
+  final Map<String, Object?> initialEditingItem;
+  final void Function(
+    bool? carriesItems,
+    List<Map<String, Object?>> items,
+    Map<String, Object?> editingItem,
+  )
+  onChanged;
 
   @override
   State<_TabletWalkInEquipmentStep> createState() =>
@@ -5214,10 +7013,57 @@ class _TabletWalkInEquipmentStepState
   final _modelController = TextEditingController();
   final _serialController = TextEditingController();
   final _colorController = TextEditingController();
-  final List<String> _items = [];
+  final List<Map<String, Object?>> _items = [];
   String _type = 'Equipo';
   bool? _bringsEquipment;
   String? _validationMessage;
+  int? _editingItemIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _bringsEquipment = widget.initialCarriesItems;
+    _items.addAll(
+      widget.initialItems.map((item) => Map<String, Object?>.from(item)),
+    );
+    _editingItemIndex = widget.initialEditingItem['index'] as int?;
+    _type = '${widget.initialEditingItem['type'] ?? 'Equipo'}';
+    _nameController.text = '${widget.initialEditingItem['description'] ?? ''}';
+    _quantityController.text =
+        '${widget.initialEditingItem['quantity'] ?? '1'}';
+    _brandController.text = '${widget.initialEditingItem['brand'] ?? ''}';
+    _modelController.text = '${widget.initialEditingItem['model'] ?? ''}';
+    _serialController.text =
+        '${widget.initialEditingItem['serialNumber'] ?? ''}';
+    _colorController.text = '${widget.initialEditingItem['color'] ?? ''}';
+    for (final controller in [
+      _nameController,
+      _quantityController,
+      _brandController,
+      _modelController,
+      _serialController,
+      _colorController,
+    ]) {
+      controller.addListener(_notifyDraft);
+    }
+  }
+
+  void _notifyDraft() {
+    widget.onChanged(
+      _bringsEquipment,
+      _items.map((item) => Map<String, Object?>.from(item)).toList(),
+      {
+        'type': _type,
+        'description': _nameController.text,
+        'quantity': _quantityController.text,
+        'brand': _brandController.text,
+        'model': _modelController.text,
+        'serialNumber': _serialController.text,
+        'color': _colorController.text,
+        if (_editingItemIndex != null) 'index': _editingItemIndex,
+      },
+    );
+  }
 
   @override
   void dispose() {
@@ -5232,15 +7078,33 @@ class _TabletWalkInEquipmentStepState
 
   void _addItem() {
     final name = _nameController.text.trim();
-    if (name.isEmpty) {
+    final quantity = int.tryParse(_quantityController.text.trim());
+    if (name.isEmpty || quantity == null || quantity < 1) {
       setState(() {
-        _validationMessage = 'Escribe el nombre o la descripción del artículo.';
+        _validationMessage = name.isEmpty
+            ? 'Escribe el nombre o la descripción del artículo.'
+            : 'La cantidad debe ser un número mayor que cero.';
       });
       return;
     }
 
+    final item = <String, Object?>{
+      'type': _type,
+      'description': name,
+      'quantity': quantity,
+      'brand': _brandController.text.trim(),
+      'model': _modelController.text.trim(),
+      'serialNumber': _serialController.text.trim(),
+      'color': _colorController.text.trim(),
+    };
     setState(() {
-      _items.add('$_type: $name');
+      final editingIndex = _editingItemIndex;
+      if (editingIndex != null) {
+        _items[editingIndex] = item;
+        _editingItemIndex = null;
+      } else {
+        _items.add(item);
+      }
       _nameController.clear();
       _quantityController.text = '1';
       _brandController.clear();
@@ -5248,7 +7112,59 @@ class _TabletWalkInEquipmentStepState
       _serialController.clear();
       _colorController.clear();
       _validationMessage = null;
+      _notifyDraft();
     });
+  }
+
+  void _editItem(int index) {
+    final item = _items[index];
+    setState(() {
+      _editingItemIndex = index;
+      _type = '${item['type'] ?? 'Equipo'}';
+      _nameController.text = '${item['description'] ?? ''}';
+      _quantityController.text = '${item['quantity'] ?? 1}';
+      _brandController.text = '${item['brand'] ?? ''}';
+      _modelController.text = '${item['model'] ?? ''}';
+      _serialController.text = '${item['serialNumber'] ?? ''}';
+      _colorController.text = '${item['color'] ?? ''}';
+      _validationMessage = null;
+    });
+    _notifyDraft();
+  }
+
+  void _deleteItem(int index) {
+    setState(() {
+      _items.removeAt(index);
+      if (_editingItemIndex == index) {
+        _editingItemIndex = null;
+        _nameController.clear();
+        _quantityController.text = '1';
+        _brandController.clear();
+        _modelController.clear();
+        _serialController.clear();
+        _colorController.clear();
+        _type = 'Equipo';
+      } else if (_editingItemIndex != null && _editingItemIndex! > index) {
+        _editingItemIndex = _editingItemIndex! - 1;
+      }
+      _validationMessage = null;
+    });
+    _notifyDraft();
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editingItemIndex = null;
+      _nameController.clear();
+      _quantityController.text = '1';
+      _brandController.clear();
+      _modelController.clear();
+      _serialController.clear();
+      _colorController.clear();
+      _type = 'Equipo';
+      _validationMessage = null;
+    });
+    _notifyDraft();
   }
 
   @override
@@ -5389,10 +7305,13 @@ class _TabletWalkInEquipmentStepState
                             subtitle: 'Agrega los artículos que ingresarás.',
                             color: const Color(0xFF00AFFF),
                             scale: scale,
-                            onTap: () => setState(() {
-                              _bringsEquipment = true;
-                              _validationMessage = null;
-                            }),
+                            onTap: () {
+                              setState(() {
+                                _bringsEquipment = true;
+                                _validationMessage = null;
+                              });
+                              _notifyDraft();
+                            },
                           ),
                         ),
                         SizedBox(width: 12 * scale),
@@ -5405,10 +7324,22 @@ class _TabletWalkInEquipmentStepState
                             subtitle: 'Continuarás sin declarar artículos.',
                             color: const Color(0xFFFF318B),
                             scale: scale,
-                            onTap: () => setState(() {
-                              _bringsEquipment = false;
-                              _validationMessage = null;
-                            }),
+                            onTap: () {
+                              setState(() {
+                                _bringsEquipment = false;
+                                _items.clear();
+                                _editingItemIndex = null;
+                                _nameController.clear();
+                                _quantityController.text = '1';
+                                _brandController.clear();
+                                _modelController.clear();
+                                _serialController.clear();
+                                _colorController.clear();
+                                _type = 'Equipo';
+                                _validationMessage = null;
+                              });
+                              _notifyDraft();
+                            },
                           ),
                         ),
                       ],
@@ -5418,7 +7349,10 @@ class _TabletWalkInEquipmentStepState
                       _TabletEquipmentEntryForm(
                         scale: scale,
                         type: _type,
-                        onTypeChanged: (value) => setState(() => _type = value),
+                        onTypeChanged: (value) {
+                          setState(() => _type = value);
+                          _notifyDraft();
+                        },
                         nameController: _nameController,
                         quantityController: _quantityController,
                         brandController: _brandController,
@@ -5426,7 +7360,11 @@ class _TabletWalkInEquipmentStepState
                         serialController: _serialController,
                         colorController: _colorController,
                         onAdd: _addItem,
+                        onEdit: _editItem,
+                        onDelete: _deleteItem,
                         items: _items,
+                        editingItemIndex: _editingItemIndex,
+                        onCancelEditing: _cancelEditing,
                         validationMessage: _validationMessage,
                       ),
                     ] else if (_bringsEquipment == false) ...[
@@ -5546,10 +7484,14 @@ class _TabletWalkInIdentificationStep extends StatefulWidget {
   const _TabletWalkInIdentificationStep({
     required this.onPrevious,
     required this.onContinue,
+    required this.initialTypes,
+    required this.onChanged,
   });
 
   final VoidCallback onPrevious;
   final VoidCallback onContinue;
+  final List<String> initialTypes;
+  final ValueChanged<List<String>> onChanged;
 
   @override
   State<_TabletWalkInIdentificationStep> createState() =>
@@ -5558,8 +7500,16 @@ class _TabletWalkInIdentificationStep extends StatefulWidget {
 
 class _TabletWalkInIdentificationStepState
     extends State<_TabletWalkInIdentificationStep> {
-  String? _identificationType;
-  bool? _identificationHeldForSafekeeping;
+  late final Set<String> _identificationTypes = widget.initialTypes.toSet();
+
+  void _toggleType(String type) {
+    setState(() {
+      if (!_identificationTypes.add(type)) {
+        _identificationTypes.remove(type);
+      }
+    });
+    widget.onChanged(_identificationTypes.toList());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5645,7 +7595,7 @@ class _TabletWalkInIdentificationStepState
               ),
               SizedBox(height: 8 * scale),
               Text(
-                'Selecciona el tipo de identificación presentada. No captures números ni fotografías del documento.',
+                'Selecciona uno o varios tipos de identificación presentados. No captures números ni fotografías del documento.',
                 style: TextStyle(
                   color: const Color(0xFFD8E4F6),
                   fontSize: 14 * scale,
@@ -5697,64 +7647,16 @@ class _TabletWalkInIdentificationStepState
                         ),
                         title: identificationOptions[index].title,
                         icon: identificationOptions[index].icon,
-                        selected:
-                            _identificationType ==
-                            identificationOptions[index].title,
-                        scale: scale,
-                        onTap: () => setState(
-                          () => _identificationType =
-                              identificationOptions[index].title,
+                        selected: _identificationTypes.contains(
+                          identificationOptions[index].title,
                         ),
+                        scale: scale,
+                        onTap: () =>
+                            _toggleType(identificationOptions[index].title),
                       ),
                     ),
                   ],
                 ],
-              ),
-              SizedBox(height: 18 * scale),
-              Container(
-                key: const ValueKey('tablet-identification-safekeeping'),
-                width: double.infinity,
-                padding: EdgeInsets.fromLTRB(
-                  14 * scale,
-                  10 * scale,
-                  14 * scale,
-                  9 * scale,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xAA061020),
-                  border: Border.all(color: const Color(0x663B6E9E)),
-                  borderRadius: BorderRadius.circular(9 * scale),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '¿Declaras que tus identificaciones fueron entregadas a recepción para resguardo?',
-                      style: TextStyle(
-                        color: const Color(0xFFE7EEF9),
-                        fontSize: 13 * scale,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    SizedBox(height: 5 * scale),
-                    _TabletIdentificationRadio(
-                      selected: _identificationHeldForSafekeeping == true,
-                      label: 'Sí, las entregué para resguardo',
-                      scale: scale,
-                      onTap: () => setState(
-                        () => _identificationHeldForSafekeeping = true,
-                      ),
-                    ),
-                    _TabletIdentificationRadio(
-                      selected: _identificationHeldForSafekeeping == false,
-                      label: 'No, solo las presenté para verificación',
-                      scale: scale,
-                      onTap: () => setState(
-                        () => _identificationHeldForSafekeeping = false,
-                      ),
-                    ),
-                  ],
-                ),
               ),
               SizedBox(height: 16 * scale),
               Row(
@@ -5829,10 +7731,16 @@ class _TabletWalkInReviewStep extends StatefulWidget {
   const _TabletWalkInReviewStep({
     required this.onPrevious,
     required this.onSubmit,
+    required this.summary,
+    required this.submitting,
+    this.errorMessage,
   });
 
   final VoidCallback onPrevious;
   final VoidCallback onSubmit;
+  final List<({String label, String value})> summary;
+  final bool submitting;
+  final String? errorMessage;
 
   @override
   State<_TabletWalkInReviewStep> createState() =>
@@ -5851,18 +7759,6 @@ class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
             .clamp(.58, 1.08);
         final horizontalPadding = 42 * scale;
         final verticalPadding = 30 * scale;
-        const summary = [
-          (label: 'NOMBRE', value: 'Jesus Efren'),
-          (label: 'EMPRESA O PROCEDENCIA', value: 'Público general'),
-          (label: 'ASUNTO', value: 'Entrevista de trabajo'),
-          (label: 'EQUIPO Y HERRAMIENTAS', value: 'No lleva artículos'),
-          (label: 'IDENTIFICACIÓN', value: 'INE'),
-          (
-            label: 'DECLARACIÓN DE RESGUARDO',
-            value: 'Declara que solo las presentó para verificación',
-          ),
-        ];
-
         return SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
             horizontalPadding,
@@ -5946,7 +7842,7 @@ class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
                     spacing: gap,
                     runSpacing: 10 * scale,
                     children: [
-                      for (final item in summary)
+                      for (final item in widget.summary)
                         SizedBox(
                           width: cellWidth,
                           height: cellHeight,
@@ -6017,6 +7913,18 @@ class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
                 ),
               ),
               SizedBox(height: 16 * scale),
+              if (widget.errorMessage != null)
+                Padding(
+                  padding: EdgeInsets.only(bottom: 12 * scale),
+                  child: Text(
+                    widget.errorMessage!,
+                    style: TextStyle(
+                      color: const Color(0xFFFF7189),
+                      fontSize: 12 * scale,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -6056,7 +7964,9 @@ class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
                     ),
                     child: ElevatedButton.icon(
                       key: const ValueKey('tablet-review-submit'),
-                      onPressed: _confirmed ? widget.onSubmit : null,
+                      onPressed: _confirmed && !widget.submitting
+                          ? widget.onSubmit
+                          : null,
                       style: ElevatedButton.styleFrom(
                         foregroundColor: Colors.white,
                         disabledForegroundColor: Colors.white70,
@@ -6071,9 +7981,18 @@ class _TabletWalkInReviewStepState extends State<_TabletWalkInReviewStep> {
                           borderRadius: BorderRadius.circular(9 * scale),
                         ),
                       ),
-                      icon: Icon(Icons.send_rounded, size: 16 * scale),
+                      icon: widget.submitting
+                          ? SizedBox(
+                              width: 16 * scale,
+                              height: 16 * scale,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2 * scale,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Icon(Icons.send_rounded, size: 16 * scale),
                       label: Text(
-                        'Enviar registro',
+                        widget.submitting ? 'Enviando…' : 'Enviar registro',
                         style: TextStyle(
                           fontSize: 13 * scale,
                           fontWeight: FontWeight.w900,
@@ -6183,84 +8102,53 @@ class _TabletIdentificationOption extends StatelessWidget {
           borderRadius: BorderRadius.circular(9 * scale),
           child: SizedBox(
             height: 104 * scale,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+            child: Stack(
               children: [
-                Icon(
-                  icon,
-                  color: selected
-                      ? const Color(0xFF60B4FF)
-                      : const Color(0xFF78B7FF),
-                  size: 29 * scale,
-                ),
-                SizedBox(height: 10 * scale),
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4 * scale),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
-                      title,
-                      key: ValueKey('tablet-identification-label-$title'),
-                      maxLines: 1,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12 * scale,
-                        fontWeight: FontWeight.w800,
+                Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        icon,
+                        color: selected
+                            ? const Color(0xFF60B4FF)
+                            : const Color(0xFF78B7FF),
+                        size: 29 * scale,
                       ),
-                    ),
+                      SizedBox(height: 10 * scale),
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4 * scale),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            title,
+                            key: ValueKey('tablet-identification-label-$title'),
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 12 * scale,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+                if (selected)
+                  Positioned(
+                    top: 7 * scale,
+                    right: 7 * scale,
+                    child: Icon(
+                      Icons.check_circle_rounded,
+                      color: const Color(0xFF6CC2FF),
+                      size: 17 * scale,
+                    ),
+                  ),
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _TabletIdentificationRadio extends StatelessWidget {
-  const _TabletIdentificationRadio({
-    required this.selected,
-    required this.label,
-    required this.scale,
-    required this.onTap,
-  });
-
-  final bool selected;
-  final String label;
-  final double scale;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(7 * scale),
-      child: Padding(
-        padding: EdgeInsets.symmetric(vertical: 3 * scale),
-        child: Row(
-          children: [
-            Icon(
-              selected
-                  ? Icons.radio_button_checked_rounded
-                  : Icons.radio_button_unchecked_rounded,
-              color: selected
-                  ? const Color(0xFF39A5FF)
-                  : const Color(0xFFDCE6F7),
-              size: 20 * scale,
-            ),
-            SizedBox(width: 8 * scale),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: const Color(0xFFD8E4F6),
-                  fontSize: 12 * scale,
-                ),
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -6362,7 +8250,11 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
     required this.serialController,
     required this.colorController,
     required this.onAdd,
+    required this.onEdit,
+    required this.onDelete,
     required this.items,
+    required this.editingItemIndex,
+    required this.onCancelEditing,
     required this.validationMessage,
   });
 
@@ -6376,7 +8268,11 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
   final TextEditingController serialController;
   final TextEditingController colorController;
   final VoidCallback onAdd;
-  final List<String> items;
+  final ValueChanged<int> onEdit;
+  final ValueChanged<int> onDelete;
+  final List<Map<String, Object?>> items;
+  final int? editingItemIndex;
+  final VoidCallback onCancelEditing;
   final String? validationMessage;
 
   InputDecoration _decoration() => InputDecoration(
@@ -6561,7 +8457,9 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
                       size: 18 * scale,
                     ),
                     label: Text(
-                      'Agregar artículo',
+                      editingItemIndex == null
+                          ? 'Agregar artículo'
+                          : 'Guardar cambios',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -6574,6 +8472,25 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
               ),
             ],
           ),
+          if (editingItemIndex != null) ...[
+            SizedBox(height: 7 * scale),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                key: const ValueKey('tablet-equipment-cancel-edit'),
+                onPressed: onCancelEditing,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFFBFD7FF),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: Icon(Icons.close_rounded, size: 15 * scale),
+                label: Text(
+                  'Cancelar edición',
+                  style: TextStyle(fontSize: 10 * scale),
+                ),
+              ),
+            ),
+          ],
           if (validationMessage != null) ...[
             SizedBox(height: 7 * scale),
             Align(
@@ -6589,8 +8506,9 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
           ],
           if (items.isNotEmpty) ...[
             SizedBox(height: 10 * scale),
-            for (final item in items)
+            for (var index = 0; index < items.length; index++)
               Padding(
+                key: ValueKey('tablet-equipment-item-$index'),
                 padding: EdgeInsets.only(bottom: 5 * scale),
                 child: Row(
                   children: [
@@ -6602,11 +8520,44 @@ class _TabletEquipmentEntryForm extends StatelessWidget {
                     SizedBox(width: 8 * scale),
                     Expanded(
                       child: Text(
-                        item,
+                        '${items[index]['type']}: ${items[index]['description']}'
+                        '${(items[index]['quantity'] as num?)?.toInt() == 1 ? '' : ' · ${items[index]['quantity']} pzas.'}',
                         style: TextStyle(
                           color: const Color(0xFFD8E4F6),
                           fontSize: 11 * scale,
                         ),
+                      ),
+                    ),
+                    IconButton(
+                      key: ValueKey('tablet-equipment-edit-$index'),
+                      onPressed: () => onEdit(index),
+                      tooltip: 'Editar artículo',
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 34,
+                        minHeight: 34,
+                      ),
+                      padding: EdgeInsets.zero,
+                      icon: Icon(
+                        Icons.edit_outlined,
+                        color: const Color(0xFF70B8FF),
+                        size: 17 * scale,
+                      ),
+                    ),
+                    IconButton(
+                      key: ValueKey('tablet-equipment-delete-$index'),
+                      onPressed: () => onDelete(index),
+                      tooltip: 'Eliminar artículo',
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints(
+                        minWidth: 34,
+                        minHeight: 34,
+                      ),
+                      padding: EdgeInsets.zero,
+                      icon: Icon(
+                        Icons.delete_outline_rounded,
+                        color: const Color(0xFFFF7189),
+                        size: 18 * scale,
                       ),
                     ),
                   ],
@@ -6626,6 +8577,8 @@ class _TabletWalkInField extends StatelessWidget {
     required this.icon,
     required this.scale,
     this.maxLines = 1,
+    this.controller,
+    this.onChanged,
   });
 
   final String label;
@@ -6633,6 +8586,8 @@ class _TabletWalkInField extends StatelessWidget {
   final IconData icon;
   final double scale;
   final int maxLines;
+  final TextEditingController? controller;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -6672,6 +8627,8 @@ class _TabletWalkInField extends StatelessWidget {
           ),
           padding: EdgeInsets.all(1 * scale),
           child: TextField(
+            controller: controller,
+            onChanged: onChanged,
             maxLines: maxLines,
             minLines: maxLines,
             style: TextStyle(
@@ -6923,6 +8880,7 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
           onChanged: (value) => setState(() => _isDarkMode = value),
           onLogout: _logout,
           child: Scaffold(
+            resizeToAvoidBottomInset: false,
             key: const ValueKey('reception-dashboard-scaffold'),
             backgroundColor: theme.scaffoldBackgroundColor,
             drawer: _ReceptionDrawer(
@@ -15333,6 +17291,80 @@ class _HostsPageState extends State<_HostsPage> {
     }
   }
 
+  Future<void> _registerHost() async {
+    if (!widget.isAdmin || _isSaving) return;
+    if (_departments.isEmpty) {
+      AppFeedback.show(
+        context,
+        'Registra primero un departamento para asignar al anfitrión.',
+        type: AppFeedbackType.error,
+      );
+      return;
+    }
+
+    setState(() {
+      _isSaving = true;
+      _errorMessage = null;
+    });
+    try {
+      final allAccounts = await _authService.getHostAccounts();
+      if (!mounted) return;
+      final registeredLogins = _hosts
+          .map((host) => host.login.toLowerCase())
+          .toSet();
+      final accounts = allAccounts
+          .where(
+            (account) =>
+                !registeredLogins.contains(account.login.toLowerCase()),
+          )
+          .toList();
+      setState(() => _isSaving = false);
+      final draft = await showDialog<_DepartmentHostDraft>(
+        context: context,
+        builder: (context) =>
+            _HostFormDialog(departments: _departments, accounts: accounts),
+      );
+      if (draft == null || !mounted) return;
+
+      setState(() {
+        _isSaving = true;
+        _errorMessage = null;
+      });
+      final hosts = await _authService.createDepartmentHost(
+        login: draft.login,
+        name: draft.name,
+        departmentId: draft.departmentId,
+        role: draft.role,
+        email: draft.email,
+        phone: draft.phone,
+      );
+      if (!mounted) return;
+      setState(() {
+        _hosts = hosts;
+        _isSaving = false;
+      });
+      AppFeedback.show(
+        context,
+        draft.fromAccessAccount
+            ? 'Anfitrión registrado y acceso a Anfitriones habilitado.'
+            : 'Anfitrión registrado.',
+        type: AppFeedbackType.success,
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.message;
+        _isSaving = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'No se pudo registrar el anfitrión.';
+        _isSaving = false;
+      });
+    }
+  }
+
   Future<void> _deleteHost(DepartmentHost host) async {
     if (!widget.isAdmin || _isSaving) return;
     final confirmed = await showReceptionConfirmDialog(
@@ -15470,6 +17502,29 @@ class _HostsPageState extends State<_HostsPage> {
                           ),
                         ],
                       ),
+                      if (widget.isAdmin) ...[
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 44,
+                          child: FilledButton.icon(
+                            key: const ValueKey('register-host-button'),
+                            onPressed: _isSaving ? null : _registerHost,
+                            style: FilledButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              backgroundColor: const Color(0xFF087FFF),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                            ),
+                            icon: const Icon(Icons.person_add_alt_1_rounded),
+                            label: const Text(
+                              'Registrar anfitrión',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 10),
                       TextField(
                         controller: _searchController,
@@ -15779,13 +17834,11 @@ class _DepartmentHostCard extends StatelessWidget {
                   icon: Icons.mail_outline_rounded,
                   label: 'Correo',
                   value: host.email,
-                  copyTooltip: 'Copiar correo electrónico',
                 ),
                 _HostInfoRow(
                   icon: Icons.phone_rounded,
                   label: 'Teléfono',
                   value: host.phone,
-                  copyTooltip: 'Copiar teléfono',
                 ),
                 _HostInfoRow(
                   icon: Icons.apartment_rounded,
@@ -16099,12 +18152,10 @@ class _HostInfoRow extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.value,
-    this.copyTooltip,
   });
 
   final IconData icon;
   final String label, value;
-  final String? copyTooltip;
 
   @override
   Widget build(BuildContext context) {
@@ -16113,7 +18164,7 @@ class _HostInfoRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           SizedBox(
             width: 23,
@@ -16121,9 +18172,12 @@ class _HostInfoRow extends StatelessWidget {
           ),
           const SizedBox(width: 7),
           SizedBox(
-            width: 72,
+            width: 88,
             child: Text(
               label,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isLight
                     ? const Color(0xFF65758B)
@@ -16145,26 +18199,6 @@ class _HostInfoRow extends StatelessWidget {
               ),
             ),
           ),
-          if (copyTooltip != null && value.trim().isNotEmpty)
-            IconButton(
-              tooltip: copyTooltip,
-              visualDensity: VisualDensity.compact,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: value));
-                if (!context.mounted) return;
-                AppFeedback.show(
-                  context,
-                  '$label copiado.',
-                  type: AppFeedbackType.info,
-                );
-              },
-              icon: const Icon(
-                Icons.content_copy_rounded,
-                size: 16,
-                color: Color(0xFF8FBFFF),
-              ),
-            ),
         ],
       ),
     );
@@ -16351,7 +18385,9 @@ class _HostFormDialogState extends State<_HostFormDialog> {
               _DepartmentHostFormField(
                 label: 'Cuenta de Accesos',
                 child: DropdownButtonFormField<String>(
+                  key: const ValueKey('host-access-account-select'),
                   initialValue: _accountSelection,
+                  isExpanded: true,
                   dropdownColor: _dashboardSurfaceColor(context),
                   style: TextStyle(
                     color: _dashboardPrimaryText(context),
@@ -16364,6 +18400,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                         value: account.login,
                         child: Text(
                           '${account.name?.trim().isNotEmpty == true ? account.name : account.login} · ${account.login}',
+                          maxLines: 1,
+                          softWrap: false,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -16408,6 +18446,8 @@ class _HostFormDialogState extends State<_HostFormDialog> {
               _DepartmentHostFormField(
                 label: 'Departamento',
                 child: DropdownButtonFormField<int>(
+                  key: const ValueKey('host-department-select'),
+                  isExpanded: true,
                   initialValue:
                       widget.departments.any(
                         (department) => department.id == _departmentId,
@@ -16424,7 +18464,12 @@ class _HostFormDialogState extends State<_HostFormDialog> {
                       .map(
                         (department) => DropdownMenuItem(
                           value: department.id,
-                          child: Text(department.name),
+                          child: Text(
+                            department.name,
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       )
                       .toList(),

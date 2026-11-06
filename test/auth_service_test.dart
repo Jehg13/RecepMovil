@@ -6,6 +6,138 @@ import 'package:http/testing.dart';
 import 'package:visitas_recep_mobile/auth_service.dart';
 
 void main() {
+  test('solicita un enlace de recuperación por correo', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/api/auth/password-recovery');
+        expect(jsonDecode(request.body), {'email': 'persona@example.test'});
+        return http.Response(
+          jsonEncode({
+            'message': 'Si el correo está asociado a una cuenta activa, recibirás instrucciones para recuperar tu contraseña.',
+          }),
+          202,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final message = await service.requestPasswordRecovery(
+      '  persona@example.test ',
+    );
+
+    expect(message, contains('cuenta activa'));
+  });
+
+  test(
+    'conserva el límite de reintento del servidor en errores de login',
+    () async {
+      final service = AuthService(
+        client: MockClient((request) async {
+          expect(request.url.path, '/api/auth/login');
+          return http.Response(
+            jsonEncode({
+              'error': 'Demasiados intentos fallidos. Espera 5 minutos antes de volver a intentarlo.',
+            }),
+            429,
+            headers: {'retry-after': '300'},
+          );
+        }),
+        cookieStorage: _MemorySessionCookieStorage(),
+        baseUrl: 'https://example.test',
+        isWeb: false,
+      );
+
+      await expectLater(
+        service.login('persona', 'incorrecta'),
+        throwsA(
+          isA<AuthApiException>()
+              .having((error) => error.statusCode, 'statusCode', 429)
+              .having(
+                (error) => error.retryAfterSeconds,
+                'retryAfterSeconds',
+                300,
+              )
+              .having(
+                (error) => error.message,
+                'message',
+                contains('5 minutos'),
+              ),
+        ),
+      );
+    },
+  );
+
+  test(
+    'registra una visita manual con clave idempotente y consulta su estado',
+    () async {
+      const idempotencyKey = '123e4567-e89b-42d3-a456-426614174000';
+      Map<String, dynamic>? submittedRegistration;
+      final service = AuthService(
+        client: MockClient((request) async {
+          expect(request.headers['Idempotency-Key'], idempotencyKey);
+          if (request.method == 'POST') {
+            expect(request.url.path, '/api/visitor-kiosk/registrations');
+            submittedRegistration =
+                jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({'folio': '12345678', 'visitorName': 'Ana Pérez'}),
+              201,
+            );
+          }
+          expect(request.method, 'GET');
+          expect(request.url.path, '/api/visitor-kiosk/status');
+          return http.Response(
+            jsonEncode({
+              'folio': '12345678',
+              'visitorName': 'Ana Pérez',
+              'authorizationStatus': 'Autorizada',
+              'entryChecklistComplete': true,
+              'entered': false,
+            }),
+            200,
+          );
+        }),
+        cookieStorage: _MemorySessionCookieStorage(),
+        baseUrl: 'https://example.test',
+        isWeb: false,
+      );
+
+      final registration = {
+        'visitorName': 'Ana Pérez',
+        'companyName': 'Público general',
+        'visitReason': 'Entrega',
+        'carriesItems': true,
+        'items': [
+          {
+            'type': 'Herramienta',
+            'description': 'Taladro',
+            'quantity': 1,
+            'brand': '',
+            'model': '',
+            'serialNumber': '',
+            'color': '',
+          },
+        ],
+        'identificationTypes': ['INE'],
+        'identificationHeldForSafekeeping': false,
+      };
+      final created = await service.createVisitorKioskRegistration(
+        idempotencyKey: idempotencyKey,
+        registration: registration,
+      );
+      final status = await service.getVisitorKioskStatus(idempotencyKey);
+
+      expect(submittedRegistration, registration);
+      expect(created['folio'], '12345678');
+      expect(status['authorizationStatus'], 'Autorizada');
+      expect(status['entryChecklistComplete'], isTrue);
+      expect(status['entered'], isFalse);
+    },
+  );
+
   test(
     'consulta datos reales de Inicio para la fecha local indicada',
     () async {
@@ -179,6 +311,29 @@ void main() {
     },
   );
 
+  test('conecta al stream SSE de estado con clave del registro', () async {
+    const idempotencyKey = '123e4567-e89b-42d3-a456-426614174000';
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/visitor-kiosk/events');
+        expect(request.url.queryParameters['key'], idempotencyKey);
+        expect(request.headers['accept'], 'text/event-stream');
+        expect(request.headers.containsKey('cookie'), isFalse);
+        return http.Response(': connected\n\ndata: update\n\n', 200);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final events = await service
+        .watchVisitorKioskUpdates(idempotencyKey)
+        .toList();
+
+    expect(events, [RealtimeEvent.connected, RealtimeEvent.update]);
+  });
+
   test(
     'inicia sesión, restaura y cierra la sesión con la cookie segura',
     () async {
@@ -225,6 +380,7 @@ void main() {
       final user = await authService.login(' recepcion ', 'test-password');
       expect(user.login, 'recepcion');
       expect(user.canAccessReception, isTrue);
+      expect(user.canAccessApp, isTrue);
       expect(cookieStorage.value, 'visitas_session=opaque-token');
 
       final restoredUser = await authService.restoreSession();
@@ -236,7 +392,44 @@ void main() {
     },
   );
 
-  test('rechaza cuentas que no tienen permiso para Recepción', () async {
+  test('permite iniciar y restaurar sesión a cuentas de anfitrión', () async {
+    final cookieStorage = _MemorySessionCookieStorage();
+    final hostUser = {..._userJson, ..._hostUserJson};
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/auth/login') {
+        return http.Response(
+          jsonEncode({'user': hostUser}),
+          200,
+          headers: {'set-cookie': 'visitas_session=opaque-token; HttpOnly'},
+        );
+      }
+
+      if (request.url.path == '/api/auth/session') {
+        expect(request.headers['cookie'], 'visitas_session=opaque-token');
+        return http.Response(jsonEncode({'user': hostUser}), 200);
+      }
+
+      return http.Response('', 404);
+    });
+    final authService = AuthService(
+      client: client,
+      cookieStorage: cookieStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final user = await authService.login('anfitrion', 'test-password');
+    expect(user.login, 'anfitrion');
+    expect(user.canAccessReception, isFalse);
+    expect(user.canAccessApp, isTrue);
+    expect(cookieStorage.value, 'visitas_session=opaque-token');
+
+    final restoredUser = await authService.restoreSession();
+    expect(restoredUser?.login, 'anfitrion');
+    expect(restoredUser?.canAccessReception, isFalse);
+  });
+
+  test('rechaza cuentas sin secciones habilitadas', () async {
     final client = MockClient((request) async {
       if (request.url.path == '/api/auth/login') {
         return http.Response(
@@ -265,10 +458,19 @@ void main() {
         isA<AuthApiException>().having(
           (error) => error.message,
           'message',
-          'Tu cuenta no tiene permiso para usar Recepción.',
+          'Tu cuenta no tiene permisos habilitados para usar la aplicación.',
         ),
       ),
     );
+  });
+
+  test('identifica las cuentas de anfitrión en la lista de Accesos', () {
+    final account = AccessAccount.fromJson({
+      ..._accessAccountJson,
+      'sectionAccess': ['anfitriones'],
+    });
+
+    expect(account.accessLabel, 'Anfitrión');
   });
 
   test('consulta y modifica accesos usando la sesión autenticada', () async {
@@ -431,15 +633,6 @@ void main() {
         );
       }
       if (request.method == 'POST' &&
-          request.url.path == '/api/host-access/host-1') {
-        return http.Response(
-          jsonEncode({
-            'sectionAccess': ['anfitriones'],
-          }),
-          200,
-        );
-      }
-      if (request.method == 'POST' &&
           request.url.path == '/api/department-hosts') {
         expect(jsonDecode(request.body), {
           'login': 'host-1',
@@ -474,7 +667,6 @@ void main() {
 
     final accounts = await authService.getHostAccounts();
     expect(accounts.single.login, 'host-1');
-    await authService.grantHostAccess(accounts.single.login);
     final created = await authService.createDepartmentHost(
       login: accounts.single.login,
       name: accounts.single.name!,
@@ -496,6 +688,80 @@ void main() {
 
     expect(await authService.deleteDepartmentHost(1), isEmpty);
   });
+
+  test('consulta declaración de cita y guarda inspección de equipo', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.headers['cookie'], 'visitas_session=opaque-token');
+        if (request.method == 'GET' &&
+            request.url.path == '/api/equipment/declarations/42') {
+          return http.Response(
+            jsonEncode({
+              'declaration': {
+                'id': 42,
+                'personName': 'Personal externo',
+                'companyName': 'Contratista',
+                'status': 'Enviada',
+                'items': [],
+                'inspections': [],
+              },
+            }),
+            200,
+          );
+        }
+        if (request.method == 'PUT' &&
+            request.url.path ==
+                '/api/equipment/declarations/42/inspections/entrada') {
+          expect(jsonDecode(request.body), {
+            'items': [
+              {
+                'declarationItemId': 7,
+                'quantity': 1,
+                'product': 'Taladro',
+                'brand': 'Marca',
+                'model': 'Modelo',
+                'serialNumber': 'SERIE-1',
+                'color': 'Negro',
+                'notes': '',
+                'incident': false,
+                'checked': true,
+                'keepAtReception': true,
+                'returnedToVisitor': false,
+              },
+            ],
+          });
+          return http.Response(
+            jsonEncode({'message': 'Verificación guardada.'}),
+            200,
+          );
+        }
+        return http.Response('', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage()
+        ..value = 'visitas_session=opaque-token',
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final response = await service.getEquipmentDeclaration(42);
+    expect(response['declaration']['id'], 42);
+    await service.submitEquipmentInspection(42, 'entrada', [
+      {
+        'declarationItemId': 7,
+        'quantity': 1,
+        'product': 'Taladro',
+        'brand': 'Marca',
+        'model': 'Modelo',
+        'serialNumber': 'SERIE-1',
+        'color': 'Negro',
+        'notes': '',
+        'incident': false,
+        'checked': true,
+        'keepAtReception': true,
+        'returnedToVisitor': false,
+      },
+    ]);
+  });
 }
 
 const _userJson = {
@@ -505,6 +771,15 @@ const _userJson = {
   'role': 'Recepción',
   'isAdmin': false,
   'sectionAccess': ['recepcion'],
+};
+
+const _hostUserJson = {
+  'login': 'anfitrion',
+  'name': 'Personal anfitrión',
+  'email': 'anfitrion@example.test',
+  'role': 'Anfitrión',
+  'isAdmin': false,
+  'sectionAccess': ['anfitriones'],
 };
 
 const _accessAccountJson = {

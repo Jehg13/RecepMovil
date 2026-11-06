@@ -36,6 +36,41 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('anfitrión puede iniciar sesión y solo ve sus secciones', (
+    tester,
+  ) async {
+    final service = _service(
+      MockClient((request) async {
+        if (request.url.path == '/api/auth/login') {
+          return http.Response(
+            jsonEncode({'user': _hostUserJson}),
+            200,
+            headers: {'set-cookie': 'visitas_session=opaque-token; HttpOnly'},
+          );
+        }
+        return _dashboardResponse(request);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: ReceptionLoginPage(authService: service)),
+    );
+    await tester.enterText(find.byType(TextField).first, 'anfitrion');
+    await tester.enterText(find.byType(TextField).last, 'test-password');
+    await tester.tap(find.text('Iniciar sesión').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Agenda de citas'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.menu_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('Contratistas/proveedores y visitantes'), findsOneWidget);
+    expect(find.text('Personal de externos'), findsOneWidget);
+    expect(find.text('Equipo y herramientas'), findsOneWidget);
+    expect(find.text('Bitácora diaria'), findsNothing);
+    expect(find.text('Accesos'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('muestra errores de autenticación sin navegar al dashboard', (
     tester,
   ) async {
@@ -62,6 +97,10 @@ void main() {
   });
 
   testWidgets('restaura una sesión válida al iniciar la app', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
     final service = _service(
       MockClient((request) async {
         if (request.url.path == '/api/auth/session') {
@@ -564,6 +603,22 @@ void main() {
           request.url.path == '/api/department-hosts') {
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
+      if (request.method == 'GET' && request.url.path == '/api/host-accounts') {
+        return http.Response(
+          jsonEncode({
+            'accounts': [
+              {
+                'login': 'access-host',
+                'name': 'Host Desde Accesos',
+                'email': 'host@example.test',
+                'role': 'Coordinación',
+                'phone': '5559876543',
+              },
+            ],
+          }),
+          200,
+        );
+      }
       if (request.method == 'GET' && request.url.path == '/api/departments') {
         return http.Response(
           jsonEncode({
@@ -581,12 +636,34 @@ void main() {
         hosts[0]['departmentId'] = 5;
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/department-hosts') {
+        expect(jsonDecode(request.body), {
+          'login': 'access-host',
+          'name': 'Host Desde Accesos',
+          'departmentId': 4,
+          'role': 'Coordinación',
+          'email': 'host@example.test',
+          'phone': '5559876543',
+        });
+        hosts.add({
+          'id': 9,
+          'login': 'access-host',
+          'name': 'Host Desde Accesos',
+          'departmentId': 4,
+          'role': 'Coordinación',
+          'email': 'host@example.test',
+          'phone': '5559876543',
+          'accessRoles': ['Anfitriones'],
+        });
+        return http.Response(jsonEncode({'hosts': hosts}), 201);
+      }
       if (request.method == 'DELETE' &&
           request.url.path == '/api/department-hosts/8') {
         hosts.clear();
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
-      fail('La pantalla de anfitriones solo debe consultar datos.');
+      fail('Solicitud inesperada para la pantalla de anfitriones.');
     });
     final service = AuthService(
       client: client,
@@ -617,7 +694,9 @@ void main() {
     expect(find.text('Recursos Humanos'), findsOneWidget);
     expect(find.text('Analista'), findsOneWidget);
     expect(find.text('5551234567'), findsOneWidget);
-    expect(find.byTooltip('Registrar anfitrión'), findsNothing);
+    expect(find.byKey(const ValueKey('register-host-button')), findsOneWidget);
+    expect(find.byIcon(Icons.content_copy_rounded), findsNothing);
+    expect(find.text('Departamento'), findsOneWidget);
     expect(find.byTooltip('Editar anfitrión'), findsNothing);
     expect(find.byType(TextFormField), findsNothing);
     await tester.ensureVisible(find.text('Cambiar departamento'));
@@ -640,6 +719,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       find.text('Todavía no hay anfitriones registrados.'),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('register-host-button')),
+    );
+    await tester.tap(find.byKey(const ValueKey('register-host-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('host-access-account-select')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Host Desde Accesos · access-host').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('host-department-select')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Recursos Humanos').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Registrar anfitrión').last);
+    await tester.tap(find.text('Registrar anfitrión').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Host Desde Accesos'), findsOneWidget);
+    expect(
+      find.text('Anfitrión registrado y acceso a Anfitriones habilitado.'),
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
