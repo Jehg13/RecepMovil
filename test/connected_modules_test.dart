@@ -110,7 +110,7 @@ void main() {
     final today = DateTime.now().toIso8601String().substring(0, 10);
     var actorName = '';
     final service = _service((request) async {
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(
           jsonEncode({
             ..._dailyLog,
@@ -130,7 +130,7 @@ void main() {
           200,
         );
       }
-      if (request.url.path == '/api/appointments') {
+      if (request.url.path == '/api/v1/appointments') {
         return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -177,7 +177,7 @@ void main() {
     final yesterdayString = yesterday.toIso8601String().substring(0, 10);
     final requestedUris = <Uri>[];
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/daily-log') {
+      if (request.method == 'GET' && request.url.path == '/api/v1/daily-log') {
         requestedUris.add(request.url);
         final response = Map<String, dynamic>.from(_dailyLog)
           ..['historyRange'] = {
@@ -198,7 +198,8 @@ void main() {
           ];
         return http.Response(jsonEncode(response), 200);
       }
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -263,14 +264,14 @@ void main() {
     final requestedPaths = <String>[];
     final service = _service((request) async {
       requestedPaths.add(request.url.path);
-      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+      if (request.method == 'POST' && request.url.path == '/api/v1/daily-log') {
         recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'El movimiento se registró.'}),
           201,
         );
       }
-      if (request.url.path == '/api/appointments') {
+      if (request.url.path == '/api/v1/appointments') {
         return http.Response(
           jsonEncode({
             'appointments': [
@@ -292,13 +293,13 @@ void main() {
           200,
         );
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(jsonEncode(_dailyLog), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -319,7 +320,7 @@ void main() {
     expect(find.text('Bitácora diaria'), findsOneWidget);
     expect(
       requestedPaths,
-      containsAll(['/api/daily-log', '/api/appointments']),
+      containsAll(['/api/v1/daily-log', '/api/v1/appointments']),
     );
     expect(find.byType(RefreshIndicator), findsOneWidget);
     await tester.tap(find.text('Visita de prueba'));
@@ -347,7 +348,8 @@ void main() {
     Map<String, dynamic>? recordedEntry;
     Map<String, dynamic>? submittedInspection;
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(
           jsonEncode({
             'appointments': [
@@ -373,7 +375,7 @@ void main() {
         );
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/equipment/declarations/9') {
+          request.url.path == '/api/v1/equipment/declarations/9') {
         return http.Response(
           jsonEncode({
             'declaration': {
@@ -402,27 +404,27 @@ void main() {
       }
       if (request.method == 'PUT' &&
           request.url.path ==
-              '/api/equipment/declarations/9/inspections/entrada') {
+              '/api/v1/equipment/declarations/9/inspections/entrada') {
         submittedInspection = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'Checklist guardado.'}),
           200,
         );
       }
-      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+      if (request.method == 'POST' && request.url.path == '/api/v1/daily-log') {
         recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'El movimiento se registró.'}),
           201,
         );
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(jsonEncode(_dailyLog), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -483,7 +485,8 @@ void main() {
     final today = DateTime.now().toIso8601String().substring(0, 10);
     String? latestEvent;
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(
           jsonEncode({
             'appointments': [
@@ -508,7 +511,7 @@ void main() {
         );
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/appointments/42/employees') {
+          request.url.path == '/api/v1/appointments/42/employees') {
         final status = switch (latestEvent) {
           'Llegada' => 'En proceso',
           'Ingreso' => 'Dentro',
@@ -525,7 +528,7 @@ void main() {
         );
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/equipment/declarations/18') {
+          request.url.path == '/api/v1/equipment/declarations/18') {
         return http.Response(
           jsonEncode({
             'declaration': {
@@ -550,7 +553,7 @@ void main() {
           200,
         );
       }
-      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+      if (request.method == 'POST' && request.url.path == '/api/v1/daily-log') {
         latestEvent =
             (jsonDecode(request.body) as Map<String, dynamic>)['event']
                 as String;
@@ -559,13 +562,13 @@ void main() {
           201,
         );
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(jsonEncode(_dailyLog), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -612,7 +615,8 @@ void main() {
     Map<String, dynamic>? submittedInspection;
     Map<String, dynamic>? recordedExit;
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(
           jsonEncode({
             'appointments': [
@@ -638,7 +642,7 @@ void main() {
         );
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/equipment/declarations/10') {
+          request.url.path == '/api/v1/equipment/declarations/10') {
         return http.Response(
           jsonEncode({
             'declaration': {
@@ -675,27 +679,27 @@ void main() {
       }
       if (request.method == 'PUT' &&
           request.url.path ==
-              '/api/equipment/declarations/10/inspections/salida') {
+              '/api/v1/equipment/declarations/10/inspections/salida') {
         submittedInspection = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'Checklist guardado.'}),
           200,
         );
       }
-      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+      if (request.method == 'POST' && request.url.path == '/api/v1/daily-log') {
         recordedExit = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'El movimiento se registró.'}),
           201,
         );
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(jsonEncode(_dailyLog), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -757,7 +761,8 @@ void main() {
         .substring(0, 10);
     Map<String, dynamic>? recordedEntry;
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(
           jsonEncode({
             'appointments': [
@@ -783,7 +788,7 @@ void main() {
         );
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/equipment/declarations/11') {
+          request.url.path == '/api/v1/equipment/declarations/11') {
         return http.Response(
           jsonEncode({
             'declaration': {
@@ -812,20 +817,20 @@ void main() {
       }
       if (request.method == 'PUT' &&
           request.url.path ==
-              '/api/equipment/declarations/11/inspections/entrada') {
+              '/api/v1/equipment/declarations/11/inspections/entrada') {
         return http.Response(
           jsonEncode({'message': 'Checklist guardado.'}),
           200,
         );
       }
-      if (request.method == 'POST' && request.url.path == '/api/daily-log') {
+      if (request.method == 'POST' && request.url.path == '/api/v1/daily-log') {
         recordedEntry = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'El movimiento se registró.'}),
           201,
         );
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         final response = Map<String, dynamic>.from(_dailyLog);
         response['entries'] = [
           {
@@ -842,10 +847,10 @@ void main() {
         ];
         return http.Response(jsonEncode(response), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -872,29 +877,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Hacer checklist de entrada'), findsOneWidget);
-    expect(
-      tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Dar entrada'),
-          )
-          .onPressed,
-      isNull,
-    );
-    await tester.tap(find.text('Hacer checklist de entrada'));
+    await tester.tap(find.text('Dar entrada'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(Checkbox).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Confirmar revisión'));
-    await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Dar entrada'),
-          )
-          .onPressed,
-      isNotNull,
-    );
-    await tester.tap(find.text('Dar entrada'));
     await tester.pumpAndSettle();
     expect(recordedEntry?['event'], 'Ingreso');
     expect(recordedEntry?['sourceEntryId'], 40);
@@ -913,10 +900,11 @@ void main() {
     final today = DateTime.now().toIso8601String().substring(0, 10);
     Map<String, dynamic>? checklistRequest;
     final service = _service((request) async {
-      if (request.method == 'GET' && request.url.path == '/api/appointments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
         return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
       }
-      if (request.method == 'GET' && request.url.path == '/api/daily-log') {
+      if (request.method == 'GET' && request.url.path == '/api/v1/daily-log') {
         final response = Map<String, dynamic>.from(_dailyLog);
         response['entries'] = [
           {
@@ -934,7 +922,7 @@ void main() {
         return http.Response(jsonEncode(response), 200);
       }
       if (request.method == 'GET' &&
-          request.url.path == '/api/visitor-kiosk/registrations') {
+          request.url.path == '/api/v1/visitor-kiosk/registrations') {
         return http.Response(
           jsonEncode({
             'registrations': [
@@ -983,17 +971,17 @@ void main() {
         );
       }
       if (request.method == 'PATCH' &&
-          request.url.path == '/api/visitor-kiosk/registrations/55') {
+          request.url.path == '/api/v1/visitor-kiosk/registrations/55') {
         checklistRequest = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({'message': 'Checklist guardado.'}),
           200,
         );
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -1060,16 +1048,16 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final service = _service((request) async {
-      if (request.url.path == '/api/appointments') {
+      if (request.url.path == '/api/v1/appointments') {
         return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         return http.Response(jsonEncode(_dailyLog), 200);
       }
-      if (request.url.path == '/api/external-staff') {
+      if (request.url.path == '/api/v1/external-staff') {
         return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
       }
-      if (request.url.path == '/api/general-visitors') {
+      if (request.url.path == '/api/v1/general-visitors') {
         return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
       }
       return http.Response('{}', 200);
@@ -1118,7 +1106,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
 
       final service = _service((request) async {
-        if (request.url.path == '/api/equipment/options') {
+        if (request.url.path == '/api/v1/equipment/options') {
           return http.Response(
             jsonEncode({
               'partners': <Object>[],
@@ -1128,7 +1116,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/equipment/declarations') {
+        if (request.url.path == '/api/v1/equipment/declarations') {
           return http.Response(
             jsonEncode({
               'declarations': [
@@ -1187,7 +1175,7 @@ void main() {
 
       final requestedPages = <String>[];
       final service = _service((request) async {
-        if (request.url.path == '/api/equipment/options') {
+        if (request.url.path == '/api/v1/equipment/options') {
           return http.Response(
             jsonEncode({
               'partners': <Object>[],
@@ -1197,7 +1185,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/equipment/declarations') {
+        if (request.url.path == '/api/v1/equipment/declarations') {
           final page = request.url.queryParameters['page']!;
           requestedPages.add(page);
           final firstId = page == '1' ? 1 : 6;
@@ -1326,10 +1314,11 @@ void main() {
     Map<String, dynamic>? createdAppointment;
     final service = _service((request) async {
       requestedPaths.add(request.url.path);
-      if (request.url.path == '/api/daily-log') {
+      if (request.url.path == '/api/v1/daily-log') {
         dailyLogQuery = request.url.queryParameters;
       }
-      if (request.method == 'POST' && request.url.path == '/api/appointments') {
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/appointments') {
         createdAppointment = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({
@@ -1339,7 +1328,7 @@ void main() {
         );
       }
       if (request.method == 'POST' &&
-          request.url.path == '/api/equipment/declarations') {
+          request.url.path == '/api/v1/equipment/declarations') {
         createdEquipmentDeclaration =
             jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
@@ -1354,7 +1343,7 @@ void main() {
         );
       }
       if (request.method == 'POST' &&
-          request.url.path == '/api/appointments/12/send-qr') {
+          request.url.path == '/api/v1/appointments/12/send-qr') {
         expect(jsonDecode(request.body), {'employeeId': 3});
         return http.Response(
           jsonEncode({'message': 'QR enviado a staff@example.test'}),
@@ -1362,13 +1351,13 @@ void main() {
         );
       }
       final Object response = switch (request.url.path) {
-        '/api/appointments' => {
+        '/api/v1/appointments' => {
           'appointments': [_appointment],
         },
-        '/api/business-partners' => {
+        '/api/v1/business-partners' => {
           'businessPartners': [_partner],
         },
-        '/api/external-staff' => {
+        '/api/v1/external-staff' => {
           'externalStaff': [
             {
               'id': 3,
@@ -1381,15 +1370,15 @@ void main() {
             },
           ],
         },
-        '/api/daily-log' => _dailyLog,
-        '/api/equipment/declarations' => {
+        '/api/v1/daily-log' => _dailyLog,
+        '/api/v1/equipment/declarations' => {
           'declarations': [_declaration],
           'total': 1,
           'page': 1,
           'pages': 1,
           'pageSize': 5,
         },
-        '/api/equipment/options' => {
+        '/api/v1/equipment/options' => {
           'partners': [
             {'id': 8, 'name': 'Empresa desde API', 'type': 'Contratista'},
           ],
@@ -1717,12 +1706,12 @@ void main() {
     expect(
       requestedPaths,
       containsAll({
-        '/api/business-partners',
-        '/api/external-staff',
-        '/api/equipment/declarations',
-        '/api/equipment/options',
-        '/api/appointments',
-        '/api/daily-log',
+        '/api/v1/business-partners',
+        '/api/v1/external-staff',
+        '/api/v1/equipment/declarations',
+        '/api/v1/equipment/options',
+        '/api/v1/appointments',
+        '/api/v1/daily-log',
       }),
     );
     expect(dailyLogQuery?['pageSize'], '5');

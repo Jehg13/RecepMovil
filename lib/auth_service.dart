@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'src/web_http_client_stub.dart'
     if (dart.library.js_interop) 'src/web_http_client.dart';
@@ -113,6 +114,22 @@ class AuthenticatedUser {
       sectionAccess: List<String>.unmodifiable(sectionAccess.cast<String>()),
     );
   }
+}
+
+class MobileAppUpdate {
+  const MobileAppUpdate({
+    required this.version,
+    required this.build,
+    required this.installedBuild,
+    required this.notes,
+    required this.downloadUrl,
+  });
+
+  final String version;
+  final int build;
+  final int installedBuild;
+  final String notes;
+  final Uri downloadUrl;
 }
 
 class AccessAccount {
@@ -524,6 +541,57 @@ class AuthService {
   final SessionCookieStorage _cookieStorage;
   final String _baseUrl;
   final bool _isWeb;
+
+  Future<MobileAppUpdate?> checkForMobileAppUpdate({
+    required String channel,
+  }) async {
+    if (channel != 'phone' && channel != 'tablet') {
+      throw const AuthApiException('El canal de actualización no es válido.');
+    }
+    final packageInfo = await PackageInfo.fromPlatform();
+    final build = int.tryParse(packageInfo.buildNumber);
+    if (build == null || build < 0) {
+      throw const AuthApiException(
+        'No se pudo determinar la compilación instalada de la aplicación.',
+      );
+    }
+    final response = await _send(
+      () => _client.get(
+        _uri('/api/app-releases/latest?channel=$channel&build=$build'),
+      ),
+    );
+    if (response.statusCode != 200) throw _responseError(response);
+    final payload = jsonDecode(response.body);
+    if (payload is! Map<String, dynamic> ||
+        payload['updateAvailable'] is! bool) {
+      throw const AuthApiException(
+        'La respuesta de actualización no tiene un formato válido.',
+      );
+    }
+    if (payload['updateAvailable'] != true) return null;
+    final release = payload['release'];
+    if (release is! Map<String, dynamic> ||
+        release['version'] is! String ||
+        release['build'] is! int ||
+        release['notes'] is! String ||
+        release['downloadUrl'] is! String) {
+      throw const AuthApiException(
+        'Los datos de la actualización no tienen un formato válido.',
+      );
+    }
+    if ((release['build'] as int) <= build) return null;
+    final downloadUrl = _uri(release['downloadUrl'] as String);
+    if (downloadUrl.scheme != 'https' && downloadUrl.scheme != 'http') {
+      throw const AuthApiException('El enlace de descarga no es válido.');
+    }
+    return MobileAppUpdate(
+      version: release['version'] as String,
+      build: release['build'] as int,
+      installedBuild: build,
+      notes: release['notes'] as String,
+      downloadUrl: downloadUrl,
+    );
+  }
 
   String equipmentDeclarationUrl(String token) {
     final configuredUrl = _configuredPublicAppUrl.trim();
@@ -1578,7 +1646,14 @@ class AuthService {
     return List<Department>.unmodifiable(departments.map(Department.fromJson));
   }
 
-  Uri _uri(String path) => Uri.parse('$_baseUrl$path');
+  Uri _uri(String path) {
+    final versionedPath = path == '/api/v1' || path.startsWith('/api/v1/')
+        ? path
+        : path.startsWith('/api/')
+        ? '/api/v1/${path.substring('/api/'.length)}'
+        : path;
+    return Uri.parse('$_baseUrl$versionedPath');
+  }
 
   Future<Map<String, String>> _sessionHeaders() async {
     if (_isWeb) return const {};

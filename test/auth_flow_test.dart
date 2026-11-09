@@ -13,7 +13,7 @@ void main() {
   ) async {
     final service = _service(
       MockClient((request) async {
-        if (request.url.path == '/api/auth/login') {
+        if (request.url.path == '/api/v1/auth/login') {
           return http.Response(
             jsonEncode({'user': _userJson}),
             200,
@@ -41,7 +41,7 @@ void main() {
   ) async {
     final service = _service(
       MockClient((request) async {
-        if (request.url.path == '/api/auth/login') {
+        if (request.url.path == '/api/v1/auth/login') {
           return http.Response(
             jsonEncode({'user': _hostUserJson}),
             200,
@@ -103,7 +103,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     final service = _service(
       MockClient((request) async {
-        if (request.url.path == '/api/auth/session') {
+        if (request.url.path == '/api/v1/auth/session') {
           return http.Response(
             jsonEncode({'user': _userJson, 'accounts': []}),
             200,
@@ -129,7 +129,7 @@ void main() {
   ) async {
     final service = _service(
       MockClient((request) async {
-        if (request.url.path == '/api/appointments') {
+        if (request.url.path == '/api/v1/appointments') {
           return http.Response(
             jsonEncode({
               'appointments': [
@@ -150,7 +150,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/daily-log') {
+        if (request.url.path == '/api/v1/daily-log') {
           return http.Response(
             jsonEncode({
               'summary': {'insideNow': 2, 'pendingArrivals': 1},
@@ -168,7 +168,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/daily-log/stats') {
+        if (request.url.path == '/api/v1/daily-log/stats') {
           return http.Response(
             jsonEncode({
               'stats': [
@@ -345,7 +345,7 @@ void main() {
     final service = _service(
       MockClient((request) async {
         if (request.method == 'POST' &&
-            request.url.path == '/api/auth/logout') {
+            request.url.path == '/api/v1/auth/logout') {
           return http.Response('', 204);
         }
         return _dashboardResponse(request);
@@ -399,7 +399,7 @@ void main() {
     final service = _service(
       MockClient((request) async {
         if (request.method == 'POST' &&
-            request.url.path == '/api/auth/logout') {
+            request.url.path == '/api/v1/auth/logout') {
           return http.Response('', 204);
         }
         return _dashboardResponse(request);
@@ -511,7 +511,7 @@ void main() {
       ..value = 'visitas_session=opaque-token';
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
-      if (request.url.path == '/api/auth/session') {
+      if (request.url.path == '/api/v1/auth/session') {
         return http.Response(
           jsonEncode({
             'user': _adminUserJson,
@@ -522,7 +522,7 @@ void main() {
       }
 
       expect(request.method, 'PUT');
-      expect(request.url.path, '/api/access/cuenta-1');
+      expect(request.url.path, '/api/v1/access/cuenta-1');
       expect(jsonDecode(request.body), {
         'sections': ['administrador'],
       });
@@ -600,10 +600,11 @@ void main() {
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
       if (request.method == 'GET' &&
-          request.url.path == '/api/department-hosts') {
+          request.url.path == '/api/v1/department-hosts') {
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
-      if (request.method == 'GET' && request.url.path == '/api/host-accounts') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/host-accounts') {
         return http.Response(
           jsonEncode({
             'accounts': [
@@ -619,7 +620,8 @@ void main() {
           200,
         );
       }
-      if (request.method == 'GET' && request.url.path == '/api/departments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/departments') {
         return http.Response(
           jsonEncode({
             'departments': [
@@ -631,13 +633,13 @@ void main() {
         );
       }
       if (request.method == 'PATCH' &&
-          request.url.path == '/api/department-hosts/8') {
+          request.url.path == '/api/v1/department-hosts/8') {
         expect(jsonDecode(request.body), {'departmentId': 5});
         hosts[0]['departmentId'] = 5;
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
       if (request.method == 'POST' &&
-          request.url.path == '/api/department-hosts') {
+          request.url.path == '/api/v1/department-hosts') {
         expect(jsonDecode(request.body), {
           'login': 'access-host',
           'name': 'Host Desde Accesos',
@@ -659,7 +661,7 @@ void main() {
         return http.Response(jsonEncode({'hosts': hosts}), 201);
       }
       if (request.method == 'DELETE' &&
-          request.url.path == '/api/department-hosts/8') {
+          request.url.path == '/api/v1/department-hosts/8') {
         hosts.clear();
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
@@ -758,11 +760,12 @@ void main() {
     ];
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
-      if (request.method == 'GET' && request.url.path == '/api/departments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/departments') {
         return http.Response(jsonEncode({'departments': departments}), 200);
       }
       if (request.method == 'POST') {
-        expect(request.url.path, '/api/departments');
+        expect(request.url.path, '/api/v1/departments');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         departments.add({
           'id': 5,
@@ -772,7 +775,7 @@ void main() {
         return http.Response(jsonEncode({'departments': departments}), 201);
       }
       if (request.method == 'PATCH') {
-        expect(request.url.path, '/api/departments/1');
+        expect(request.url.path, '/api/v1/departments/1');
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         departments[0] = {
           'id': 1,
@@ -782,7 +785,7 @@ void main() {
         return http.Response(jsonEncode({'departments': departments}), 200);
       }
       if (request.method == 'DELETE') {
-        expect(request.url.path, '/api/departments/1');
+        expect(request.url.path, '/api/v1/departments/1');
         departments.removeWhere((department) => department['id'] == 1);
         return http.Response(jsonEncode({'departments': departments}), 200);
       }
@@ -879,10 +882,10 @@ AuthService _service(http.Client client, {bool isWeb = false}) {
 }
 
 http.Response _dashboardResponse(http.Request request) {
-  if (request.url.path == '/api/appointments') {
+  if (request.url.path == '/api/v1/appointments') {
     return http.Response(jsonEncode({'appointments': []}), 200);
   }
-  if (request.url.path == '/api/daily-log') {
+  if (request.url.path == '/api/v1/daily-log') {
     return http.Response(
       jsonEncode({
         'summary': {'insideNow': 0, 'pendingArrivals': 0},
@@ -891,7 +894,7 @@ http.Response _dashboardResponse(http.Request request) {
       200,
     );
   }
-  if (request.url.path == '/api/daily-log/stats') {
+  if (request.url.path == '/api/v1/daily-log/stats') {
     return http.Response(jsonEncode({'stats': []}), 200);
   }
   return http.Response('', 404);

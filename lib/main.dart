@@ -3,16 +3,18 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, kIsWeb, TargetPlatform;
+    show defaultTargetPlatform, kDebugMode, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:gal/gal.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'auth_service.dart';
@@ -26,6 +28,456 @@ const _white = Color(0xFFF4F7FF);
 const _mutedWhite = Color(0xFFD4DDF0);
 const _welcomeDescriptionFirstLine = 'Registra tus visitas de forma rápida,';
 const _logoArtworkWidthRatio = 0.764;
+final _appUpdateNavigatorKey = GlobalKey<NavigatorState>();
+
+class _MobileAppUpdateCoordinator extends StatefulWidget {
+  const _MobileAppUpdateCoordinator({
+    required this.authService,
+    required this.child,
+  });
+
+  final AuthService authService;
+  final Widget child;
+
+  @override
+  State<_MobileAppUpdateCoordinator> createState() =>
+      _MobileAppUpdateCoordinatorState();
+}
+
+class _MobileAppUpdateCoordinatorState
+    extends State<_MobileAppUpdateCoordinator>
+    with WidgetsBindingObserver {
+  final Set<int> _notifiedBuilds = {};
+  final FlutterSecureStorage _updateNoticeStorage =
+      const FlutterSecureStorage();
+  bool _checking = false;
+  bool _initialCheckScheduled = false;
+  bool _startupReady = false;
+  Timer? _retryTimer;
+
+  bool get _enabled =>
+      !kIsWeb && !kDebugMode && defaultTargetPlatform == TargetPlatform.android;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_enabled || _initialCheckScheduled) return;
+    _initialCheckScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _startupReady = true;
+      _checkForUpdate();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _startupReady) {
+      _checkForUpdate();
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (!mounted || !_enabled || _checking) return;
+    _checking = true;
+    try {
+      final size = MediaQuery.sizeOf(context);
+      final channel = size.shortestSide >= 600 || size.width > size.height
+          ? 'tablet'
+          : 'phone';
+      final update = await widget.authService.checkForMobileAppUpdate(
+        channel: channel,
+      );
+      if (!mounted ||
+          update == null ||
+          _notifiedBuilds.contains(update.build)) {
+        return;
+      }
+      _retryTimer?.cancel();
+      final noticeKey =
+          'reception_app_update_notice_v3_${channel}_${update.installedBuild}';
+      String? lastNotifiedBuild;
+      try {
+        lastNotifiedBuild = await _updateNoticeStorage.read(key: noticeKey);
+      } catch (error, stackTrace) {
+        debugPrint(
+          'No se pudo leer el aviso guardado de actualización: $error',
+        );
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (lastNotifiedBuild == update.build.toString()) {
+        _notifiedBuilds.add(update.build);
+        return;
+      }
+      if (!mounted) return;
+      final overlayContext =
+          _appUpdateNavigatorKey.currentState?.overlay?.context;
+      if (overlayContext == null || !overlayContext.mounted) return;
+      final shouldDownload = await showDialog<bool>(
+        context: overlayContext,
+        barrierDismissible: false,
+        builder: (dialogContext) =>
+            _MobileAppUpdateDialog(update: update, channel: channel),
+      );
+      if (shouldDownload == null) return;
+      _notifiedBuilds.add(update.build);
+      try {
+        await _updateNoticeStorage.write(
+          key: noticeKey,
+          value: update.build.toString(),
+        );
+      } catch (error, stackTrace) {
+        debugPrint('No se pudo guardar el aviso de actualización: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (shouldDownload != true) return;
+      final opened = await launchUrl(
+        update.downloadUrl,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) {
+        final latestOverlayContext =
+            _appUpdateNavigatorKey.currentState?.overlay?.context;
+        if (latestOverlayContext == null || !latestOverlayContext.mounted) {
+          return;
+        }
+        await showDialog<void>(
+          context: latestOverlayContext,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('No se pudo abrir la descarga'),
+            content: const Text(
+              'Verifica tu conexión e inténtalo de nuevo más tarde.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Aceptar'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('No se pudo comprobar la actualización móvil: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 15), () {
+        if (mounted &&
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed) {
+          _checkForUpdate();
+        }
+      });
+    } finally {
+      _checking = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+class _MobileAppUpdateDialog extends StatelessWidget {
+  const _MobileAppUpdateDialog({required this.update, required this.channel});
+
+  final MobileAppUpdate update;
+  final String channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final isTablet = channel == 'tablet';
+    const surface = Color(0xFF0D1832);
+    const secondarySurface = Color(0xFF111F3D);
+    const muted = Color(0xFFB7C5DC);
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 430),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(26),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: surface,
+              borderRadius: BorderRadius.circular(26),
+              border: Border.all(color: const Color(0xFF29466C)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x70000000),
+                  blurRadius: 38,
+                  offset: Offset(0, 20),
+                ),
+              ],
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: -90,
+                  right: -72,
+                  child: Container(
+                    width: 220,
+                    height: 220,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: RadialGradient(
+                        colors: [
+                          _blue.withValues(alpha: 0.2),
+                          _blue.withValues(alpha: 0),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      height: 5,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [_red, Color(0xFF663CFF), _blue],
+                          ),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 24, 24, 22),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 52,
+                                height: 52,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(17),
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Color(0xFF163F72),
+                                      Color(0xFF102A4E),
+                                    ],
+                                  ),
+                                  border: Border.all(
+                                    color: const Color(0xFF3B72AC),
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.system_update_alt_rounded,
+                                  color: Color(0xFF92C9FF),
+                                  size: 27,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 5,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF163B66),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(
+                                          color: const Color(0xFF2D5C8D),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        isTablet
+                                            ? 'ACTUALIZACIÓN PARA TABLET'
+                                            : 'ACTUALIZACIÓN PARA CELULAR',
+                                        style: const TextStyle(
+                                          color: Color(0xFFA8D4FF),
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: 0.7,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Text(
+                                      'Nueva versión disponible',
+                                      style: TextStyle(
+                                        color: _white,
+                                        fontSize: 20,
+                                        height: 1.15,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 15,
+                              vertical: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: secondarySurface,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: const Color(0xFF223A60),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.verified_rounded,
+                                  size: 19,
+                                  color: Color(0xFF65C8BC),
+                                ),
+                                const SizedBox(width: 9),
+                                Expanded(
+                                  child: Text(
+                                    'Versión ${update.version}',
+                                    style: const TextStyle(
+                                      color: _white,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  'BUILD ${update.build}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF91A9C9),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.8,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (update.notes.trim().isNotEmpty) ...[
+                            const SizedBox(height: 18),
+                            const Text(
+                              'NOVEDADES',
+                              style: TextStyle(
+                                color: Color(0xFF89BFFF),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                            const SizedBox(height: 7),
+                            Text(
+                              update.notes.trim(),
+                              style: const TextStyle(
+                                color: muted,
+                                fontSize: 14,
+                                height: 1.5,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(
+                                Icons.info_outline_rounded,
+                                size: 17,
+                                color: Color(0xFF91A9C9),
+                              ),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  'Descarga el APK y confirma la instalación cuando Android lo solicite.',
+                                  style: TextStyle(
+                                    color: Color(0xFF9EADC4),
+                                    fontSize: 12,
+                                    height: 1.45,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 22),
+                          Wrap(
+                            alignment: WrapAlignment.end,
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: [
+                              TextButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(false),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFFC1CEE2),
+                                  minimumSize: const Size(110, 46),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'Más tarde',
+                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              FilledButton.icon(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(true),
+                                icon: const Icon(
+                                  Icons.download_rounded,
+                                  size: 19,
+                                ),
+                                label: const Text('Descargar'),
+                                style: FilledButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  backgroundColor: const Color(0xFF126DC2),
+                                  minimumSize: const Size(150, 48),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  textStyle: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _TabletLandscapeGuard extends StatelessWidget {
   const _TabletLandscapeGuard({required this.child});
@@ -228,19 +680,22 @@ Future<ui.Image> _loadSplashImage(String assetPath) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  var tabletStartup = false;
   if (!kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS)) {
     final view = WidgetsBinding.instance.platformDispatcher.views.first;
-    final isTablet =
+    tabletStartup =
         view.physicalSize.shortestSide / view.devicePixelRatio >= 600;
     await SystemChrome.setPreferredOrientations(
-      isTablet
+      tabletStartup
           ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
           : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
     );
   }
-  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  await SystemChrome.setEnabledSystemUIMode(
+    tabletStartup ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+  );
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -287,6 +742,7 @@ class ReceptionApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _appUpdateNavigatorKey,
       title: 'Cymez Recep',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -311,8 +767,7 @@ class ReceptionApp extends StatelessWidget {
           builder: (context, constraints) {
             return ColoredBox(
               color: const Color(0xFF03091A),
-              child: Align(
-                alignment: Alignment.topCenter,
+              child: SizedBox.expand(
                 child: MediaQuery(
                   data: MediaQuery.of(context).copyWith(
                     textScaler: TextScaler.linear(
@@ -338,10 +793,13 @@ class ReceptionApp extends StatelessWidget {
               mobileSplashImage: mobileSplashImage,
               tabletSplashImage: tabletSplashImage,
             )
-          : _ResponsiveReceptionEntry(
-              authService: authService,
-              onboardingStorage: onboardingStorage,
-              visitorKioskDraftStorage: visitorKioskDraftStorage,
+          : _MobileAppUpdateCoordinator(
+              authService: authService ?? AuthService.shared,
+              child: _ResponsiveReceptionEntry(
+                authService: authService,
+                onboardingStorage: onboardingStorage,
+                visitorKioskDraftStorage: visitorKioskDraftStorage,
+              ),
             ),
     );
   }
@@ -721,6 +1179,8 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
   static const _progressDuration = Duration(milliseconds: 2000);
   late final Future<void> _splashDelay;
   late final AnimationController _loadingAnimation;
+  bool _tabletOrientationRequested = false;
+  bool _systemUiRestored = false;
 
   @override
   void initState() {
@@ -730,6 +1190,22 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
       vsync: this,
       duration: _progressDuration,
     )..forward();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_tabletOrientationRequested ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        MediaQuery.sizeOf(context).shortestSide < 600) {
+      return;
+    }
+    _tabletOrientationRequested = true;
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
   }
 
   @override
@@ -744,10 +1220,21 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
       future: _splashDelay,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.done) {
-          return _ResponsiveReceptionEntry(
-            authService: widget.authService,
-            onboardingStorage: widget.onboardingStorage,
-            visitorKioskDraftStorage: widget.visitorKioskDraftStorage,
+          if (_tabletOrientationRequested && !_systemUiRestored) {
+            _systemUiRestored = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+              }
+            });
+          }
+          return _MobileAppUpdateCoordinator(
+            authService: widget.authService ?? AuthService.shared,
+            child: _ResponsiveReceptionEntry(
+              authService: widget.authService,
+              onboardingStorage: widget.onboardingStorage,
+              visitorKioskDraftStorage: widget.visitorKioskDraftStorage,
+            ),
           );
         }
 
@@ -762,16 +1249,14 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
               final splashImage = tablet
                   ? widget.tabletSplashImage
                   : widget.mobileSplashImage;
+              const splashFit = BoxFit.cover;
               return Stack(
                 fit: StackFit.expand,
                 children: [
                   if (splashImage == null)
                     Image.asset(
                       splashAsset,
-                      fit:
-                          tablet && constraints.maxHeight > constraints.maxWidth
-                          ? BoxFit.contain
-                          : BoxFit.cover,
+                      fit: splashFit,
                       filterQuality: FilterQuality.high,
                       semanticLabel: 'CYMEZ Recepción, control de acceso',
                     )
@@ -780,11 +1265,7 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
                       label: 'CYMEZ Recepción, control de acceso',
                       child: RawImage(
                         image: splashImage,
-                        fit:
-                            tablet &&
-                                constraints.maxHeight > constraints.maxWidth
-                            ? BoxFit.contain
-                            : BoxFit.cover,
+                        fit: splashFit,
                         filterQuality: FilterQuality.high,
                       ),
                     ),

@@ -106,6 +106,10 @@ void main() {
     );
 
     expect(
+      tester.getRect(find.byType(Scaffold).first),
+      Offset.zero & const Size(390, 844),
+    );
+    expect(
       find.byWidgetPredicate(
         (widget) =>
             widget is Image &&
@@ -143,14 +147,21 @@ void main() {
     );
 
     expect(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is Image &&
-            widget.image is AssetImage &&
-            (widget.image as AssetImage).assetName ==
-                'assets/images/reception-tablet-splash.png',
-      ),
-      findsOneWidget,
+      tester.getRect(find.byType(Scaffold).first),
+      Offset.zero & const Size(1024, 768),
+    );
+    final tabletSplash = find.byWidgetPredicate(
+      (widget) =>
+          widget is Image &&
+          widget.image is AssetImage &&
+          (widget.image as AssetImage).assetName ==
+              'assets/images/reception-tablet-splash.png' &&
+          widget.fit == BoxFit.cover,
+    );
+    expect(tabletSplash, findsOneWidget);
+    expect(
+      tester.getRect(tabletSplash),
+      Offset.zero & const Size(1024, 768),
     );
     expect(
       find.byKey(const ValueKey('startup-splash-loading-bar')),
@@ -471,7 +482,7 @@ void main() {
     String? registrationKey;
     final service = AuthService(
       client: MockClient((request) async {
-        if (request.url.path == '/api/visitor-kiosk/registrations' &&
+        if (request.url.path == '/api/v1/visitor-kiosk/registrations' &&
             request.method == 'POST') {
           registrationKey = request.headers['Idempotency-Key'];
           submittedRegistration =
@@ -481,7 +492,7 @@ void main() {
             201,
           );
         }
-        if (request.url.path == '/api/visitor-kiosk/status') {
+        if (request.url.path == '/api/v1/visitor-kiosk/status') {
           expect(request.headers['Idempotency-Key'], registrationKey);
           return http.Response(
             jsonEncode({
@@ -494,7 +505,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/visitor-kiosk/events') {
+        if (request.url.path == '/api/v1/visitor-kiosk/events') {
           expect(request.url.queryParameters['key'], registrationKey);
           return http.Response(': connected\n\ndata: update\n\n', 200);
         }
@@ -606,7 +617,7 @@ void main() {
       };
     final service = AuthService(
       client: MockClient((request) async {
-        if (request.url.path == '/api/visitor-kiosk/status') {
+        if (request.url.path == '/api/v1/visitor-kiosk/status') {
           expect(request.headers['Idempotency-Key'], idempotencyKey);
           return http.Response(
             jsonEncode({
@@ -619,7 +630,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/visitor-kiosk/events') {
+        if (request.url.path == '/api/v1/visitor-kiosk/events') {
           expect(request.url.queryParameters['key'], idempotencyKey);
           return http.Response(': connected\n\n', 200);
         }
@@ -1956,7 +1967,7 @@ void main() {
     Map<String, dynamic>? recoveryRequest;
     final service = AuthService(
       client: MockClient((request) async {
-        expect(request.url.path, '/api/auth/password-recovery');
+        expect(request.url.path, '/api/v1/auth/password-recovery');
         recoveryRequest = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response(
           jsonEncode({
@@ -2117,7 +2128,7 @@ void main() {
       client: MockClient((request) async {
         final dashboardResponse = _homeDashboardResponse(request);
         if (dashboardResponse != null) return dashboardResponse;
-        expect(request.url.path, '/api/departments');
+        expect(request.url.path, '/api/v1/departments');
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
         return http.Response(
           jsonEncode({
@@ -2301,10 +2312,10 @@ AuthService _homeDashboardService() => AuthService(
 );
 
 http.Response? _homeDashboardResponse(http.Request request) {
-  if (request.url.path == '/api/appointments') {
+  if (request.url.path == '/api/v1/appointments') {
     return http.Response(jsonEncode({'appointments': []}), 200);
   }
-  if (request.url.path == '/api/daily-log') {
+  if (request.url.path == '/api/v1/daily-log') {
     final page = int.tryParse(request.url.queryParameters['page'] ?? '') ?? 1;
     return http.Response(
       jsonEncode({
@@ -2338,7 +2349,7 @@ http.Response? _homeDashboardResponse(http.Request request) {
       200,
     );
   }
-  if (request.url.path == '/api/daily-log/stats') {
+  if (request.url.path == '/api/v1/daily-log/stats') {
     return http.Response(
       jsonEncode({
         'stats': [

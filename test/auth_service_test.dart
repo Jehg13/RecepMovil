@@ -10,7 +10,7 @@ void main() {
     final service = AuthService(
       client: MockClient((request) async {
         expect(request.method, 'POST');
-        expect(request.url.path, '/api/auth/password-recovery');
+        expect(request.url.path, '/api/v1/auth/password-recovery');
         expect(jsonDecode(request.body), {'email': 'persona@example.test'});
         return http.Response(
           jsonEncode({
@@ -36,7 +36,7 @@ void main() {
     () async {
       final service = AuthService(
         client: MockClient((request) async {
-          expect(request.url.path, '/api/auth/login');
+          expect(request.url.path, '/api/v1/auth/login');
           return http.Response(
             jsonEncode({
               'error': 'Demasiados intentos fallidos. Espera 5 minutos antes de volver a intentarlo.',
@@ -79,7 +79,7 @@ void main() {
         client: MockClient((request) async {
           expect(request.headers['Idempotency-Key'], idempotencyKey);
           if (request.method == 'POST') {
-            expect(request.url.path, '/api/visitor-kiosk/registrations');
+            expect(request.url.path, '/api/v1/visitor-kiosk/registrations');
             submittedRegistration =
                 jsonDecode(request.body) as Map<String, dynamic>;
             return http.Response(
@@ -88,7 +88,7 @@ void main() {
             );
           }
           expect(request.method, 'GET');
-          expect(request.url.path, '/api/visitor-kiosk/status');
+          expect(request.url.path, '/api/v1/visitor-kiosk/status');
           return http.Response(
             jsonEncode({
               'folio': '12345678',
@@ -143,7 +143,7 @@ void main() {
     () async {
       final client = MockClient((request) async {
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
-        if (request.url.path == '/api/appointments') {
+        if (request.url.path == '/api/v1/appointments') {
           return http.Response(
             jsonEncode({
               'appointments': [
@@ -172,7 +172,7 @@ void main() {
             200,
           );
         }
-        if (request.url.path == '/api/daily-log') {
+        if (request.url.path == '/api/v1/daily-log') {
           if (request.url.queryParameters['from'] == '2026-11-03') {
             expect(request.url.queryParameters['to'], '2026-11-03');
             return http.Response(
@@ -209,7 +209,7 @@ void main() {
             200,
           );
         }
-        expect(request.url.path, '/api/daily-log/stats');
+        expect(request.url.path, '/api/v1/daily-log/stats');
         expect(request.url.queryParameters['from'], '2026-10-28');
         expect(request.url.queryParameters['to'], '2026-11-03');
         return http.Response(
@@ -294,7 +294,7 @@ void main() {
       final service = AuthService(
         client: MockClient((request) async {
           expect(request.method, 'GET');
-          expect(request.url.path, '/api/events');
+          expect(request.url.path, '/api/v1/events');
           expect(request.headers['accept'], 'text/event-stream');
           expect(request.headers['cookie'], 'visitas_session=opaque-token');
           return http.Response(': connected\n\ndata: update\n\n', 200);
@@ -316,7 +316,7 @@ void main() {
     final service = AuthService(
       client: MockClient((request) async {
         expect(request.method, 'GET');
-        expect(request.url.path, '/api/visitor-kiosk/events');
+        expect(request.url.path, '/api/v1/visitor-kiosk/events');
         expect(request.url.queryParameters['key'], idempotencyKey);
         expect(request.headers['accept'], 'text/event-stream');
         expect(request.headers.containsKey('cookie'), isFalse);
@@ -340,7 +340,7 @@ void main() {
       final cookieStorage = _MemorySessionCookieStorage();
       var sessionRequests = 0;
       final client = MockClient((request) async {
-        if (request.url.path == '/api/auth/login') {
+        if (request.url.path == '/api/v1/auth/login') {
           expect(request.method, 'POST');
           expect(jsonDecode(request.body), {
             'identifier': 'recepcion',
@@ -353,7 +353,7 @@ void main() {
           );
         }
 
-        if (request.url.path == '/api/auth/session') {
+        if (request.url.path == '/api/v1/auth/session') {
           sessionRequests++;
           expect(request.headers['cookie'], 'visitas_session=opaque-token');
           return http.Response(
@@ -362,7 +362,7 @@ void main() {
           );
         }
 
-        if (request.url.path == '/api/auth/logout') {
+        if (request.url.path == '/api/v1/auth/logout') {
           expect(request.method, 'POST');
           expect(request.headers['cookie'], 'visitas_session=opaque-token');
           return http.Response('', 204);
@@ -396,7 +396,7 @@ void main() {
     final cookieStorage = _MemorySessionCookieStorage();
     final hostUser = {..._userJson, ..._hostUserJson};
     final client = MockClient((request) async {
-      if (request.url.path == '/api/auth/login') {
+      if (request.url.path == '/api/v1/auth/login') {
         return http.Response(
           jsonEncode({'user': hostUser}),
           200,
@@ -404,7 +404,7 @@ void main() {
         );
       }
 
-      if (request.url.path == '/api/auth/session') {
+      if (request.url.path == '/api/v1/auth/session') {
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
         return http.Response(jsonEncode({'user': hostUser}), 200);
       }
@@ -431,7 +431,7 @@ void main() {
 
   test('rechaza cuentas sin secciones habilitadas', () async {
     final client = MockClient((request) async {
-      if (request.url.path == '/api/auth/login') {
+      if (request.url.path == '/api/v1/auth/login') {
         return http.Response(
           jsonEncode({
             'user': {..._userJson, 'sectionAccess': <String>[]},
@@ -440,7 +440,7 @@ void main() {
           headers: {'set-cookie': 'visitas_session=opaque-token; HttpOnly'},
         );
       }
-      if (request.url.path == '/api/auth/logout') {
+      if (request.url.path == '/api/v1/auth/logout') {
         return http.Response('', 204);
       }
       return http.Response('', 404);
@@ -479,7 +479,7 @@ void main() {
     var sessionRequestCount = 0;
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
-      if (request.url.path == '/api/auth/session') {
+      if (request.url.path == '/api/v1/auth/session') {
         sessionRequestCount++;
         return http.Response(
           jsonEncode({
@@ -490,7 +490,7 @@ void main() {
         );
       }
 
-      expect(request.url.path, '/api/access/cuenta-1');
+      expect(request.url.path, '/api/v1/access/cuenta-1');
       expect(request.method, 'PUT');
       expect(jsonDecode(request.body), {
         'sections': ['administrador'],
@@ -531,7 +531,8 @@ void main() {
       ..value = 'visitas_session=opaque-token';
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
-      if (request.method == 'GET' && request.url.path == '/api/departments') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/departments') {
         return http.Response(
           jsonEncode({
             'departments': [
@@ -542,7 +543,7 @@ void main() {
         );
       }
       if (request.method == 'POST') {
-        expect(request.url.path, '/api/departments');
+        expect(request.url.path, '/api/v1/departments');
         expect(jsonDecode(request.body), {'name': 'Recursos Humanos'});
         return http.Response(
           jsonEncode({
@@ -555,7 +556,7 @@ void main() {
         );
       }
       if (request.method == 'PATCH') {
-        expect(request.url.path, '/api/departments/1');
+        expect(request.url.path, '/api/v1/departments/1');
         expect(jsonDecode(request.body), {'name': 'Calidad e Innovación'});
         return http.Response(
           jsonEncode({
@@ -568,7 +569,7 @@ void main() {
         );
       }
       if (request.method == 'DELETE') {
-        expect(request.url.path, '/api/departments/1');
+        expect(request.url.path, '/api/v1/departments/1');
         return http.Response(
           jsonEncode({
             'departments': [
@@ -613,10 +614,11 @@ void main() {
     final client = MockClient((request) async {
       expect(request.headers['cookie'], 'visitas_session=opaque-token');
       if (request.method == 'GET' &&
-          request.url.path == '/api/department-hosts') {
+          request.url.path == '/api/v1/department-hosts') {
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
-      if (request.method == 'GET' && request.url.path == '/api/host-accounts') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/host-accounts') {
         return http.Response(
           jsonEncode({
             'accounts': [
@@ -633,7 +635,7 @@ void main() {
         );
       }
       if (request.method == 'POST' &&
-          request.url.path == '/api/department-hosts') {
+          request.url.path == '/api/v1/department-hosts') {
         expect(jsonDecode(request.body), {
           'login': 'host-1',
           'name': 'Host One',
@@ -646,13 +648,13 @@ void main() {
         return http.Response(jsonEncode({'hosts': hosts}), 201);
       }
       if (request.method == 'PATCH' &&
-          request.url.path == '/api/department-hosts/1') {
+          request.url.path == '/api/v1/department-hosts/1') {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         hosts[0] = {..._departmentHostJson, ...body};
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
       if (request.method == 'DELETE' &&
-          request.url.path == '/api/department-hosts/1') {
+          request.url.path == '/api/v1/department-hosts/1') {
         hosts.clear();
         return http.Response(jsonEncode({'hosts': hosts}), 200);
       }
@@ -694,7 +696,7 @@ void main() {
       client: MockClient((request) async {
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
         if (request.method == 'GET' &&
-            request.url.path == '/api/equipment/declarations/42') {
+            request.url.path == '/api/v1/equipment/declarations/42') {
           return http.Response(
             jsonEncode({
               'declaration': {
@@ -711,7 +713,7 @@ void main() {
         }
         if (request.method == 'PUT' &&
             request.url.path ==
-                '/api/equipment/declarations/42/inspections/entrada') {
+                '/api/v1/equipment/declarations/42/inspections/entrada') {
           expect(jsonDecode(request.body), {
             'items': [
               {
