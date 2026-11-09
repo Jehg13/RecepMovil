@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -763,6 +764,203 @@ void main() {
         'returnedToVisitor': false,
       },
     ]);
+  });
+
+  test('administra visitantes personales y vincula su ID a una cita', () async {
+    final visitor = {
+      'id': 27,
+      'fullName': 'Ana Pérez',
+      'phone': '5551234567',
+      'email': 'ana@example.test',
+    };
+    final appointment = {
+      'id': 91,
+      'date': '2026-11-09',
+      'time': '10:00',
+      'visitor': 'Ana Pérez',
+      'email': 'ana@example.test',
+      'referenceCode': 'REF-91',
+      'company': 'Empresa',
+      'host': 'Anfitrión',
+      'status': 'Pendiente',
+      'businessPartnerId': 4,
+      'visitorRecordId': 27,
+      'equipmentChecklistRequired': false,
+    };
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/host-visitors') {
+          return http.Response(
+            jsonEncode({
+              'visitors': [visitor],
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/host-visitors') {
+          expect(jsonDecode(request.body), {
+            'fullName': 'Ana Pérez',
+            'phone': '5551234567',
+            'email': 'ana@example.test',
+          });
+          return http.Response(
+            jsonEncode({
+              'visitors': [visitor],
+            }),
+            201,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/appointments') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expect(body['visitorRecordId'], 27);
+          return http.Response(
+            jsonEncode({
+              'appointments': [appointment],
+            }),
+            201,
+          );
+        }
+        return http.Response('', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final visitors = await service.getHostVisitors();
+    expect(visitors.single['id'], 27);
+    final created = await service.saveHostVisitor(
+      fullName: ' Ana Pérez ',
+      phone: ' 5551234567 ',
+      email: ' ana@example.test ',
+    );
+    expect(created.single['email'], 'ana@example.test');
+    final appointments = await service.saveAppointment({
+      'visitorName': 'Ana Pérez',
+      'visitorEmail': 'ana@example.test',
+      'visitorRecordId': 27,
+      'businessPartnerId': 4,
+      'hostName': 'Anfitrión',
+      'date': '2026-11-09',
+      'time': '10:00',
+    });
+    expect(appointments.single['visitorRecordId'], 27);
+    expect(appointments.single['referenceCode'], 'REF-91');
+  });
+
+  test('consulta temporizadores y registra el token de recepción', () async {
+    const timer = {
+      'id': 3,
+      'appointmentId': 91,
+      'visitorRecordId': 27,
+      'personName': 'Ana Pérez',
+      'phase': 'Llegada',
+      'intervalMinutes': 15,
+      'startedAt': '2026-11-09T15:00:00.000Z',
+      'dueAt': '2026-11-09T15:15:00.000Z',
+      'status': 'active',
+    };
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/daily-log/timers') {
+          return http.Response(
+            jsonEncode({
+              'timers': [timer],
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/daily-log/timers/3') {
+          expect(jsonDecode(request.body), {'action': 'snooze'});
+          return http.Response(
+            jsonEncode({
+              'timers': [timer],
+            }),
+            200,
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/notifications/config') {
+          return http.Response(
+            jsonEncode({
+              'firebase': {
+                'apiKey': 'public-key',
+                'appId': 'app-id',
+                'messagingSenderId': 'sender-id',
+                'projectId': 'project-id',
+              },
+              'webPushPublicKey': null,
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/notifications/config') {
+          expect(jsonDecode(request.body), {
+            'platform': 'mobile',
+            'token': 'fcm-token',
+          });
+          return http.Response('{}', 200);
+        }
+        return http.Response('', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    expect((await service.getDailyLogTimers()).single['intervalMinutes'], 15);
+    expect(
+      (await service.actOnDailyLogTimer(3, action: 'snooze')).single['id'],
+      3,
+    );
+    expect(
+      (await service.getNotificationFirebaseConfig())?['projectId'],
+      'project-id',
+    );
+    await service.registerMobileNotificationToken('fcm-token');
+  });
+
+  test('cierre de sesión continúa si falla retirar el token FCM', () async {
+    final tokenRemovalStarted = Completer<void>();
+    final cookieStorage = _MemorySessionCookieStorage()
+      ..value = 'visitas_session=opaque-token';
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.headers['cookie'], 'visitas_session=opaque-token');
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/notifications/config') {
+          return http.Response('{}', 200);
+        }
+        if (request.method == 'DELETE' &&
+            request.url.path == '/api/v1/notifications/config') {
+          expect(jsonDecode(request.body), {
+            'platform': 'mobile',
+            'token': 'fcm-token',
+          });
+          tokenRemovalStarted.complete();
+          return http.Response('{}', 503);
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/api/v1/auth/logout') {
+          return http.Response('', 204);
+        }
+        return http.Response('', 404);
+      }),
+      cookieStorage: cookieStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await service.registerMobileNotificationToken('fcm-token');
+    await service.logout();
+    await tokenRemovalStarted.future.timeout(const Duration(seconds: 1));
+    expect(cookieStorage.value, isNull);
   });
 }
 

@@ -43,6 +43,35 @@ La API debe incluir `http://localhost:59459` en `CORS_ALLOWED_ORIGINS`.
 Abre en Edge la URL que muestra la terminal; el puerto fijo permite que la
 cookie de sesión se comparta con la API autorizada.
 
+## Notificaciones de temporizadores
+
+Las alertas de la bitácora se sincronizan con el servidor. La app muestra y hace
+sonar las alertas vencidas mientras está abierta; las notificaciones cuando la
+app está en segundo plano requieren un proyecto Firebase Cloud Messaging
+configurado y los mensajes push de temporizadores del backend.
+
+En Android, coloca el archivo `google-services.json` de la app dentro de
+`android/app/google-services.json`. El proyecto aplica el plugin de Google
+Services para generar la configuración nativa que FCM necesita, también cuando
+la app se inicia en segundo plano. El endpoint autenticado de recepción
+`GET /api/notifications/config` proporciona los datos públicos de Firebase para
+registrar el token; al cerrar sesión, la app intenta retirar ese token sin
+retrasar el cierre si falla la solicitud.
+
+```powershell
+flutter build apk --release
+```
+
+No agregues la clave privada de Firebase Admin SDK a la app. En iOS, añade
+`--dart-define=FIREBASE_IOS_BUNDLE_ID=<bundle-id>`, configura APNs en Firebase
+y habilita Remote Notifications en la firma/capabilities de la aplicación.
+Android e iOS solicitarán el permiso de notificaciones. El archivo de
+configuración Android contiene identificadores de cliente, no la clave privada
+Admin; aun así, mantenlo asociado únicamente a este proyecto. Sin configuración
+Firebase, la app mantiene las alertas sonoras en primer plano y muestra el
+estado de configuración; no afirma que las notificaciones en segundo plano
+estén activas.
+
 ## Validar
 
 ```powershell

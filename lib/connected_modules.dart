@@ -12,6 +12,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'app_feedback.dart';
 import 'auth_service.dart';
 import 'reception_header.dart';
+import 'src/timer_notifications.dart';
 
 class _RealtimeRefreshCoordinator {
   _RealtimeRefreshCoordinator(this._authService, this._refresh);
@@ -3396,10 +3397,25 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
       );
       return;
     }
+    var visitors = <Map<String, dynamic>>[];
+    try {
+      visitors = await widget.authService.getHostVisitors();
+    } on AuthApiException catch (error) {
+      if (mounted) {
+        _showMessage(
+          context,
+          'No se pudieron cargar los visitantes guardados: ${error.message}',
+          error: true,
+        );
+      }
+    }
+    if (!mounted) return;
     final result = await showDialog<Map<String, Object?>>(
       context: context,
       builder: (_) => _AppointmentForm(
+        authService: widget.authService,
         partners: _partners,
+        visitors: visitors,
         record: appointment,
         initialDate: _selectedDate,
       ),
@@ -4433,11 +4449,15 @@ class _AppointmentEmptyState extends StatelessWidget {
 
 class _AppointmentForm extends StatefulWidget {
   const _AppointmentForm({
+    required this.authService,
     required this.partners,
+    required this.visitors,
     required this.initialDate,
     this.record,
   });
+  final AuthService authService;
   final List<Map<String, dynamic>> partners;
+  final List<Map<String, dynamic>> visitors;
   final Map<String, dynamic>? record;
   final DateTime initialDate;
   @override
@@ -4446,6 +4466,8 @@ class _AppointmentForm extends StatefulWidget {
 
 class _AppointmentFormState extends State<_AppointmentForm> {
   final _formKey = GlobalKey<FormState>();
+  late final List<Map<String, dynamic>> _savedVisitors = [...widget.visitors];
+  int? _selectedVisitorRecordId;
   late final _visitor = TextEditingController(
     text: '${widget.record?['visitor'] ?? ''}',
   );
@@ -4462,6 +4484,15 @@ class _AppointmentFormState extends State<_AppointmentForm> {
       DateTime.tryParse('${widget.record?['date'] ?? ''}') ??
       widget.initialDate;
   late String _time = '${widget.record?['time'] ?? '09:00'}';
+
+  @override
+  void initState() {
+    super.initState();
+    final visitorRecordId = widget.record?['visitorRecordId'];
+    _selectedVisitorRecordId = visitorRecordId is num
+        ? visitorRecordId.toInt()
+        : null;
+  }
 
   List<Map<String, dynamic>> get _availablePartners => widget.partners
       .where(
@@ -4545,6 +4576,138 @@ class _AppointmentFormState extends State<_AppointmentForm> {
     if (id != null) setState(() => _partnerId = id);
   }
 
+  Future<void> _selectVisitor() async {
+    final visitor = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      backgroundColor: _logDialogColor(context),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(17, 15, 17, 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.65,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Visitantes guardados',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (_savedVisitors.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    child: Text(
+                      'Todavía no hay perfiles guardados. Crea uno para reutilizar sus datos.',
+                      style: TextStyle(color: _secondaryTextColor(context)),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final visitor in _savedVisitors)
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const CircleAvatar(
+                              child: Icon(Icons.person_outline_rounded),
+                            ),
+                            title: Text(
+                              '${visitor['fullName']}',
+                              style: TextStyle(
+                                color: _primaryTextColor(context),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            subtitle: Text(
+                              ['${visitor['phone']}', '${visitor['email']}']
+                                  .where((value) => value.trim().isNotEmpty)
+                                  .join(' · '),
+                              style: TextStyle(
+                                color: _secondaryTextColor(context),
+                                fontSize: 11,
+                              ),
+                            ),
+                            onTap: () => Navigator.pop(context, visitor),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (visitor == null) return;
+    setState(() {
+      _selectedVisitorRecordId = (visitor['id'] as num).toInt();
+      _visitor.text = '${visitor['fullName']}';
+      _email.text = '${visitor['email']}';
+    });
+  }
+
+  Future<void> _createVisitorProfile() async {
+    final draft = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => const _HostVisitorEditorDialog(),
+    );
+    if (draft == null) return;
+    try {
+      final existingIds = _savedVisitors
+          .map((visitor) => (visitor['id'] as num).toInt())
+          .toSet();
+      final visitors = await widget.authService.saveHostVisitor(
+        fullName: draft['fullName']!,
+        phone: draft['phone']!,
+        email: draft['email']!,
+      );
+      final matchingVisitors = visitors
+          .where(
+            (visitor) =>
+                visitor['fullName'] == draft['fullName'] &&
+                visitor['phone'] == draft['phone'] &&
+                visitor['email'] == draft['email'],
+          )
+          .toList();
+      final created = matchingVisitors.firstWhere(
+        (visitor) => !existingIds.contains((visitor['id'] as num).toInt()),
+        orElse: () => matchingVisitors.first,
+      );
+      if (!mounted) return;
+      setState(() {
+        _savedVisitors
+          ..clear()
+          ..addAll(visitors);
+        _selectedVisitorRecordId = (created['id'] as num).toInt();
+        _visitor.text = '${created['fullName']}';
+        _email.text = '${created['email']}';
+      });
+      _showMessage(context, 'Visitante guardado y seleccionado para la cita.');
+    } on StateError {
+      if (mounted) {
+        _showMessage(
+          context,
+          'No se pudo identificar el perfil recién guardado. Vuelve a cargar los visitantes.',
+          error: true,
+        );
+      }
+    } on AuthApiException catch (error) {
+      if (mounted) _showMessage(context, error.message, error: true);
+    }
+  }
+
   Future<void> _pickDate() async {
     final value = await showDatePicker(
       context: context,
@@ -4580,11 +4743,13 @@ class _AppointmentFormState extends State<_AppointmentForm> {
     required TextEditingController controller,
     TextInputType? keyboardType,
     String? Function(String?)? validator,
+    void Function(String)? onChanged,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextFormField(
       controller: controller,
       keyboardType: keyboardType,
+      onChanged: onChanged,
       style: TextStyle(color: _primaryTextColor(context), fontSize: 13),
       validator: validator,
       decoration: InputDecoration(
@@ -4777,6 +4942,37 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                         selector: true,
                       ),
                       const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _selectVisitor,
+                            icon: const Icon(Icons.bookmark_outline_rounded),
+                            label: Text(
+                              _selectedVisitorRecordId == null
+                                  ? 'Elegir visitante guardado'
+                                  : 'Visitante guardado seleccionado',
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _createVisitorProfile,
+                            icon: const Icon(Icons.person_add_alt_1_rounded),
+                            label: const Text('Guardar visitante'),
+                          ),
+                        ],
+                      ),
+                      if (_selectedVisitorRecordId != null) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          'El registro personal se vinculará a esta cita.',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 10),
                       _field(
                         label: 'Nombre del visitante',
                         hint: 'Nombre y apellidos',
@@ -4786,6 +4982,11 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                             value == null || value.trim().isEmpty
                             ? 'Escribe el nombre del visitante'
                             : null,
+                        onChanged: (_) {
+                          if (_selectedVisitorRecordId != null) {
+                            setState(() => _selectedVisitorRecordId = null);
+                          }
+                        },
                       ),
                       _field(
                         label: 'Correo del visitante · opcional',
@@ -4801,6 +5002,11 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                             return 'Escribe un correo válido';
                           }
                           return null;
+                        },
+                        onChanged: (_) {
+                          if (_selectedVisitorRecordId != null) {
+                            setState(() => _selectedVisitorRecordId = null);
+                          }
                         },
                       ),
                       _field(
@@ -4883,6 +5089,8 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                               'visitorName': _visitor.text.trim(),
                               'visitorEmail': _email.text.trim(),
                               'businessPartnerId': _partnerId,
+                              if (_selectedVisitorRecordId != null)
+                                'visitorRecordId': _selectedVisitorRecordId,
                               'hostName': _host.text.trim(),
                               'date': _dateString(_date),
                               'time': _time,
@@ -4912,6 +5120,91 @@ class _AppointmentFormState extends State<_AppointmentForm> {
       ),
     );
   }
+}
+
+class _HostVisitorEditorDialog extends StatefulWidget {
+  const _HostVisitorEditorDialog();
+
+  @override
+  State<_HostVisitorEditorDialog> createState() =>
+      _HostVisitorEditorDialogState();
+}
+
+class _HostVisitorEditorDialogState extends State<_HostVisitorEditorDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _fullName = TextEditingController();
+  final _phone = TextEditingController();
+  final _email = TextEditingController();
+
+  @override
+  void dispose() {
+    _fullName.dispose();
+    _phone.dispose();
+    _email.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Guardar visitante personal'),
+    content: Form(
+      key: _formKey,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: _fullName,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(labelText: 'Nombre completo'),
+              validator: (value) => value == null || value.trim().isEmpty
+                  ? 'Escribe el nombre completo'
+                  : null,
+            ),
+            TextFormField(
+              controller: _phone,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(labelText: 'Teléfono'),
+              validator: (value) => value == null || value.trim().isEmpty
+                  ? 'Escribe el teléfono'
+                  : null,
+            ),
+            TextFormField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'Correo electrónico',
+              ),
+              validator: (value) {
+                final email = value?.trim() ?? '';
+                if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+                  return 'Escribe un correo válido';
+                }
+                return null;
+              },
+            ),
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancelar'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (!_formKey.currentState!.validate()) return;
+          Navigator.pop(context, {
+            'fullName': _fullName.text.trim(),
+            'phone': _phone.text.trim(),
+            'email': _email.text.trim(),
+          });
+        },
+        child: const Text('Guardar y usar'),
+      ),
+    ],
+  );
 }
 
 class _AppointmentPartnerOption extends StatelessWidget {
@@ -5840,7 +6133,8 @@ class ConnectedDailyLogbookPage extends StatefulWidget {
       _ConnectedDailyLogbookPageState();
 }
 
-class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
+class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
+    with WidgetsBindingObserver {
   Timer? _searchDebounce;
   DateTime _fromDate = DateTime.now();
   DateTime _toDate = DateTime.now();
@@ -5860,11 +6154,34 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   late final _RealtimeRefreshCoordinator _realtime;
   bool _loadInProgress = false;
   bool _refreshQueued = false;
+  final List<Map<String, dynamic>> _visitTimers = [];
+  final Map<int, DateTime> _lastTimerAlertAt = {};
+  final TimerNotificationService _notificationService =
+      TimerNotificationService.instance;
+  Timer? _timerPoll;
+  Timer? _timerTicker;
+  bool _timerRequestInProgress = false;
+  bool _isForeground = true;
+  String? _timerError;
+  String _notificationStatus = 'Verificando notificaciones…';
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _notificationService.dailyLogRefreshes.addListener(_onNotificationOpened);
     _load();
+    _refreshTimers();
+    _timerPoll = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _refreshTimers(),
+    );
+    _timerTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || !_isForeground || _visitTimers.isEmpty) return;
+      _checkOverdueTimers();
+      setState(() {});
+    });
+    _configureNotifications();
     _realtime = _RealtimeRefreshCoordinator(
       widget.authService,
       () => _load(silent: true),
@@ -5874,9 +6191,194 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _timerPoll?.cancel();
+    _timerTicker?.cancel();
+    _notificationService.dailyLogRefreshes.removeListener(
+      _onNotificationOpened,
+    );
+    WidgetsBinding.instance.removeObserver(this);
     _realtime.dispose();
     super.dispose();
   }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _isForeground = state == AppLifecycleState.resumed;
+    if (_isForeground) {
+      _load(silent: true);
+      _refreshTimers();
+    }
+  }
+
+  void _onNotificationOpened() => _load(silent: true);
+
+  Future<void> _configureNotifications() async {
+    if (widget.user?.canAccessReception != true) {
+      _notificationStatus = 'El registro de notificaciones está disponible para dispositivos de recepción.';
+      return;
+    }
+    await _notificationService.configureAndRegister(widget.authService);
+    if (mounted) {
+      setState(() => _notificationStatus = _notificationService.statusMessage);
+    }
+  }
+
+  Future<void> _refreshTimers() async {
+    if (_timerRequestInProgress) return;
+    _timerRequestInProgress = true;
+    try {
+      final timers = await widget.authService.getDailyLogTimers();
+      if (!mounted) return;
+      setState(() {
+        _visitTimers
+          ..clear()
+          ..addAll(timers);
+        _timerError = null;
+        final activeIds = timers
+            .map((timer) => (timer['id'] as num).toInt())
+            .toSet();
+        _lastTimerAlertAt.removeWhere((id, _) => !activeIds.contains(id));
+      });
+      _checkOverdueTimers();
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _timerError = error.message);
+    } finally {
+      _timerRequestInProgress = false;
+    }
+  }
+
+  void _checkOverdueTimers() {
+    if (!_isForeground || _visitTimers.isEmpty) return;
+    final now = DateTime.now();
+    for (final timer in _visitTimers) {
+      final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
+      if (dueAt == null || !now.isAfter(dueAt)) continue;
+      final id = (timer['id'] as num).toInt();
+      final lastAlert = _lastTimerAlertAt[id];
+      if (lastAlert != null &&
+          now.difference(lastAlert) < const Duration(seconds: 30)) {
+        continue;
+      }
+      _lastTimerAlertAt[id] = now;
+      unawaited(SystemSound.play(SystemSoundType.alert).catchError((_) {}));
+      unawaited(HapticFeedback.vibrate().catchError((_) {}));
+      break;
+    }
+  }
+
+  Future<void> _actOnVisitTimer(
+    Map<String, dynamic> timer, {
+    required String action,
+  }) async {
+    final id = (timer['id'] as num).toInt();
+    try {
+      final timers = await widget.authService.actOnDailyLogTimer(
+        id,
+        action: action,
+      );
+      if (!mounted) return;
+      setState(() {
+        _visitTimers
+          ..clear()
+          ..addAll(timers);
+        _lastTimerAlertAt.remove(id);
+        _timerError = null;
+      });
+      _checkOverdueTimers();
+    } on AuthApiException catch (error) {
+      if (mounted) _showMessage(context, error.message, error: true);
+    }
+  }
+
+  String _timerTimeLabel(Map<String, dynamic> timer) {
+    final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
+    if (dueAt == null) return 'Hora de vencimiento no disponible';
+    final remainingSeconds = dueAt.difference(DateTime.now()).inSeconds;
+    final duration = Duration(seconds: remainingSeconds.abs());
+    final clock =
+        '${duration.inHours.toString().padLeft(2, '0')}:'
+        '${(duration.inMinutes % 60).toString().padLeft(2, '0')}:'
+        '${(duration.inSeconds % 60).toString().padLeft(2, '0')}';
+    if (remainingSeconds <= 0) return 'VENCIDO · $clock';
+    return 'Vence ${dueAt.hour.toString().padLeft(2, '0')}:'
+        '${dueAt.minute.toString().padLeft(2, '0')} · faltan $clock';
+  }
+
+  List<Map<String, dynamic>> get _overdueVisitTimers =>
+      _visitTimers.where((timer) {
+        final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
+        return dueAt != null && DateTime.now().isAfter(dueAt);
+      }).toList();
+
+  Widget _overdueTimerBanner(BuildContext context) => _logbookPanel(
+    context: context,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.alarm_on_rounded, color: Color(0xFFFF7189), size: 20),
+            SizedBox(width: 8),
+            Text(
+              'ALERTA DE SEGUIMIENTO VENCIDA',
+              style: TextStyle(
+                color: Color(0xFFFF7189),
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        for (final timer in _overdueVisitTimers) ...[
+          Text(
+            '${timer['personName']} · ${timer['phase']} · ${_timerTimeLabel(timer)}',
+            style: TextStyle(
+              color: _primaryTextColor(context),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _actOnVisitTimer(timer, action: 'snooze'),
+                  icon: const Icon(Icons.replay_rounded, size: 16),
+                  label: Text(
+                    'Repetir ${(timer['intervalMinutes'] as num).toInt()} min',
+                  ),
+                  style: _logOutlinedButtonStyle(
+                    context,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 8,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _actOnVisitTimer(timer, action: 'cancel'),
+                  icon: const Icon(Icons.close_rounded, size: 16),
+                  label: const Text('Cancelar alerta'),
+                  style: _logOutlinedButtonStyle(
+                    context,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 8,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    ),
+  );
 
   Future<void> _load({bool silent = false}) async {
     if (_loadInProgress) {
@@ -6599,6 +7101,204 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
     }
   }
 
+  Widget _visitTimersPanel(BuildContext context) => _logbookPanel(
+    context: context,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(
+              Icons.notifications_active_outlined,
+              color: Color(0xFF68B7FF),
+              size: 19,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Temporizadores de seguimiento',
+                style: TextStyle(
+                  color: _primaryTextColor(context),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Actualizar temporizadores',
+              onPressed: _refreshTimers,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: _logInsetColor(context),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _logBorderColor(context)),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.notifications_outlined,
+                color: Color(0xFF68B7FF),
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _notificationStatus,
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 10,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: _configureNotifications,
+                child: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+        if (_timerError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            'No se pudieron cargar los temporizadores: $_timerError',
+            style: const TextStyle(color: Color(0xFFFF8394), fontSize: 11),
+          ),
+        ],
+        if (_visitTimers.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(
+              _timerError == null
+                  ? 'No hay temporizadores activos. Contratistas y proveedores no generan alertas.'
+                  : 'Las citas y la bitácora siguen disponibles mientras se recupera el servicio de temporizadores.',
+              style: TextStyle(
+                color: _secondaryTextColor(context),
+                fontSize: 11,
+              ),
+            ),
+          )
+        else ...[
+          const SizedBox(height: 9),
+          for (final timer in _visitTimers) ...[
+            Builder(
+              builder: (context) {
+                final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')
+                    ?.toLocal();
+                final overdue = dueAt != null && DateTime.now().isAfter(dueAt);
+                final color = overdue
+                    ? const Color(0xFFFF7189)
+                    : const Color(0xFF68B7FF);
+                final interval = (timer['intervalMinutes'] as num).toInt();
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(11),
+                  decoration: BoxDecoration(
+                    color: overdue
+                        ? const Color(0x22FF526F)
+                        : _logInsetColor(context),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(color: color.withValues(alpha: 0.45)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            overdue
+                                ? Icons.alarm_on_rounded
+                                : Icons.alarm_outlined,
+                            color: color,
+                            size: 19,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '${timer['personName']}',
+                              style: TextStyle(
+                                color: _primaryTextColor(context),
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            '$interval min',
+                            style: TextStyle(
+                              color: color,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 27, top: 3),
+                        child: Text(
+                          '${timer['phase']} · ${_timerTimeLabel(timer)}',
+                          style: TextStyle(
+                            color: overdue
+                                ? color
+                                : _secondaryTextColor(context),
+                            fontSize: 11,
+                            fontWeight: overdue
+                                ? FontWeight.w800
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () =>
+                                  _actOnVisitTimer(timer, action: 'snooze'),
+                              icon: const Icon(Icons.replay_rounded, size: 16),
+                              label: Text('Repetir $interval min'),
+                              style: _logOutlinedButtonStyle(
+                                context,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 9,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () =>
+                                  _actOnVisitTimer(timer, action: 'cancel'),
+                              icon: const Icon(Icons.close_rounded, size: 16),
+                              label: const Text('Cancelar alerta'),
+                              style: _logOutlinedButtonStyle(
+                                context,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 9,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ],
+      ],
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final entries = (_data['entries'] as List? ?? const [])
@@ -6642,6 +7342,10 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
                 children: [
+                  if (_overdueVisitTimers.isNotEmpty) ...[
+                    _overdueTimerBanner(context),
+                    const SizedBox(height: 12),
+                  ],
                   _logbookPanel(
                     context: context,
                     child: Column(
@@ -7279,6 +7983,8 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage> {
                             }
                           : null,
                     ),
+                  const SizedBox(height: 12),
+                  _visitTimersPanel(context),
                 ],
               ),
             ),

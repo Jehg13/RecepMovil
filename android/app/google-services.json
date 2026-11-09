@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "836247585329",
+    "project_id": "recep-63d70",
+    "storage_bucket": "recep-63d70.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:836247585329:android:9336f04fd036ee59aa0b10",
+        "android_client_info": {
+          "package_name": "com.cymez.visitas.visitas_recep_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCoKLEbHXLSRvLVBaBP1Tl4E0sZGvwiLEw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

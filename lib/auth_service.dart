@@ -541,6 +541,7 @@ class AuthService {
   final SessionCookieStorage _cookieStorage;
   final String _baseUrl;
   final bool _isWeb;
+  String? _registeredMobileNotificationToken;
 
   Future<MobileAppUpdate?> checkForMobileAppUpdate({
     required String channel,
@@ -687,6 +688,15 @@ class AuthService {
 
   Future<void> logout() async {
     final headers = await _sessionHeaders();
+    final notificationToken = _registeredMobileNotificationToken;
+    if (notificationToken != null) {
+      unawaited(
+        _removeMobileNotificationTokenBestEffort(
+          notificationToken,
+          sessionHeaders: headers,
+        ),
+      );
+    }
     final response = await _send(
       () => _client.post(_uri('/api/auth/logout'), headers: headers),
     );
@@ -984,6 +994,61 @@ class AuthService {
   Future<List<Map<String, dynamic>>> getAppointments() async =>
       _getApiRecords('/api/appointments', 'appointments');
 
+  Future<List<Map<String, dynamic>>> getHostVisitors() async {
+    final data = await _requestApi('GET', '/api/host-visitors');
+    final visitors = data['visitors'];
+    if (visitors is! List ||
+        visitors.any(
+          (item) =>
+              item is! Map<String, dynamic> ||
+              item['id'] is! num ||
+              item['fullName'] is! String ||
+              item['phone'] is! String ||
+              item['email'] is! String,
+        )) {
+      throw const AuthApiException(
+        'La respuesta de visitantes guardados no es válida.',
+      );
+    }
+    return List<Map<String, dynamic>>.unmodifiable(
+      visitors.cast<Map<String, dynamic>>(),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> saveHostVisitor({
+    required String fullName,
+    required String phone,
+    required String email,
+  }) async {
+    final data = await _requestApi(
+      'POST',
+      '/api/host-visitors',
+      body: {
+        'fullName': fullName.trim(),
+        'phone': phone.trim(),
+        'email': email.trim(),
+      },
+      successCodes: const {200, 201},
+    );
+    final visitors = data['visitors'];
+    if (visitors is! List ||
+        visitors.any(
+          (item) =>
+              item is! Map<String, dynamic> ||
+              item['id'] is! num ||
+              item['fullName'] is! String ||
+              item['phone'] is! String ||
+              item['email'] is! String,
+        )) {
+      throw const AuthApiException(
+        'La respuesta de visitantes guardados no es válida.',
+      );
+    }
+    return List<Map<String, dynamic>>.unmodifiable(
+      visitors.cast<Map<String, dynamic>>(),
+    );
+  }
+
   Future<List<Map<String, dynamic>>> saveAppointment(
     Map<String, Object?> appointment, {
     int? id,
@@ -995,6 +1060,102 @@ class AuthService {
       successCodes: const {200, 201},
     );
     return _apiRecords(data, 'appointments');
+  }
+
+  List<Map<String, dynamic>> _parseDailyLogTimers(Map<String, dynamic> data) {
+    final timers = data['timers'];
+    if (timers is! List ||
+        timers.any(
+          (item) =>
+              item is! Map<String, dynamic> ||
+              item['id'] is! num ||
+              item['appointmentId'] is! num ||
+              (item['visitorRecordId'] != null &&
+                  item['visitorRecordId'] is! num) ||
+              item['personName'] is! String ||
+              !const {'Llegada', 'Ingreso'}.contains(item['phase']) ||
+              item['intervalMinutes'] is! num ||
+              item['startedAt'] is! String ||
+              item['dueAt'] is! String ||
+              item['status'] is! String,
+        )) {
+      throw const AuthApiException(
+        'La respuesta de temporizadores de visitas no es válida.',
+      );
+    }
+    return List<Map<String, dynamic>>.unmodifiable(
+      timers.cast<Map<String, dynamic>>(),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getDailyLogTimers() async {
+    final data = await _requestApi('GET', '/api/daily-log/timers');
+    return _parseDailyLogTimers(data);
+  }
+
+  Future<List<Map<String, dynamic>>> actOnDailyLogTimer(
+    int id, {
+    required String action,
+  }) async {
+    if (id <= 0 || !const {'snooze', 'cancel'}.contains(action)) {
+      throw const AuthApiException('La acción del temporizador no es válida.');
+    }
+    final data = await _requestApi(
+      'POST',
+      '/api/daily-log/timers/$id',
+      body: {'action': action},
+    );
+    return _parseDailyLogTimers(data);
+  }
+
+  Future<Map<String, dynamic>?> getNotificationFirebaseConfig() async {
+    final data = await _requestApi('GET', '/api/notifications/config');
+    final firebase = data['firebase'];
+    if (firebase == null) return null;
+    if (firebase is! Map<String, dynamic> ||
+        firebase['apiKey'] is! String ||
+        firebase['appId'] is! String ||
+        firebase['messagingSenderId'] is! String ||
+        firebase['projectId'] is! String) {
+      throw const AuthApiException(
+        'La configuración de notificaciones no es válida.',
+      );
+    }
+    return firebase;
+  }
+
+  Future<void> registerMobileNotificationToken(String token) async {
+    if (token.trim().isEmpty) {
+      throw const AuthApiException('El token de notificaciones no es válido.');
+    }
+    await _requestApi(
+      'POST',
+      '/api/notifications/config',
+      body: {'platform': 'mobile', 'token': token},
+      successCodes: const {200, 201},
+    );
+    _registeredMobileNotificationToken = token;
+  }
+
+  Future<void> _removeMobileNotificationTokenBestEffort(
+    String token, {
+    required Map<String, String> sessionHeaders,
+  }) async {
+    try {
+      await _requestApi(
+        'DELETE',
+        '/api/notifications/config',
+        body: {'platform': 'mobile', 'token': token},
+        extraHeaders: sessionHeaders,
+        successCodes: const {200, 204},
+      );
+      if (_registeredMobileNotificationToken == token) {
+        _registeredMobileNotificationToken = null;
+      }
+    } catch (error, stackTrace) {
+      debugPrint('No se pudo retirar el token FCM al cerrar sesión: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   Future<List<Map<String, dynamic>>> updateAppointmentStatus(
@@ -1359,6 +1520,8 @@ class AuthService {
         hasNumbers(['id']) &&
             (record['businessPartnerId'] == null ||
                 record['businessPartnerId'] is num) &&
+            (record['visitorRecordId'] == null ||
+                record['visitorRecordId'] is num) &&
             hasStrings([
               'date',
               'time',
@@ -1403,7 +1566,7 @@ class AuthService {
         'POST' => _client.post(uri, headers: headers, body: encodedBody),
         'PATCH' => _client.patch(uri, headers: headers, body: encodedBody),
         'PUT' => _client.put(uri, headers: headers, body: encodedBody),
-        'DELETE' => _client.delete(uri, headers: headers),
+        'DELETE' => _client.delete(uri, headers: headers, body: encodedBody),
         _ => throw ArgumentError.value(method, 'method', 'Método no admitido'),
       };
     });
