@@ -583,6 +583,18 @@ void main() {
     expect(storage.draft?['step'], 5);
     expect(tester.takeException(), isNull);
 
+    await tester.tap(
+      find.byKey(const ValueKey('tablet-walk-in-home-button')),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
+      findsOneWidget,
+    );
+    expect(storage.draft, isNull);
+    expect(tester.takeException(), isNull);
+
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });
@@ -653,6 +665,76 @@ void main() {
     expect(find.text('Esperando autorización de entrada'), findsOneWidget);
     expect(find.text('Ana Pérez'), findsOneWidget);
     expect(find.text('1 2 3 4 5 6 7 8'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('Regresa a Inicio al restaurar una visita ya confirmada', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1366, 1024);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    const idempotencyKey = '123e4567-e89b-42d3-a456-426614174001';
+    final storage = _MemoryVisitorKioskDraftStorage()
+      ..draft = {
+        'started': true,
+        'step': 5,
+        'visitorName': 'Ana Pérez',
+        'companyName': 'Público general',
+        'visitReason': 'Entrega',
+        'publicGeneral': true,
+        'carriesItems': false,
+        'items': <Object>[],
+        'editingItem': <String, Object?>{},
+        'identificationTypes': <String>['INE'],
+        'idempotencyKey': idempotencyKey,
+        'folio': '12345678',
+        'authorizationStatus': 'Pendiente',
+        'entryChecklistComplete': false,
+        'entered': false,
+      };
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/visitor-kiosk/status') {
+          expect(request.headers['Idempotency-Key'], idempotencyKey);
+          return http.Response(
+            jsonEncode({
+              'folio': '12345678',
+              'visitorName': 'Ana Pérez',
+              'authorizationStatus': 'Autorizada',
+              'entryChecklistComplete': true,
+              'entered': true,
+            }),
+            200,
+          );
+        }
+        return http.Response('{}', 404);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WalkInVisitorPage(authService: service, draftStorage: storage),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
+      findsOneWidget,
+    );
+    expect(find.text('Visita registrada correctamente'), findsNothing);
+    expect(storage.draft, isNull);
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());

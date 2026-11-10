@@ -560,6 +560,7 @@ class AuthService {
       () => _client.get(
         _uri('/api/app-releases/latest?channel=$channel&build=$build'),
       ),
+      retrySafe: true,
     );
     if (response.statusCode != 200) throw _responseError(response);
     final payload = jsonDecode(response.body);
@@ -667,6 +668,7 @@ class AuthService {
 
     final response = await _send(
       () => _client.get(_uri('/api/auth/session'), headers: headers),
+      retrySafe: true,
     );
     if (response.statusCode != 200) {
       throw _responseError(response);
@@ -716,7 +718,10 @@ class AuthService {
     final fromDate = formatDate(date.subtract(const Duration(days: 6)));
     final headers = await _sessionHeaders();
     final responses = await Future.wait([
-      _send(() => _client.get(_uri('/api/appointments'), headers: headers)),
+      _send(
+        () => _client.get(_uri('/api/appointments'), headers: headers),
+        retrySafe: true,
+      ),
       _send(
         () => _client.get(
           _uri(
@@ -724,12 +729,14 @@ class AuthService {
           ),
           headers: headers,
         ),
+        retrySafe: true,
       ),
       _send(
         () => _client.get(
           _uri('/api/daily-log/stats?from=$fromDate&to=$dateString'),
           headers: headers,
         ),
+        retrySafe: true,
       ),
       _send(
         () => _client.get(
@@ -738,6 +745,7 @@ class AuthService {
           ),
           headers: headers,
         ),
+        retrySafe: true,
       ),
     ]);
     for (final response in responses) {
@@ -795,6 +803,7 @@ class AuthService {
     final headers = await _sessionHeaders();
     final response = await _send(
       () => _client.get(_uri('/api/auth/session'), headers: headers),
+      retrySafe: true,
     );
     if (response.statusCode != 200) {
       throw _responseError(response);
@@ -865,6 +874,7 @@ class AuthService {
     final headers = await _sessionHeaders();
     final response = await _send(
       () => _client.get(_uri('/api/departments'), headers: headers),
+      retrySafe: true,
     );
     if (response.statusCode != 200) {
       throw _responseError(response);
@@ -935,6 +945,7 @@ class AuthService {
     final headers = await _sessionHeaders();
     final response = await _send(
       () => _client.get(_uri('/api/department-hosts'), headers: headers),
+      retrySafe: true,
     );
     if (response.statusCode != 200) {
       throw _responseError(response);
@@ -944,6 +955,12 @@ class AuthService {
 
   Future<List<Map<String, dynamic>>> getBusinessPartners() async =>
       _getApiRecords('/api/business-partners', 'businessPartners');
+
+  Future<List<Map<String, dynamic>>> getAppointmentBusinessPartners() async =>
+      _getApiRecords(
+        '/api/business-partners?scope=appointment',
+        'businessPartners',
+      );
 
   Future<List<Map<String, dynamic>>> saveBusinessPartner(
     Map<String, Object?> partner, {
@@ -994,8 +1011,13 @@ class AuthService {
   Future<List<Map<String, dynamic>>> getAppointments() async =>
       _getApiRecords('/api/appointments', 'appointments');
 
-  Future<List<Map<String, dynamic>>> getHostVisitors() async {
-    final data = await _requestApi('GET', '/api/host-visitors');
+  Future<List<Map<String, dynamic>>> getHostVisitors({
+    bool forAppointment = false,
+  }) async {
+    final path = forAppointment
+        ? '/api/host-visitors?scope=appointment'
+        : '/api/host-visitors';
+    final data = await _requestApi('GET', path);
     final visitors = data['visitors'];
     if (visitors is! List ||
         visitors.any(
@@ -1069,7 +1091,8 @@ class AuthService {
           (item) =>
               item is! Map<String, dynamic> ||
               item['id'] is! num ||
-              item['appointmentId'] is! num ||
+              (item['appointmentId'] != null &&
+                  item['appointmentId'] is! num) ||
               (item['visitorRecordId'] != null &&
                   item['visitorRecordId'] is! num) ||
               item['personName'] is! String ||
@@ -1569,7 +1592,7 @@ class AuthService {
         'DELETE' => _client.delete(uri, headers: headers, body: encodedBody),
         _ => throw ArgumentError.value(method, 'method', 'Método no admitido'),
       };
-    });
+    }, retrySafe: method.toUpperCase() == 'GET');
     if (!successCodes.contains(response.statusCode)) {
       throw _responseError(response);
     }
@@ -1640,6 +1663,7 @@ class AuthService {
     final headers = await _sessionHeaders();
     final response = await _send(
       () => _client.get(_uri('/api/host-accounts'), headers: headers),
+      retrySafe: true,
     );
     if (response.statusCode != 200) {
       throw _responseError(response);
@@ -1880,17 +1904,34 @@ class AuthService {
     );
   }
 
-  Future<http.Response> _send(Future<http.Response> Function() request) async {
-    try {
-      return await request().timeout(_requestTimeout);
-    } on TimeoutException {
-      throw const AuthApiException(
-        'El servidor tardó demasiado en responder. Inténtalo de nuevo.',
-      );
-    } on http.ClientException {
-      throw const AuthApiException(
-        'No se pudo conectar con el servidor. Revisa tu conexión a internet.',
-      );
+  Future<http.Response> _send(
+    Future<http.Response> Function() request, {
+    bool retrySafe = false,
+  }) async {
+    for (var attempt = 0; ; attempt += 1) {
+      try {
+        final response = await request().timeout(_requestTimeout);
+        final isTransientServiceError = const {
+          502,
+          503,
+          504,
+        }.contains(response.statusCode);
+        if (!retrySafe || !isTransientServiceError || attempt >= 2) {
+          return response;
+        }
+      } on TimeoutException {
+        throw const AuthApiException(
+          'El servidor tardó demasiado en responder. Inténtalo de nuevo.',
+        );
+      } on http.ClientException {
+        if (!retrySafe || attempt >= 2) {
+          throw const AuthApiException(
+            'No se pudo conectar con el servidor. Revisa tu conexión a internet.',
+          );
+        }
+      }
+
+      await Future<void>.delayed(Duration(milliseconds: 250 * (1 << attempt)));
     }
   }
 

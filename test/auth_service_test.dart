@@ -7,6 +7,113 @@ import 'package:http/testing.dart';
 import 'package:visitas_recep_mobile/auth_service.dart';
 
 void main() {
+  test('reintenta lecturas seguras durante un despliegue', () async {
+    var attempts = 0;
+    final service = AuthService(
+      client: MockClient((request) async {
+        attempts += 1;
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/notifications/config');
+        if (attempts == 1) return http.Response('No disponible', 503);
+        return http.Response(jsonEncode({'firebase': null}), 200);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    expect(await service.getNotificationFirebaseConfig(), isNull);
+    expect(attempts, 2);
+  });
+
+  test('no reintenta escrituras para evitar duplicados', () async {
+    var attempts = 0;
+    final service = AuthService(
+      client: MockClient((request) async {
+        attempts += 1;
+        expect(request.method, 'POST');
+        return http.Response('Temporalmente no disponible', 503);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await expectLater(
+      service.login('persona', 'contraseña'),
+      throwsA(
+        isA<AuthApiException>().having(
+          (error) => error.statusCode,
+          'statusCode',
+          503,
+        ),
+      ),
+    );
+    expect(attempts, 1);
+  });
+
+  test(
+    'solicita solo registros propios al cargar opciones de una cita',
+    () async {
+      final service = AuthService(
+        client: MockClient((request) async {
+          expect(request.method, 'GET');
+          if (request.url.path == '/api/v1/business-partners') {
+            expect(request.url.queryParameters['scope'], 'appointment');
+            return http.Response(
+              jsonEncode({'businessPartners': <Object>[]}),
+              200,
+            );
+          }
+          expect(request.url.path, '/api/v1/host-visitors');
+          expect(request.url.queryParameters['scope'], 'appointment');
+          return http.Response(jsonEncode({'visitors': <Object>[]}), 200);
+        }),
+        cookieStorage: _MemorySessionCookieStorage(),
+        baseUrl: 'https://example.test',
+        isWeb: false,
+      );
+
+      expect(await service.getAppointmentBusinessPartners(), isEmpty);
+      expect(await service.getHostVisitors(forAppointment: true), isEmpty);
+    },
+  );
+
+  test('acepta temporizadores de visitas sin una cita asociada', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/daily-log/timers');
+        return http.Response(
+          jsonEncode({
+            'timers': [
+              {
+                'id': 42,
+                'appointmentId': null,
+                'visitorRecordId': 7,
+                'personName': 'Visitante sin cita',
+                'phase': 'Llegada',
+                'intervalMinutes': 15,
+                'startedAt': '2026-11-10T18:00:00.000Z',
+                'dueAt': '2026-11-10T18:15:00.000Z',
+                'status': 'active',
+              },
+            ],
+          }),
+          200,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final timers = await service.getDailyLogTimers();
+
+    expect(timers, hasLength(1));
+    expect(timers.single['appointmentId'], isNull);
+  });
+
   test('solicita un enlace de recuperación por correo', () async {
     final service = AuthService(
       client: MockClient((request) async {

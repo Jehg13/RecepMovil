@@ -21,6 +21,7 @@ import 'auth_service.dart';
 import 'app_feedback.dart';
 import 'connected_modules.dart';
 import 'reception_header.dart';
+import 'src/timer_notifications.dart';
 
 const _red = Color(0xFFFF1538);
 const _blue = Color(0xFF087FFF);
@@ -1361,13 +1362,27 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
   @override
   void initState() {
     super.initState();
-    _session = widget.authService.restoreSession();
+    _session = _restoreSession();
+  }
+
+  Future<AuthenticatedUser?> _restoreSession() async {
+    final user = await widget.authService.restoreSession();
+    if (user != null &&
+        !user.isAdmin &&
+        user.sectionAccess.contains('anfitriones')) {
+      unawaited(
+        TimerNotificationService.instance.configureAndRegister(
+          widget.authService,
+        ),
+      );
+    }
+    return user;
   }
 
   void _retry() {
     setState(() {
       _continueWithoutSession = false;
-      _session = widget.authService.restoreSession();
+      _session = _restoreSession();
     });
   }
 
@@ -5357,6 +5372,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
       if (mounted) setState(() => _restoringDraft = false);
       return;
     }
+    var hasSubmittedRegistration = false;
     try {
       final draft = await storage.readDraft();
       if (!mounted) return;
@@ -5393,10 +5409,9 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
         _started = _started || _tabletStep > 1;
         if (_idempotencyKey.isNotEmpty && _folio != null) {
           _tabletStep = 5;
-          _pollRegistrationStatus();
+          hasSubmittedRegistration = true;
         }
       }
-      setState(() => _restoringDraft = false);
     } on PlatformException {
       if (mounted) {
         setState(() {
@@ -5405,6 +5420,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
               'No se pudo recuperar el avance guardado en este dispositivo.';
         });
       }
+      return;
     } on AuthApiException catch (error) {
       if (mounted) {
         setState(() {
@@ -5412,6 +5428,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
           _errorMessage = error.message;
         });
       }
+      return;
     } on FormatException {
       if (mounted) {
         setState(() {
@@ -5420,6 +5437,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
               'El avance guardado está dañado. Inicia un registro nuevo.';
         });
       }
+      return;
     } on TypeError {
       if (mounted) {
         setState(() {
@@ -5428,8 +5446,27 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
               'El avance guardado no es válido. Inicia un registro nuevo.';
         });
       }
+      return;
     }
+
+    if (!mounted) return;
+    if (hasSubmittedRegistration) {
+      if (!_registrationIsFinished) {
+        await _refreshRegistrationStatus();
+      }
+      if (!mounted) return;
+      if (_registrationIsFinished) {
+        await _startNewWalkIn();
+      } else {
+        _pollRegistrationStatus(refreshImmediately: false);
+      }
+    }
+    if (mounted) setState(() => _restoringDraft = false);
   }
+
+  bool get _registrationIsFinished =>
+      (_authorizationStatus == 'Autorizada' && _entryChecklistComplete) ||
+      _authorizationStatus == 'Rechazada';
 
   Map<String, dynamic> _draftData() => {
     'started': _started,
@@ -5548,10 +5585,10 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
-  void _pollRegistrationStatus() {
+  void _pollRegistrationStatus({bool refreshImmediately = true}) {
     _statusTimer?.cancel();
     _connectRealtimeUpdates();
-    _refreshRegistrationStatus();
+    if (refreshImmediately) unawaited(_refreshRegistrationStatus());
     _statusTimer = Timer.periodic(
       const Duration(seconds: 15),
       (_) => _refreshRegistrationStatus(),
@@ -5597,10 +5634,11 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
     if (_idempotencyKey.isEmpty || !mounted || _statusRefreshInProgress) {
       return;
     }
+    final requestKey = _idempotencyKey;
     _statusRefreshInProgress = true;
     try {
-      final status = await _authService.getVisitorKioskStatus(_idempotencyKey);
-      if (!mounted) return;
+      final status = await _authService.getVisitorKioskStatus(requestKey);
+      if (!mounted || requestKey != _idempotencyKey) return;
       setState(() {
         _folio = status['folio'] as String;
         _authorizationStatus = status['authorizationStatus'] as String;
@@ -5611,30 +5649,36 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
       });
       await _saveDraft();
     } on AuthApiException catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestKey != _idempotencyKey) return;
       setState(() => _errorMessage = error.message);
     } finally {
-      _statusRefreshInProgress = false;
+      if (requestKey == _idempotencyKey) {
+        _statusRefreshInProgress = false;
+      }
     }
   }
 
   Future<void> _startNewWalkIn() async {
     _statusTimer?.cancel();
+    _statusTimer = null;
     _realtimeReconnectTimer?.cancel();
-    await _realtimeSubscription?.cancel();
+    _realtimeReconnectTimer = null;
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = null;
+    final previousSubscription = _realtimeSubscription;
     _realtimeSubscription = null;
-    try {
-      await _draftStorage?.clearDraft();
-    } on PlatformException {
-      if (mounted) {
-        setState(() {
-          _errorMessage =
-              'No se pudo limpiar el avance anterior. Inténtalo de nuevo.';
-        });
-        if (_tabletStep == 5) _pollRegistrationStatus();
-      }
-      return;
+    if (previousSubscription != null) {
+      unawaited(
+        previousSubscription.cancel().catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          debugPrint('No se pudo cerrar la actualización del kiosco: $error');
+          debugPrintStack(stackTrace: stackTrace);
+        }),
+      );
     }
+    _statusRefreshInProgress = false;
     if (!mounted) return;
     setState(() {
       _started = false;
@@ -5654,18 +5698,22 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
       _entered = false;
       _errorMessage = null;
     });
+    try {
+      await _draftStorage?.clearDraft();
+    } on PlatformException {
+      if (mounted) {
+        const message =
+            'No se pudo borrar el avance anterior del dispositivo.';
+        setState(() => _errorMessage = message);
+        ScaffoldMessenger.maybeOf(context)
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text(message)));
+      }
+    }
   }
 
   Future<void> _goHome() async {
-    if ((_authorizationStatus == 'Autorizada' && _entryChecklistComplete) ||
-        _authorizationStatus == 'Rechazada') {
-      await _startNewWalkIn();
-      return;
-    }
-    setState(() => _started = false);
-    if (!await _saveDraft() && mounted) {
-      setState(() => _started = true);
-    }
+    await _startNewWalkIn();
   }
 
   @override

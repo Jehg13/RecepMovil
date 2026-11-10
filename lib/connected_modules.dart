@@ -3302,12 +3302,12 @@ class ConnectedAppointmentsPage extends StatefulWidget {
 
 class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   List<Map<String, dynamic>> _appointments = [];
-  List<Map<String, dynamic>> _partners = [];
   bool _loading = true;
   String? _error;
   String _query = '';
   bool _showAll = true;
   DateTime _selectedDate = DateTime.now();
+  Timer? _attendanceClock;
   late final _RealtimeRefreshCoordinator _realtime;
   bool _loadInProgress = false;
   bool _refreshQueued = false;
@@ -3335,6 +3335,9 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   void initState() {
     super.initState();
     _load();
+    _attendanceClock = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
     _realtime = _RealtimeRefreshCoordinator(
       widget.authService,
       () => _load(silent: true),
@@ -3343,8 +3346,27 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
 
   @override
   void dispose() {
+    _attendanceClock?.cancel();
     _realtime.dispose();
     super.dispose();
+  }
+
+  bool get _isHost =>
+      !widget.isAdmin &&
+      widget.user?.sectionAccess.contains('anfitriones') == true &&
+      widget.user?.canAccessReception != true;
+
+  String? _attendanceStatus(Map<String, dynamic> appointment) {
+    if (appointment['status'] != 'Pendiente') return null;
+    final date = appointment['date'];
+    final time = appointment['time'];
+    if (date is! String || time is! String) return null;
+    final today = _dateString(DateTime.now());
+    if (date.compareTo(today) < 0) return 'No se presentó';
+    if (date.compareTo(today) > 0) return null;
+    final scheduledAt = DateTime.tryParse('${date}T$time:00');
+    if (scheduledAt == null || scheduledAt.isAfter(DateTime.now())) return null;
+    return 'Tardía';
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -3363,14 +3385,10 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
         });
       }
       try {
-        final result = await Future.wait([
-          widget.authService.getAppointments(),
-          widget.authService.getBusinessPartners(),
-        ]);
+        final appointments = await widget.authService.getAppointments();
         if (mounted) {
           setState(() {
-            _appointments = result[0];
-            _partners = result[1];
+            _appointments = appointments;
             _loading = false;
             _error = null;
           });
@@ -3388,36 +3406,71 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
     _loadInProgress = false;
   }
 
-  Future<void> _edit([Map<String, dynamic>? appointment]) async {
-    if (_partners.isEmpty) {
-      _showMessage(
-        context,
-        'Registra primero una empresa o visitante.',
-        error: true,
-      );
-      return;
-    }
-    var visitors = <Map<String, dynamic>>[];
+  Future<void> _edit({
+    Map<String, dynamic>? appointment,
+    DateTime? initialDate,
+    bool reschedule = false,
+  }) async {
+    late final List<Map<String, dynamic>> appointmentPartners;
+    late final List<Map<String, dynamic>> visitors;
+    late final List<Map<String, dynamic>> externalStaff;
+    late final List<Map<String, dynamic>> hosts;
     try {
-      visitors = await widget.authService.getHostVisitors();
+      final options = await Future.wait<Object>([
+        widget.authService.getAppointmentBusinessPartners(),
+        widget.authService.getHostVisitors(forAppointment: true),
+        widget.authService.getExternalStaff(),
+        if (!_isHost) widget.authService.getDepartmentHosts(),
+      ]);
+      appointmentPartners = options[0] as List<Map<String, dynamic>>;
+      visitors = options[1] as List<Map<String, dynamic>>;
+      externalStaff = options[2] as List<Map<String, dynamic>>;
+      hosts = _isHost
+          ? const []
+          : (options[3] as List<DepartmentHost>)
+                .map(
+                  (host) => {
+                    'id': host.id,
+                    'login': host.login,
+                    'name': host.name,
+                    'departmentId': host.departmentId,
+                    'email': host.email,
+                  },
+                )
+                .toList();
     } on AuthApiException catch (error) {
       if (mounted) {
         _showMessage(
           context,
-          'No se pudieron cargar los visitantes guardados: ${error.message}',
+          'No se pudieron cargar tus registros para la cita: ${error.message}',
           error: true,
         );
       }
+      return;
     }
     if (!mounted) return;
+    if (appointmentPartners.isEmpty && visitors.isEmpty) {
+      _showMessage(
+        context,
+        'Primero registra una empresa o visitante para poder agendar la cita.',
+        error: true,
+      );
+      return;
+    }
     final result = await showDialog<Map<String, Object?>>(
       context: context,
       builder: (_) => _AppointmentForm(
         authService: widget.authService,
-        partners: _partners,
+        partners: appointmentPartners,
         visitors: visitors,
+        externalStaff: externalStaff,
+        hosts: hosts,
+        user: widget.user,
+        isAdmin: widget.isAdmin,
+        isHost: _isHost,
         record: appointment,
-        initialDate: _selectedDate,
+        initialDate: initialDate ?? _selectedDate,
+        reschedule: reschedule,
       ),
     );
     if (result == null) return;
@@ -3547,9 +3600,22 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                     for (final item in appointments) ...[
                       _AppointmentRecordCard(
                         item: item,
+                        displayStatus:
+                            _attendanceStatus(item) ??
+                            '${item['status'] ?? 'Pendiente'}',
+                        canReschedule:
+                            _isHost &&
+                            _attendanceStatus(item) == 'No se presentó',
                         canManage: widget.canManage,
                         isAdmin: widget.isAdmin,
-                        onEdit: () => _edit(item),
+                        onEdit: () => _edit(appointment: item),
+                        onReschedule: () => _edit(
+                          appointment: item,
+                          initialDate: DateTime.now().add(
+                            const Duration(days: 1),
+                          ),
+                          reschedule: true,
+                        ),
                         onCancel: () => _cancel(item),
                         onDelete: () => _delete(item),
                         onSendQr: () => widget.onSendPass(item),
@@ -4452,14 +4518,30 @@ class _AppointmentForm extends StatefulWidget {
     required this.authService,
     required this.partners,
     required this.visitors,
+    required this.externalStaff,
+    required this.hosts,
+    required this.user,
+    required this.isAdmin,
+    required this.isHost,
     required this.initialDate,
+    this.reschedule = false,
     this.record,
   });
   final AuthService authService;
   final List<Map<String, dynamic>> partners;
   final List<Map<String, dynamic>> visitors;
+  final List<Map<String, dynamic>> externalStaff;
+  final List<Map<String, dynamic>> hosts;
+  final AuthenticatedUser? user;
+  final bool isAdmin;
+  final bool isHost;
   final Map<String, dynamic>? record;
   final DateTime initialDate;
+  final bool reschedule;
+
+  static const personalVisitorsPartnerId = -1;
+  static const otherVisitorSelection = '__otro__';
+
   @override
   State<_AppointmentForm> createState() => _AppointmentFormState();
 }
@@ -4467,50 +4549,165 @@ class _AppointmentForm extends StatefulWidget {
 class _AppointmentFormState extends State<_AppointmentForm> {
   final _formKey = GlobalKey<FormState>();
   late final List<Map<String, dynamic>> _savedVisitors = [...widget.visitors];
-  int? _selectedVisitorRecordId;
+  late int _partnerId = _initialPartnerId;
+  String _visitorSelection = '';
+  String _selectedHostLogin = '';
   late final _visitor = TextEditingController(
     text: '${widget.record?['visitor'] ?? ''}',
   );
   late final _email = TextEditingController(
     text: '${widget.record?['email'] ?? ''}',
   );
-  late final _host = TextEditingController(
-    text: '${widget.record?['host'] ?? ''}',
-  );
-  late int _partnerId =
-      widget.record?['businessPartnerId'] as int? ??
-      widget.partners.first['id'] as int;
-  late DateTime _date =
-      DateTime.tryParse('${widget.record?['date'] ?? ''}') ??
-      widget.initialDate;
+  late DateTime _date = widget.reschedule
+      ? widget.initialDate
+      : DateTime.tryParse('${widget.record?['date'] ?? ''}') ??
+            widget.initialDate;
   late String _time = '${widget.record?['time'] ?? '09:00'}';
 
   @override
   void initState() {
     super.initState();
     final visitorRecordId = widget.record?['visitorRecordId'];
-    _selectedVisitorRecordId = visitorRecordId is num
-        ? visitorRecordId.toInt()
-        : null;
+    if (visitorRecordId is num && _canUsePersonalVisitors) {
+      _visitorSelection = visitorRecordId.toInt().toString();
+    } else if (widget.record != null) {
+      final staff = _companyVisitors.where(
+        (person) =>
+            person['fullName'] == widget.record?['visitor'] &&
+            person['businessPartnerId'] == _partnerId,
+      );
+      _visitorSelection = staff.isNotEmpty
+          ? '${staff.first['id']}'
+          : _AppointmentForm.otherVisitorSelection;
+    }
+    if (widget.isHost) {
+      _selectedHostLogin = widget.user?.login ?? '';
+    } else if (widget.record != null) {
+      _selectedHostLogin =
+          widget.hosts
+              .where((host) => host['name'] == widget.record?['host'])
+              .map((host) => '${host['login']}')
+              .firstOrNull ??
+          '';
+    }
   }
 
-  List<Map<String, dynamic>> get _availablePartners => widget.partners
-      .where(
-        (partner) =>
-            partner['status'] != 'Inactiva' || partner['id'] == _partnerId,
-      )
+  int get _initialPartnerId {
+    final visitorRecordId = widget.record?['visitorRecordId'];
+    if (visitorRecordId is num && _canUsePersonalVisitors) {
+      return _AppointmentForm.personalVisitorsPartnerId;
+    }
+    final recordPartnerId = widget.record?['businessPartnerId'];
+    if (recordPartnerId is num) return recordPartnerId.toInt();
+    if (_companyPartners.isNotEmpty) {
+      return (_companyPartners.first['id'] as num).toInt();
+    }
+    return _canUsePersonalVisitors
+        ? _AppointmentForm.personalVisitorsPartnerId
+        : 0;
+  }
+
+  bool get _isPersonalVisitorsPartner =>
+      _partnerId == _AppointmentForm.personalVisitorsPartnerId;
+
+  bool get _isOtherVisitor =>
+      _visitorSelection == _AppointmentForm.otherVisitorSelection;
+
+  bool get _hasSelectedVisitor =>
+      _visitorSelection.isNotEmpty &&
+      (_isOtherVisitor
+          ? _visitor.text.trim().isNotEmpty
+          : _selectedVisitor != null);
+
+  bool get _canUsePersonalVisitors => widget.isAdmin || widget.isHost;
+
+  List<Map<String, dynamic>> get _companyPartners => widget.partners
+      .where((partner) => partner['type'] != 'Visitante')
       .toList();
 
-  Map<String, dynamic> get _selectedPartner => widget.partners.firstWhere(
-    (partner) => partner['id'] == _partnerId,
-    orElse: () => widget.partners.first,
-  );
+  List<Map<String, dynamic>> get _availablePartners {
+    final partners = _companyPartners
+        .where(
+          (partner) =>
+              partner['status'] != 'Inactiva' ||
+              partner['id'] == widget.record?['businessPartnerId'],
+        )
+        .toList();
+    if (_canUsePersonalVisitors) {
+      partners.insert(0, _personalVisitorsPartner);
+    }
+    return partners;
+  }
+
+  Map<String, dynamic> get _personalVisitorsPartner => {
+    'id': _AppointmentForm.personalVisitorsPartnerId,
+    'name': 'Visitante registrado',
+    'type': 'Visitante',
+  };
+
+  Map<String, dynamic> get _selectedPartner => _isPersonalVisitorsPartner
+      ? _personalVisitorsPartner
+      : widget.partners.firstWhere(
+          (partner) => partner['id'] == _partnerId,
+          orElse: () => {
+            'id': _partnerId,
+            'name': 'Empresa no disponible',
+            'type': 'Visitante',
+          },
+        );
+
+  List<Map<String, dynamic>> get _companyVisitors =>
+      widget.externalStaff
+          .where((person) => person['businessPartnerId'] == _partnerId)
+          .toList()
+        ..sort(
+          (first, second) =>
+              '${first['fullName']}'.compareTo('${second['fullName']}'),
+        );
+
+  List<Map<String, dynamic>> get _personalVisitorOptions => _savedVisitors
+    ..sort(
+      (first, second) =>
+          '${first['fullName']}'.compareTo('${second['fullName']}'),
+    );
+
+  List<Map<String, dynamic>> get _visitorOptions =>
+      _isPersonalVisitorsPartner ? _personalVisitorOptions : _companyVisitors;
+
+  Map<String, dynamic>? get _selectedVisitor {
+    if (_visitorSelection.isEmpty || _isOtherVisitor) return null;
+    final options = _visitorOptions.where(
+      (visitor) => '${visitor['id']}' == _visitorSelection,
+    );
+    return options.isEmpty ? null : options.first;
+  }
+
+  List<Map<String, dynamic>> get _appointmentHosts {
+    if (!widget.isHost) return widget.hosts;
+    final user = widget.user;
+    if (user == null) return const [];
+    return [
+      {
+        'id': 0,
+        'login': user.login,
+        'name': user.name?.trim().isNotEmpty == true
+            ? user.name!.trim()
+            : user.login,
+      },
+    ];
+  }
+
+  Map<String, dynamic>? get _selectedHost {
+    final matches = _appointmentHosts.where(
+      (host) => host['login'] == _selectedHostLogin,
+    );
+    return matches.isEmpty ? null : matches.first;
+  }
 
   @override
   void dispose() {
     _visitor.dispose();
     _email.dispose();
-    _host.dispose();
     super.dispose();
   }
 
@@ -4573,11 +4770,18 @@ class _AppointmentFormState extends State<_AppointmentForm> {
         ),
       ),
     );
-    if (id != null) setState(() => _partnerId = id);
+    if (id != null && id != _partnerId) {
+      setState(() {
+        _partnerId = id;
+        _visitorSelection = '';
+        _visitor.clear();
+        _email.clear();
+      });
+    }
   }
 
   Future<void> _selectVisitor() async {
-    final visitor = await showModalBottomSheet<Map<String, dynamic>>(
+    final selection = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: _logDialogColor(context),
       isScrollControlled: true,
@@ -4596,7 +4800,9 @@ class _AppointmentFormState extends State<_AppointmentForm> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Visitantes guardados',
+                  _isPersonalVisitorsPartner
+                      ? 'Visitantes guardados'
+                      : 'Personal de ${_selectedPartner['name']}',
                   style: TextStyle(
                     color: _primaryTextColor(context),
                     fontSize: 18,
@@ -4604,20 +4810,22 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                   ),
                 ),
                 const SizedBox(height: 10),
-                if (_savedVisitors.isEmpty)
+                if (_visitorOptions.isEmpty)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 18),
                     child: Text(
-                      'Todavía no hay perfiles guardados. Crea uno para reutilizar sus datos.',
+                      _isPersonalVisitorsPartner
+                          ? 'Todavía no hay perfiles guardados. Guarda un visitante para seleccionarlo aquí.'
+                          : 'Esta empresa todavía no tiene personal registrado. Puedes capturar los datos manualmente.',
                       style: TextStyle(color: _secondaryTextColor(context)),
                     ),
                   )
-                else
+                else ...[
                   Flexible(
                     child: ListView(
                       shrinkWrap: true,
                       children: [
-                        for (final visitor in _savedVisitors)
+                        for (final visitor in _visitorOptions)
                           ListTile(
                             contentPadding: EdgeInsets.zero,
                             leading: const CircleAvatar(
@@ -4631,7 +4839,10 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                               ),
                             ),
                             subtitle: Text(
-                              ['${visitor['phone']}', '${visitor['email']}']
+                              [
+                                    '${visitor['phone'] ?? ''}',
+                                    '${visitor['email'] ?? ''}',
+                                  ]
                                   .where((value) => value.trim().isNotEmpty)
                                   .join(' · '),
                               style: TextStyle(
@@ -4639,9 +4850,35 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                                 fontSize: 11,
                               ),
                             ),
-                            onTap: () => Navigator.pop(context, visitor),
+                            trailing: '${visitor['id']}' == _visitorSelection
+                                ? const Icon(
+                                    Icons.check_circle_rounded,
+                                    color: Color(0xFF168BFF),
+                                  )
+                                : null,
+                            onTap: () =>
+                                Navigator.pop(context, '${visitor['id']}'),
                           ),
                       ],
+                    ),
+                  ),
+                ],
+                if (!_isPersonalVisitorsPartner)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const CircleAvatar(
+                      child: Icon(Icons.person_add_alt_1_rounded),
+                    ),
+                    title: Text(
+                      'Otro (escribir nombre)',
+                      style: TextStyle(
+                        color: _primaryTextColor(context),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    onTap: () => Navigator.pop(
+                      context,
+                      _AppointmentForm.otherVisitorSelection,
                     ),
                   ),
               ],
@@ -4650,12 +4887,93 @@ class _AppointmentFormState extends State<_AppointmentForm> {
         ),
       ),
     );
-    if (visitor == null) return;
+    if (selection == null) return;
     setState(() {
-      _selectedVisitorRecordId = (visitor['id'] as num).toInt();
-      _visitor.text = '${visitor['fullName']}';
-      _email.text = '${visitor['email']}';
+      _visitorSelection = selection;
+      if (selection != _AppointmentForm.otherVisitorSelection) {
+        final visitor = _visitorOptions.firstWhere(
+          (option) => '${option['id']}' == selection,
+        );
+        _visitor.text = '${visitor['fullName']}';
+        _email.text = '${visitor['email'] ?? ''}';
+      } else {
+        _visitor.clear();
+        _email.clear();
+      }
     });
+  }
+
+  Future<void> _selectHost() async {
+    final login = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: _logDialogColor(context),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(23)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(17, 15, 17, 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.65,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Anfitrión',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final host in _appointmentHosts)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            child: Icon(Icons.badge_outlined),
+                          ),
+                          title: Text(
+                            '${host['name']}',
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${host['login']}',
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 11,
+                            ),
+                          ),
+                          trailing: host['login'] == _selectedHostLogin
+                              ? const Icon(
+                                  Icons.check_circle_rounded,
+                                  color: Color(0xFF168BFF),
+                                )
+                              : null,
+                          onTap: () =>
+                              Navigator.pop(context, '${host['login']}'),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (login != null) setState(() => _selectedHostLogin = login);
   }
 
   Future<void> _createVisitorProfile() async {
@@ -4690,7 +5008,8 @@ class _AppointmentFormState extends State<_AppointmentForm> {
         _savedVisitors
           ..clear()
           ..addAll(visitors);
-        _selectedVisitorRecordId = (created['id'] as num).toInt();
+        _partnerId = _AppointmentForm.personalVisitorsPartnerId;
+        _visitorSelection = '${created['id']}';
         _visitor.text = '${created['fullName']}';
         _email.text = '${created['email']}';
       });
@@ -4707,6 +5026,77 @@ class _AppointmentFormState extends State<_AppointmentForm> {
       if (mounted) _showMessage(context, error.message, error: true);
     }
   }
+
+  Widget _selectorCard({
+    required String label,
+    required String value,
+    required String placeholder,
+    required IconData icon,
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) => Material(
+    color: _logInsetColor(context),
+    borderRadius: BorderRadius.circular(14),
+    child: InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _logBorderColor(context)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: const Color(0xFF168BFF).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(icon, color: const Color(0xFF68B7FF), size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label.toUpperCase(),
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 8,
+                      letterSpacing: 0.6,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    value.isEmpty ? placeholder : value,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: value.isEmpty
+                          ? _secondaryTextColor(context)
+                          : _primaryTextColor(context),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (enabled)
+              Icon(
+                Icons.expand_more_rounded,
+                color: _secondaryTextColor(context),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
 
   Future<void> _pickDate() async {
     final value = await showDatePicker(
@@ -4942,84 +5332,100 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                         selector: true,
                       ),
                       const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          OutlinedButton.icon(
-                            onPressed: _selectVisitor,
-                            icon: const Icon(Icons.bookmark_outline_rounded),
-                            label: Text(
-                              _selectedVisitorRecordId == null
-                                  ? 'Elegir visitante guardado'
-                                  : 'Visitante guardado seleccionado',
-                            ),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _createVisitorProfile,
-                            icon: const Icon(Icons.person_add_alt_1_rounded),
-                            label: const Text('Guardar visitante'),
-                          ),
-                        ],
+                      _selectorCard(
+                        label: 'Visitante',
+                        value: _isOtherVisitor
+                            ? _visitor.text
+                            : '${_selectedVisitor?['fullName'] ?? ''}',
+                        placeholder: _isPersonalVisitorsPartner
+                            ? 'Selecciona un visitante guardado'
+                            : 'Selecciona personal o elige “Otro”',
+                        icon: Icons.person_outline_rounded,
+                        onTap: _selectVisitor,
                       ),
-                      if (_selectedVisitorRecordId != null) ...[
-                        const SizedBox(height: 5),
+                      if (_isPersonalVisitorsPartner &&
+                          _personalVisitorOptions.isEmpty) ...[
+                        const SizedBox(height: 7),
                         Text(
-                          'El registro personal se vinculará a esta cita.',
+                          'Registra primero un visitante personal para poder seleccionarlo.',
                           style: TextStyle(
                             color: _secondaryTextColor(context),
                             fontSize: 10,
                           ),
                         ),
                       ],
-                      const SizedBox(height: 10),
-                      _field(
-                        label: 'Nombre del visitante',
-                        hint: 'Nombre y apellidos',
-                        icon: Icons.person_outline_rounded,
-                        controller: _visitor,
-                        validator: (value) =>
-                            value == null || value.trim().isEmpty
-                            ? 'Escribe el nombre del visitante'
-                            : null,
-                        onChanged: (_) {
-                          if (_selectedVisitorRecordId != null) {
-                            setState(() => _selectedVisitorRecordId = null);
-                          }
-                        },
-                      ),
-                      _field(
-                        label: 'Correo del visitante · opcional',
-                        hint: 'correo@ejemplo.com',
-                        icon: Icons.mail_outline_rounded,
-                        controller: _email,
-                        keyboardType: TextInputType.emailAddress,
-                        validator: (value) {
-                          final email = value?.trim() ?? '';
-                          if (email.isNotEmpty &&
-                              !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                                  .hasMatch(email)) {
-                            return 'Escribe un correo válido';
-                          }
-                          return null;
-                        },
-                        onChanged: (_) {
-                          if (_selectedVisitorRecordId != null) {
-                            setState(() => _selectedVisitorRecordId = null);
-                          }
-                        },
-                      ),
-                      _field(
-                        label: 'Anfitrión',
-                        hint: 'Nombre del anfitrión que recibirá la visita',
-                        icon: Icons.badge_outlined,
-                        controller: _host,
-                        validator: (value) =>
-                            value == null || value.trim().isEmpty
-                            ? 'Escribe el nombre del anfitrión'
-                            : null,
-                      ),
+                      if (_canUsePersonalVisitors) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: _createVisitorProfile,
+                            icon: const Icon(
+                              Icons.person_add_alt_1_rounded,
+                              size: 17,
+                            ),
+                            label: const Text('Guardar visitante'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _isLightTheme(context)
+                                  ? const Color(0xFF1769AA)
+                                  : const Color(0xFFB8D7FF),
+                              side: BorderSide(
+                                color: _isLightTheme(context)
+                                    ? const Color(0xFFB7D6E8)
+                                    : const Color(0x665D9FE4),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 13,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (_isOtherVisitor) ...[
+                        const SizedBox(height: 10),
+                        _field(
+                          label: 'Nombre completo del visitante',
+                          hint: 'Nombre y apellidos',
+                          icon: Icons.person_outline_rounded,
+                          controller: _visitor,
+                          validator: (value) =>
+                              value == null || value.trim().isEmpty
+                              ? 'Escribe el nombre del visitante'
+                              : null,
+                        ),
+                        _field(
+                          label: 'Correo del visitante · opcional',
+                          hint: 'correo@ejemplo.com',
+                          icon: Icons.mail_outline_rounded,
+                          controller: _email,
+                          keyboardType: TextInputType.emailAddress,
+                          validator: (value) {
+                            final email = value?.trim() ?? '';
+                            if (email.isNotEmpty &&
+                                !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                    .hasMatch(email)) {
+                              return 'Escribe un correo válido';
+                            }
+                            return null;
+                          },
+                        ),
+                      ],
                       const SizedBox(height: 2),
+                      _selectorCard(
+                        label: 'Anfitrión',
+                        value: '${_selectedHost?['name'] ?? ''}',
+                        placeholder: widget.isHost
+                            ? 'Tu cuenta de anfitrión'
+                            : 'Selecciona un anfitrión',
+                        icon: Icons.badge_outlined,
+                        onTap: _selectHost,
+                        enabled: !widget.isHost,
+                      ),
+                      const SizedBox(height: 14),
                       const _FormSectionLabel(label: 'FECHA Y HORA'),
                       const SizedBox(height: 11),
                       Row(
@@ -5084,17 +5490,49 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                         ),
                         child: FilledButton.icon(
                           onPressed: () {
+                            if (!_hasSelectedVisitor) {
+                              _showMessage(
+                                context,
+                                _isPersonalVisitorsPartner
+                                    ? 'Selecciona un visitante guardado o registra uno nuevo.'
+                                    : 'Selecciona un visitante registrado o elige “Otro” para capturar sus datos.',
+                                error: true,
+                              );
+                              return;
+                            }
+                            final selectedHost = _selectedHost;
+                            if (selectedHost == null) {
+                              _showMessage(
+                                context,
+                                'Selecciona un anfitrión para la cita.',
+                                error: true,
+                              );
+                              return;
+                            }
                             if (!_formKey.currentState!.validate()) return;
-                            Navigator.pop(context, <String, Object?>{
-                              'visitorName': _visitor.text.trim(),
-                              'visitorEmail': _email.text.trim(),
-                              'businessPartnerId': _partnerId,
-                              if (_selectedVisitorRecordId != null)
-                                'visitorRecordId': _selectedVisitorRecordId,
-                              'hostName': _host.text.trim(),
+                            final personalVisitorId =
+                                _isPersonalVisitorsPartner && !_isOtherVisitor
+                                ? int.tryParse(_visitorSelection)
+                                : null;
+                            final appointment = <String, Object?>{
+                              'visitorName': _isOtherVisitor
+                                  ? _visitor.text.trim()
+                                  : '${_selectedVisitor?['fullName'] ?? ''}',
+                              'visitorEmail': _isOtherVisitor
+                                  ? _email.text.trim()
+                                  : '${_selectedVisitor?['email'] ?? ''}',
+                              'businessPartnerId': _isPersonalVisitorsPartner
+                                  ? null
+                                  : _partnerId,
+                              'hostName': '${selectedHost['name']}',
                               'date': _dateString(_date),
                               'time': _time,
-                            });
+                            };
+                            if (personalVisitorId != null) {
+                              appointment['visitorRecordId'] =
+                                  personalVisitorId;
+                            }
+                            Navigator.pop(context, appointment);
                           },
                           icon: const Icon(Icons.check_rounded, size: 18),
                           label: Text(
@@ -5145,66 +5583,244 @@ class _HostVisitorEditorDialogState extends State<_HostVisitorEditorDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Guardar visitante personal'),
-    content: Form(
-      key: _formKey,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _fullName,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(labelText: 'Nombre completo'),
-              validator: (value) => value == null || value.trim().isEmpty
-                  ? 'Escribe el nombre completo'
-                  : null,
-            ),
-            TextFormField(
-              controller: _phone,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(labelText: 'Teléfono'),
-              validator: (value) => value == null || value.trim().isEmpty
-                  ? 'Escribe el teléfono'
-                  : null,
-            ),
-            TextFormField(
-              controller: _email,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                labelText: 'Correo electrónico',
-              ),
-              validator: (value) {
-                final email = value?.trim() ?? '';
-                if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
-                  return 'Escribe un correo válido';
-                }
-                return null;
-              },
+  Widget build(BuildContext context) {
+    final isLight = _isLightTheme(context);
+    final textColor = _primaryTextColor(context);
+    final secondaryColor = _secondaryTextColor(context);
+    final borderColor = _logBorderColor(context);
+    final insetColor = _logInsetColor(context);
+
+    InputDecoration decoration(String label, IconData icon) => InputDecoration(
+      labelText: label,
+      prefixIcon: Icon(icon, color: const Color(0xFF68B7FF), size: 19),
+      filled: true,
+      fillColor: insetColor,
+      labelStyle: TextStyle(color: secondaryColor, fontSize: 13),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(13),
+        borderSide: BorderSide(color: borderColor),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(13),
+        borderSide: const BorderSide(color: Color(0xFF168BFF), width: 1.4),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(13),
+        borderSide: const BorderSide(color: Color(0xFFFF7189)),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(13),
+        borderSide: const BorderSide(color: Color(0xFFFF7189)),
+      ),
+    );
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth: 520,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.86,
+        ),
+        decoration: BoxDecoration(
+          color: isLight ? Colors.white : null,
+          gradient: isLight
+              ? null
+              : const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF172844), Color(0xFF091426)],
+                ),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: const Color(0x663D9DFF)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x55000000),
+              blurRadius: 30,
+              offset: Offset(0, 17),
             ),
           ],
         ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(19, 17, 10, 14),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 43,
+                      height: 43,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF168BFF), Color(0xFF26B8E8)],
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(
+                        Icons.person_add_alt_1_rounded,
+                        color: Colors.white,
+                        size: 21,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Guardar visitante personal',
+                            style: TextStyle(
+                              color: textColor,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Guarda sus datos para reutilizarlos en tus citas.',
+                            style: TextStyle(
+                              color: secondaryColor,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Cerrar',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                      color: secondaryColor,
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: borderColor),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(18, 17, 18, 8),
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _fullName,
+                        textCapitalization: TextCapitalization.words,
+                        textInputAction: TextInputAction.next,
+                        maxLength: 180,
+                        style: TextStyle(color: textColor, fontSize: 13),
+                        decoration: decoration(
+                          'Nombre completo',
+                          Icons.person_outline_rounded,
+                        ).copyWith(counterText: ''),
+                        validator: (value) =>
+                            value == null || value.trim().isEmpty
+                            ? 'Escribe el nombre completo'
+                            : null,
+                      ),
+                      const SizedBox(height: 11),
+                      TextFormField(
+                        controller: _phone,
+                        keyboardType: TextInputType.phone,
+                        textInputAction: TextInputAction.next,
+                        maxLength: 30,
+                        style: TextStyle(color: textColor, fontSize: 13),
+                        decoration: decoration(
+                          'Teléfono · opcional',
+                          Icons.phone_outlined,
+                        ).copyWith(counterText: ''),
+                      ),
+                      const SizedBox(height: 11),
+                      TextFormField(
+                        controller: _email,
+                        keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.done,
+                        maxLength: 254,
+                        style: TextStyle(color: textColor, fontSize: 13),
+                        decoration: decoration(
+                          'Correo electrónico · opcional',
+                          Icons.mail_outline_rounded,
+                        ).copyWith(counterText: ''),
+                        validator: (value) {
+                          final email = value?.trim() ?? '';
+                          if (email.isNotEmpty &&
+                              !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                  .hasMatch(email)) {
+                            return 'Escribe un correo válido o déjalo vacío';
+                          }
+                          return null;
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: textColor,
+                          side: BorderSide(color: borderColor),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(13),
+                          ),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF168BFF), Color(0xFF7657FF)],
+                          ),
+                          borderRadius: BorderRadius.circular(13),
+                        ),
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            if (!_formKey.currentState!.validate()) return;
+                            Navigator.pop(context, {
+                              'fullName': _fullName.text.trim(),
+                              'phone': _phone.text.trim(),
+                              'email': _email.text.trim(),
+                            });
+                          },
+                          icon: const Icon(Icons.check_rounded, size: 16),
+                          label: const Text(
+                            'Guardar y usar',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 13,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(13),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancelar'),
-      ),
-      FilledButton(
-        onPressed: () {
-          if (!_formKey.currentState!.validate()) return;
-          Navigator.pop(context, {
-            'fullName': _fullName.text.trim(),
-            'phone': _phone.text.trim(),
-            'email': _email.text.trim(),
-          });
-        },
-        child: const Text('Guardar y usar'),
-      ),
-    ],
-  );
+    );
+  }
 }
 
 class _AppointmentPartnerOption extends StatelessWidget {
@@ -5315,26 +5931,40 @@ class _AppointmentPartnerOption extends StatelessWidget {
 class _AppointmentRecordCard extends StatelessWidget {
   const _AppointmentRecordCard({
     required this.item,
+    required this.displayStatus,
+    required this.canReschedule,
     required this.canManage,
     required this.isAdmin,
     required this.onEdit,
+    required this.onReschedule,
     required this.onCancel,
     required this.onDelete,
     required this.onSendQr,
     required this.onShowCode,
   });
   final Map<String, dynamic> item;
+  final String displayStatus;
+  final bool canReschedule;
   final bool canManage;
   final bool isAdmin;
-  final VoidCallback onEdit, onCancel, onDelete, onSendQr, onShowCode;
+  final VoidCallback onEdit,
+      onReschedule,
+      onCancel,
+      onDelete,
+      onSendQr,
+      onShowCode;
 
   @override
   Widget build(BuildContext context) {
     final isLight = _isLightTheme(context);
-    final status = '${item['status'] ?? 'Pendiente'}';
+    final status = displayStatus;
     final canceled = status == 'Cancelada';
     final withdrawn = status == 'Retirado';
-    final statusColor = canceled
+    final statusColor = status == 'No se presentó'
+        ? const Color(0xFFFF7189)
+        : status == 'Tardía'
+        ? const Color(0xFFFFC56E)
+        : canceled
         ? const Color(0xFFFF7189)
         : status == 'Dentro' || withdrawn
         ? const Color(0xFF4AE3B5)
@@ -5468,11 +6098,24 @@ class _AppointmentRecordCard extends StatelessWidget {
                   icon: Icons.send_rounded,
                   onPressed: onSendQr,
                 ),
-                _AppointmentActionButton(
-                  label: 'Editar',
-                  icon: Icons.edit_rounded,
-                  onPressed: onEdit,
-                ),
+                if (canReschedule)
+                  _AppointmentActionButton(
+                    label: 'Reagendar',
+                    icon: Icons.event_repeat_rounded,
+                    onPressed: onReschedule,
+                  )
+                else if (canReschedule)
+                  _AppointmentActionButton(
+                    label: 'Reagendar',
+                    icon: Icons.event_repeat_rounded,
+                    onPressed: onReschedule,
+                  )
+                else
+                  _AppointmentActionButton(
+                    label: 'Editar',
+                    icon: Icons.edit_rounded,
+                    onPressed: onEdit,
+                  ),
                 _AppointmentActionButton(
                   label: 'Cancelar cita',
                   icon: Icons.event_busy_rounded,
@@ -6155,7 +6798,9 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   bool _loadInProgress = false;
   bool _refreshQueued = false;
   final List<Map<String, dynamic>> _visitTimers = [];
-  final Map<int, DateTime> _lastTimerAlertAt = {};
+  final Map<int, String> _lastTimerAlertAt = {};
+  int _timerPage = 1;
+  static const _timersPerPage = 8;
   final TimerNotificationService _notificationService =
       TimerNotificationService.instance;
   Timer? _timerPoll;
@@ -6163,6 +6808,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   bool _timerRequestInProgress = false;
   bool _isForeground = true;
   String? _timerError;
+  DateTime? _timerLastUpdatedAt;
   String _notificationStatus = 'Verificando notificaciones…';
 
   @override
@@ -6233,7 +6879,10 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         _visitTimers
           ..clear()
           ..addAll(timers);
+        final totalPages = _timerPageCount;
+        if (_timerPage > totalPages) _timerPage = totalPages;
         _timerError = null;
+        _timerLastUpdatedAt = DateTime.now();
         final activeIds = timers
             .map((timer) => (timer['id'] as num).toInt())
             .toSet();
@@ -6254,12 +6903,9 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
       final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
       if (dueAt == null || !now.isAfter(dueAt)) continue;
       final id = (timer['id'] as num).toInt();
-      final lastAlert = _lastTimerAlertAt[id];
-      if (lastAlert != null &&
-          now.difference(lastAlert) < const Duration(seconds: 30)) {
-        continue;
-      }
-      _lastTimerAlertAt[id] = now;
+      final dueKey = '${timer['dueAt']}';
+      if (_lastTimerAlertAt[id] == dueKey) continue;
+      _lastTimerAlertAt[id] = dueKey;
       unawaited(SystemSound.play(SystemSoundType.alert).catchError((_) {}));
       unawaited(HapticFeedback.vibrate().catchError((_) {}));
       break;
@@ -6283,6 +6929,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
           ..addAll(timers);
         _lastTimerAlertAt.remove(id);
         _timerError = null;
+        _timerLastUpdatedAt = DateTime.now();
       });
       _checkOverdueTimers();
     } on AuthApiException catch (error) {
@@ -6304,11 +6951,55 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         '${dueAt.minute.toString().padLeft(2, '0')} · faltan $clock';
   }
 
+  String _timerElapsedLabel(Map<String, dynamic> timer) {
+    final startedAt = DateTime.tryParse('${timer['startedAt'] ?? ''}')
+        ?.toLocal();
+    if (startedAt == null) return 'Tiempo transcurrido no disponible';
+    final elapsed = DateTime.now().difference(startedAt);
+    final duration = Duration(
+      seconds: elapsed.isNegative ? 0 : elapsed.inSeconds,
+    );
+    final clock =
+        '${duration.inHours.toString().padLeft(2, '0')}:'
+        '${(duration.inMinutes % 60).toString().padLeft(2, '0')}:'
+        '${(duration.inSeconds % 60).toString().padLeft(2, '0')}';
+    return 'Lleva $clock';
+  }
+
+  String _timerLastUpdatedLabel() {
+    final updatedAt = _timerLastUpdatedAt;
+    if (updatedAt == null) return 'Aún no se han confirmado temporizadores';
+    final time =
+        '${updatedAt.hour.toString().padLeft(2, '0')}:'
+        '${updatedAt.minute.toString().padLeft(2, '0')}:'
+        '${updatedAt.second.toString().padLeft(2, '0')}';
+    return _timerError == null
+        ? 'Temporizadores verificados a las $time · actualiza cada 30 s'
+        : 'Mostrando datos de las $time; no se pudo actualizar';
+  }
+
   List<Map<String, dynamic>> get _overdueVisitTimers =>
       _visitTimers.where((timer) {
         final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
         return dueAt != null && DateTime.now().isAfter(dueAt);
       }).toList();
+
+  int get _timerPageCount =>
+      (_visitTimers.length / _timersPerPage).ceil().clamp(1, 1 << 30).toInt();
+
+  List<Map<String, dynamic>> get _visibleVisitTimers {
+    final start = (_timerPage - 1) * _timersPerPage;
+    return _visitTimers.skip(start).take(_timersPerPage).toList();
+  }
+
+  double _timerProgress(Map<String, dynamic> timer) {
+    final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
+    final interval = (timer['intervalMinutes'] as num).toInt();
+    if (dueAt == null || interval <= 0) return 0;
+    final intervalStart = dueAt.subtract(Duration(minutes: interval));
+    final elapsedSeconds = DateTime.now().difference(intervalStart).inSeconds;
+    return (elapsedSeconds / (interval * 60)).clamp(0, 1).toDouble();
+  }
 
   Widget _overdueTimerBanner(BuildContext context) => _logbookPanel(
     context: context,
@@ -6340,41 +7031,42 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
             ),
           ),
           const SizedBox(height: 6),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _actOnVisitTimer(timer, action: 'snooze'),
-                  icon: const Icon(Icons.replay_rounded, size: 16),
-                  label: Text(
-                    'Repetir ${(timer['intervalMinutes'] as num).toInt()} min',
-                  ),
-                  style: _logOutlinedButtonStyle(
-                    context,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 8,
+          if (widget.isAdmin)
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _actOnVisitTimer(timer, action: 'snooze'),
+                    icon: const Icon(Icons.replay_rounded, size: 16),
+                    label: Text(
+                      'Repetir ${(timer['intervalMinutes'] as num).toInt()} min',
+                    ),
+                    style: _logOutlinedButtonStyle(
+                      context,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _actOnVisitTimer(timer, action: 'cancel'),
-                  icon: const Icon(Icons.close_rounded, size: 16),
-                  label: const Text('Cancelar alerta'),
-                  style: _logOutlinedButtonStyle(
-                    context,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 8,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _actOnVisitTimer(timer, action: 'cancel'),
+                    icon: const Icon(Icons.close_rounded, size: 16),
+                    label: const Text('Cancelar alerta'),
+                    style: _logOutlinedButtonStyle(
+                      context,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 8,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
         ],
       ],
     ),
@@ -7116,7 +7808,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Temporizadores de seguimiento',
+                'Temporizadores de seguimiento · ${_visitTimers.length}',
                 style: TextStyle(
                   color: _primaryTextColor(context),
                   fontSize: 14,
@@ -7132,6 +7824,18 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
           ],
         ),
         const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(
+            _timerLastUpdatedLabel(),
+            style: TextStyle(
+              color: _timerError == null
+                  ? _secondaryTextColor(context)
+                  : const Color(0xFFFF8394),
+              fontSize: 10,
+            ),
+          ),
+        ),
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
@@ -7175,7 +7879,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
             padding: const EdgeInsets.only(top: 10),
             child: Text(
               _timerError == null
-                  ? 'No hay temporizadores activos. Contratistas y proveedores no generan alertas.'
+                  ? 'No hay temporizadores activos para las visitas de hoy.'
                   : 'Las citas y la bitácora siguen disponibles mientras se recupera el servicio de temporizadores.',
               style: TextStyle(
                 color: _secondaryTextColor(context),
@@ -7185,113 +7889,203 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
           )
         else ...[
           const SizedBox(height: 9),
-          for (final timer in _visitTimers) ...[
-            Builder(
-              builder: (context) {
-                final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')
-                    ?.toLocal();
-                final overdue = dueAt != null && DateTime.now().isAfter(dueAt);
-                final color = overdue
-                    ? const Color(0xFFFF7189)
-                    : const Color(0xFF68B7FF);
-                final interval = (timer['intervalMinutes'] as num).toInt();
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.all(11),
-                  decoration: BoxDecoration(
-                    color: overdue
-                        ? const Color(0x22FF526F)
-                        : _logInsetColor(context),
-                    borderRadius: BorderRadius.circular(13),
-                    border: Border.all(color: color.withValues(alpha: 0.45)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            overdue
-                                ? Icons.alarm_on_rounded
-                                : Icons.alarm_outlined,
-                            color: color,
-                            size: 19,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '${timer['personName']}',
-                              style: TextStyle(
-                                color: _primaryTextColor(context),
-                                fontWeight: FontWeight.w800,
+          Text(
+            widget.isAdmin
+                ? 'Recepción puede consultarlos; solo administración puede repetir o cancelar una alerta.'
+                : 'Solo administración puede repetir o cancelar las alertas.',
+            style: TextStyle(color: _secondaryTextColor(context), fontSize: 10),
+          ),
+          const SizedBox(height: 8),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 900
+                  ? 4
+                  : constraints.maxWidth >= 600
+                  ? 2
+                  : 1;
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _visibleVisitTimers.length,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                  childAspectRatio: columns == 1
+                      ? 2.45
+                      : columns == 2
+                      ? 1.55
+                      : 1.16,
+                ),
+                itemBuilder: (context, index) {
+                  final timer = _visibleVisitTimers[index];
+                  final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')
+                      ?.toLocal();
+                  final overdue =
+                      dueAt != null && DateTime.now().isAfter(dueAt);
+                  final color = overdue
+                      ? const Color(0xFFFF7189)
+                      : const Color(0xFF68B7FF);
+                  final interval = (timer['intervalMinutes'] as num).toInt();
+                  return Container(
+                    padding: const EdgeInsets.all(11),
+                    decoration: BoxDecoration(
+                      color: overdue
+                          ? const Color(0x22FF526F)
+                          : _logInsetColor(context),
+                      borderRadius: BorderRadius.circular(13),
+                      border: Border.all(color: color.withValues(alpha: 0.45)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              overdue
+                                  ? Icons.alarm_on_rounded
+                                  : Icons.alarm_outlined,
+                              color: color,
+                              size: 17,
+                            ),
+                            const SizedBox(width: 7),
+                            Expanded(
+                              child: Text(
+                                '${timer['personName']}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: _primaryTextColor(context),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                             ),
-                          ),
-                          Text(
-                            '$interval min',
-                            style: TextStyle(
-                              color: color,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 11,
+                            Text(
+                              '$interval min',
+                              style: TextStyle(
+                                color: color,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 10,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 27, top: 3),
-                        child: Text(
-                          '${timer['phase']} · ${_timerTimeLabel(timer)}',
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '${timer['phase']} · ${_timerElapsedLabel(timer)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: overdue
                                 ? color
                                 : _secondaryTextColor(context),
-                            fontSize: 11,
+                            fontSize: 10,
                             fontWeight: overdue
                                 ? FontWeight.w800
                                 : FontWeight.normal,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () =>
-                                  _actOnVisitTimer(timer, action: 'snooze'),
-                              icon: const Icon(Icons.replay_rounded, size: 16),
-                              label: Text('Repetir $interval min'),
-                              style: _logOutlinedButtonStyle(
-                                context,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 9,
-                                ),
-                              ),
-                            ),
+                        const SizedBox(height: 5),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(99),
+                          child: LinearProgressIndicator(
+                            value: _timerProgress(timer),
+                            minHeight: 5,
+                            backgroundColor: _logBorderColor(context),
+                            color: color,
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () =>
-                                  _actOnVisitTimer(timer, action: 'cancel'),
-                              icon: const Icon(Icons.close_rounded, size: 16),
-                              label: const Text('Cancelar alerta'),
-                              style: _logOutlinedButtonStyle(
-                                context,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 9,
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          _timerTimeLabel(timer),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 9,
+                          ),
+                        ),
+                        if (widget.isAdmin && overdue) ...[
+                          const Spacer(),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () =>
+                                      _actOnVisitTimer(timer, action: 'snooze'),
+                                  style: _logOutlinedButtonStyle(
+                                    context,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 5,
+                                      vertical: 6,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    'Repetir $interval min',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
                               ),
-                            ),
+                              const SizedBox(width: 5),
+                              IconButton(
+                                tooltip: 'Cancelar alerta',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () =>
+                                    _actOnVisitTimer(timer, action: 'cancel'),
+                                icon: const Icon(Icons.close_rounded, size: 18),
+                              ),
+                            ],
                           ),
                         ],
-                      ),
-                    ],
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+          if (_visitTimers.length > _timersPerPage) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Mostrando ${(_timerPage - 1) * _timersPerPage + 1}–'
+                    '${(_timerPage * _timersPerPage).clamp(0, _visitTimers.length)}'
+                    ' de ${_visitTimers.length}',
+                    style: TextStyle(
+                      color: _secondaryTextColor(context),
+                      fontSize: 10,
+                    ),
                   ),
-                );
-              },
+                ),
+                IconButton(
+                  key: const ValueKey('daily-log-timers-previous-page'),
+                  tooltip: 'Página anterior',
+                  onPressed: _timerPage > 1
+                      ? () => setState(() => _timerPage--)
+                      : null,
+                  icon: const Icon(Icons.chevron_left_rounded),
+                ),
+                Text(
+                  '$_timerPage / $_timerPageCount',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('daily-log-timers-next-page'),
+                  tooltip: 'Página siguiente',
+                  onPressed: _timerPage < _timerPageCount
+                      ? () => setState(() => _timerPage++)
+                      : null,
+                  icon: const Icon(Icons.chevron_right_rounded),
+                ),
+              ],
             ),
           ],
         ],
@@ -7342,7 +8136,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
                 children: [
-                  if (_overdueVisitTimers.isNotEmpty) ...[
+                  if (widget.isAdmin && _overdueVisitTimers.isNotEmpty) ...[
                     _overdueTimerBanner(context),
                     const SizedBox(height: 12),
                   ],

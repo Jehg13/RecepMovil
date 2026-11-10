@@ -98,7 +98,84 @@ const _reception = AuthenticatedUser(
   sectionAccess: ['recepcion'],
 );
 
+const _host = AuthenticatedUser(
+  login: 'host',
+  name: 'Anfitrión API',
+  email: 'host@example.test',
+  role: 'Anfitrión',
+  isAdmin: false,
+  sectionAccess: ['anfitriones'],
+);
+
 void main() {
+  testWidgets('el anfitrión puede reagendar una cita que no se presentó', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1100);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final yesterday = DateTime.now().subtract(const Duration(days: 1));
+    final yesterdayString = [
+      yesterday.year.toString().padLeft(4, '0'),
+      yesterday.month.toString().padLeft(2, '0'),
+      yesterday.day.toString().padLeft(2, '0'),
+    ].join('-');
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    final expectedDate =
+        '${tomorrow.day.toString().padLeft(2, '0')}/'
+        '${tomorrow.month.toString().padLeft(2, '0')}/${tomorrow.year}';
+    final appointment = {
+      ..._appointment,
+      'date': yesterdayString,
+      'status': 'Pendiente',
+    };
+    final service = _service((request) async {
+      final Object response = switch (request.url.path) {
+        '/api/v1/appointments' => {
+          'appointments': [appointment],
+        },
+        '/api/v1/business-partners' => {
+          'businessPartners': [_partner],
+        },
+        '/api/v1/host-visitors' => {'visitors': <Object>[]},
+        '/api/v1/external-staff' => {'externalStaff': <Object>[]},
+        _ => <String, Object>{},
+      };
+      return http.Response(jsonEncode(response), 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedAppointmentsPage(
+            authService: service,
+            isAdmin: false,
+            canManage: true,
+            onSendPass: (_) {},
+            user: _host,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('No se presentó'),
+      350,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('No se presentó'), findsOneWidget);
+    await tester.ensureVisible(find.text('Reagendar'));
+    await tester.tap(find.text('Reagendar'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Editar cita'), findsOneWidget);
+    expect(find.text(expectedDate), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('solo administración ve quién registró movimientos en móvil', (
     tester,
   ) async {
@@ -108,8 +185,37 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final today = DateTime.now().toIso8601String().substring(0, 10);
+    final timerStartedAt = DateTime.now()
+        .toUtc()
+        .subtract(const Duration(minutes: 60))
+        .toIso8601String();
+    final timerDueAt = DateTime.now()
+        .toUtc()
+        .subtract(const Duration(minutes: 30))
+        .toIso8601String();
     var actorName = '';
     final service = _service((request) async {
+      if (request.url.path == '/api/v1/daily-log/timers') {
+        return http.Response(
+          jsonEncode({
+            'timers': List.generate(
+              10,
+              (index) => {
+                'id': 42 + index,
+                'appointmentId': null,
+                'visitorRecordId': 7 + index,
+                'personName': 'Visitante esperando ${index + 1}',
+                'phase': 'Ingreso',
+                'intervalMinutes': 30,
+                'startedAt': timerStartedAt,
+                'dueAt': timerDueAt,
+                'status': 'active',
+              },
+            ),
+          }),
+          200,
+        );
+      }
       if (request.url.path == '/api/v1/daily-log') {
         return http.Response(
           jsonEncode({
@@ -149,17 +255,61 @@ void main() {
 
     await tester.pumpWidget(buildPage(_admin));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Temporizadores de seguimiento · 10'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.textContaining('Sin registro'), findsNothing);
     expect(find.textContaining('Registró:'), findsNothing);
+    expect(find.text('Visitante esperando 1'), findsOneWidget);
+    expect(find.text('Visitante esperando 10'), findsNothing);
+    expect(find.textContaining('Repetir 30 min'), findsWidgets);
+    expect(find.text('1 / 2'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('1 / 2'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.drag(
+      find.byType(RefreshIndicator).last,
+      const Offset(0, -900),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('daily-log-timers-next-page')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const ValueKey('daily-log-timers-next-page')));
+    await tester.pumpAndSettle();
+    expect(find.text('Visitante esperando 10'), findsOneWidget);
 
     actorName = 'Administración';
     await tester.pumpWidget(buildPage(_admin));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Registro de prueba'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Registró: Administración'), findsOneWidget);
 
     await tester.pumpWidget(buildPage(_reception));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Temporizadores de seguimiento · 10'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.textContaining('Registró:'), findsNothing);
+    expect(find.text('Visitante esperando 1'), findsOneWidget);
+    expect(find.text('Visitante esperando 10'), findsNothing);
+    expect(find.textContaining('Repetir 30 min'), findsNothing);
+    expect(find.text('Cancelar alerta'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -1310,10 +1460,20 @@ void main() {
 
     final requestedPaths = <String>{};
     Map<String, String>? dailyLogQuery;
+    Map<String, String>? appointmentPartnerQuery;
+    Map<String, String>? appointmentVisitorsQuery;
     Map<String, dynamic>? createdEquipmentDeclaration;
     Map<String, dynamic>? createdAppointment;
+    Map<String, dynamic>? createdVisitorProfile;
     final service = _service((request) async {
       requestedPaths.add(request.url.path);
+      if (request.url.path == '/api/v1/business-partners') {
+        appointmentPartnerQuery = request.url.queryParameters;
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/host-visitors') {
+        appointmentVisitorsQuery = request.url.queryParameters;
+      }
       if (request.url.path == '/api/v1/daily-log') {
         dailyLogQuery = request.url.queryParameters;
       }
@@ -1323,6 +1483,19 @@ void main() {
         return http.Response(
           jsonEncode({
             'appointments': [_appointment],
+          }),
+          201,
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/host-visitors') {
+        createdVisitorProfile =
+            jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'visitors': [
+              {'id': 42, ...createdVisitorProfile!},
+            ],
           }),
           201,
         );
@@ -1356,6 +1529,20 @@ void main() {
         },
         '/api/v1/business-partners' => {
           'businessPartners': [_partner],
+        },
+        '/api/v1/host-visitors' => {'visitors': <Object>[]},
+        '/api/v1/department-hosts' => {
+          'hosts': [
+            {
+              'id': 5,
+              'login': 'host.api',
+              'name': 'Anfitrión API',
+              'departmentId': 2,
+              'role': 'Anfitrión',
+              'email': 'host@example.test',
+              'phone': '5559876543',
+            },
+          ],
         },
         '/api/v1/external-staff' => {
           'externalStaff': [
@@ -1653,38 +1840,46 @@ void main() {
           expect(find.text('Programar una cita'), findsOneWidget);
           expect(find.text('EMPRESA O VISITANTE'), findsOneWidget);
           expect(find.byType(DropdownButtonFormField<int>), findsNothing);
+          await tester.tap(find.text('Guardar visitante'));
+          await tester.pumpAndSettle();
+          expect(find.text('Guardar visitante personal'), findsOneWidget);
+          await tester.enterText(
+            find.byType(TextFormField).at(0),
+            'Visitante personal guardado',
+          );
+          await tester.tap(find.text('Guardar y usar'));
+          await tester.pumpAndSettle();
+          expect(
+            createdVisitorProfile,
+            containsPair('fullName', 'Visitante personal guardado'),
+          );
+          expect(createdVisitorProfile, containsPair('phone', ''));
+          expect(createdVisitorProfile, containsPair('email', ''));
           await tester.tap(find.text('EMPRESA O VISITANTE'));
           await tester.pumpAndSettle();
           expect(find.text('Empresa o visitante'), findsOneWidget);
           await tester.tap(find.text('Empresa desde API').last);
           await tester.pumpAndSettle();
-          await tester.enterText(
-            find.byType(TextFormField).at(0),
-            'Visitante nuevo',
-          );
-          await tester.enterText(
-            find.byType(TextFormField).at(1),
-            'nuevo@example.test',
-          );
-          await tester.enterText(
-            find.byType(TextFormField).at(2),
-            'Anfitrión nuevo',
-          );
+          await tester.tap(find.text('Selecciona personal o elige “Otro”'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Personal externo API').last);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Selecciona un anfitrión'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Anfitrión API').last);
+          await tester.pumpAndSettle();
           await tester.tap(find.text('Crear cita'));
           await tester.pumpAndSettle();
           expect(
             createdAppointment,
-            containsPair('visitorName', 'Visitante nuevo'),
+            containsPair('visitorName', 'Personal externo API'),
           );
           expect(
             createdAppointment,
-            containsPair('visitorEmail', 'nuevo@example.test'),
+            containsPair('visitorEmail', 'staff@example.test'),
           );
           expect(createdAppointment, containsPair('businessPartnerId', 8));
-          expect(
-            createdAppointment,
-            containsPair('hostName', 'Anfitrión nuevo'),
-          );
+          expect(createdAppointment, containsPair('hostName', 'Anfitrión API'));
           tester.view.physicalSize = const Size(1280, 900);
           await tester.pumpAndSettle();
         case 'Bitácora diaria':
@@ -1716,6 +1911,8 @@ void main() {
     );
     expect(dailyLogQuery?['pageSize'], '5');
     expect(dailyLogQuery?['recentPageSize'], '5');
+    expect(appointmentPartnerQuery?['scope'], 'appointment');
+    expect(appointmentVisitorsQuery?['scope'], 'appointment');
     expect(tester.takeException(), isNull);
   });
 }
