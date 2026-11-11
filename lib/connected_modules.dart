@@ -3308,6 +3308,7 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
   bool _showAll = true;
   DateTime _selectedDate = DateTime.now();
   Timer? _attendanceClock;
+  final Set<String> _lateAppointmentNotices = {};
   late final _RealtimeRefreshCoordinator _realtime;
   bool _loadInProgress = false;
   bool _refreshQueued = false;
@@ -3336,7 +3337,10 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
     super.initState();
     _load();
     _attendanceClock = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        _checkLateAppointments();
+      }
     });
     _realtime = _RealtimeRefreshCoordinator(
       widget.authService,
@@ -3369,6 +3373,35 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
     return 'Tardía';
   }
 
+  void _checkLateAppointments() {
+    if (!mounted || !_isHost) return;
+    final newlyLateAppointments = <Map<String, dynamic>>[];
+    for (final appointment in _appointments) {
+      if (_attendanceStatus(appointment) != 'Tardía') continue;
+      final key =
+          '${appointment['id']}:${appointment['date']}:${appointment['time']}';
+      if (!_lateAppointmentNotices.add(key)) continue;
+      newlyLateAppointments.add(appointment);
+    }
+    if (newlyLateAppointments.isNotEmpty) {
+      final details = newlyLateAppointments
+          .map(
+            (appointment) =>
+                '${appointment['visitor']} con ${appointment['host']} '
+                '(${appointment['time']})',
+          )
+          .join('; ');
+      _showMessage(
+        context,
+        'El visitante aún no llega a la hora programada: $details.',
+        type: AppFeedbackType.warning,
+        title: newlyLateAppointments.length == 1
+            ? 'Cita tardía'
+            : 'Citas tardías',
+      );
+    }
+  }
+
   Future<void> _load({bool silent = false}) async {
     if (_loadInProgress) {
       _refreshQueued = true;
@@ -3392,6 +3425,7 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
             _loading = false;
             _error = null;
           });
+          _checkLateAppointments();
         }
       } on AuthApiException catch (error) {
         if (mounted) {
@@ -3479,7 +3513,26 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
         result,
         id: appointment?['id'] as int?,
       );
-      if (mounted) setState(() => _appointments = records);
+      if (mounted) {
+        setState(() => _appointments = records);
+        final visitor =
+            appointment?['visitor']?.toString() ??
+            result['visitorName']?.toString() ??
+            'la visita';
+        _showMessage(
+          context,
+          reschedule
+              ? 'La cita de $visitor se reagendó y quedó pendiente.'
+              : appointment == null
+              ? 'La cita de $visitor se guardó en la agenda.'
+              : 'La cita de $visitor se actualizó.',
+          title: reschedule
+              ? 'Cita reagendada'
+              : appointment == null
+              ? 'Cita registrada'
+              : 'Cita actualizada',
+        );
+      }
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
@@ -3499,7 +3552,14 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
         appointment['id'] as int,
         'Cancelada',
       );
-      if (mounted) setState(() => _appointments = records);
+      if (mounted) {
+        setState(() => _appointments = records);
+        _showMessage(
+          context,
+          'Se canceló la cita de ${appointment['visitor']}.',
+          title: 'Cita cancelada',
+        );
+      }
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
@@ -3527,7 +3587,14 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
       final records = await widget.authService.deleteAppointment(
         appointment['id'] as int,
       );
-      if (mounted) setState(() => _appointments = records);
+      if (mounted) {
+        setState(() => _appointments = records);
+        _showMessage(
+          context,
+          'Se eliminó la cita de ${appointment['visitor']} del listado. Su historial se conservó.',
+          title: 'Cita eliminada',
+        );
+      }
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
@@ -3605,7 +3672,9 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                             '${item['status'] ?? 'Pendiente'}',
                         canReschedule:
                             _isHost &&
-                            _attendanceStatus(item) == 'No se presentó',
+                            (item['status'] == 'Cancelada' ||
+                                _attendanceStatus(item) == 'Tardía' ||
+                                _attendanceStatus(item) == 'No se presentó'),
                         canManage: widget.canManage,
                         isAdmin: widget.isAdmin,
                         onEdit: () => _edit(appointment: item),
@@ -5527,6 +5596,7 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                               'hostName': '${selectedHost['name']}',
                               'date': _dateString(_date),
                               'time': _time,
+                              'reschedule': widget.reschedule,
                             };
                             if (personalVisitorId != null) {
                               appointment['visitorRecordId'] =
@@ -6098,31 +6168,26 @@ class _AppointmentRecordCard extends StatelessWidget {
                   icon: Icons.send_rounded,
                   onPressed: onSendQr,
                 ),
-                if (canReschedule)
-                  _AppointmentActionButton(
-                    label: 'Reagendar',
-                    icon: Icons.event_repeat_rounded,
-                    onPressed: onReschedule,
-                  )
-                else if (canReschedule)
-                  _AppointmentActionButton(
-                    label: 'Reagendar',
-                    icon: Icons.event_repeat_rounded,
-                    onPressed: onReschedule,
-                  )
-                else
-                  _AppointmentActionButton(
-                    label: 'Editar',
-                    icon: Icons.edit_rounded,
-                    onPressed: onEdit,
-                  ),
+              ],
+              if (canManage && canReschedule)
+                _AppointmentActionButton(
+                  label: 'Reagendar',
+                  icon: Icons.event_repeat_rounded,
+                  onPressed: onReschedule,
+                )
+              else if (canManage && !canceled && !withdrawn)
+                _AppointmentActionButton(
+                  label: 'Editar',
+                  icon: Icons.edit_rounded,
+                  onPressed: onEdit,
+                ),
+              if (canManage && !canceled && !withdrawn)
                 _AppointmentActionButton(
                   label: 'Cancelar cita',
                   icon: Icons.event_busy_rounded,
                   onPressed: onCancel,
                   destructive: true,
                 ),
-              ],
               if (canManage)
                 _AppointmentActionButton(
                   label: 'Eliminar',
@@ -6899,6 +6964,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   void _checkOverdueTimers() {
     if (!_isForeground || _visitTimers.isEmpty) return;
     final now = DateTime.now();
+    Map<String, dynamic>? newlyOverdue;
     for (final timer in _visitTimers) {
       final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
       if (dueAt == null || !now.isAfter(dueAt)) continue;
@@ -6906,16 +6972,153 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
       final dueKey = '${timer['dueAt']}';
       if (_lastTimerAlertAt[id] == dueKey) continue;
       _lastTimerAlertAt[id] = dueKey;
+      newlyOverdue ??= timer;
+    }
+    if (newlyOverdue != null) {
+      final timer = newlyOverdue;
+      final phase = timer['phase'] == 'Llegada'
+          ? 'desde su llegada'
+          : 'dentro de las instalaciones';
       unawaited(SystemSound.play(SystemSoundType.alert).catchError((_) {}));
       unawaited(HapticFeedback.vibrate().catchError((_) {}));
-      break;
+      _showMessage(
+        context,
+        '${timer['personName']} lleva ${_timerElapsedLabel(timer)} $phase.',
+        type: AppFeedbackType.warning,
+        title: 'Tiempo de seguimiento excedido',
+      );
     }
+  }
+
+  bool _isVisitTimerOverdue(Map<String, dynamic> timer) {
+    final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
+    return dueAt != null && DateTime.now().isAfter(dueAt);
+  }
+
+  bool _canCancelVisitTimer(Map<String, dynamic> timer) =>
+      timer['phase'] == 'Ingreso' && timer['status'] == 'active';
+
+  String _timerPhaseDescription(Map<String, dynamic> timer) =>
+      timer['phase'] == 'Llegada'
+      ? 'desde su llegada'
+      : 'dentro de las instalaciones';
+
+  Future<void> _showVisitTimerDetails(Map<String, dynamic> timer) async {
+    final overdue = _isVisitTimerOverdue(timer);
+    final canCancel = _canCancelVisitTimer(timer);
+    final interval = (timer['intervalMinutes'] as num).toInt();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: _panelColor(context),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            8,
+            20,
+            MediaQuery.viewInsetsOf(sheetContext).bottom + 24,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    overdue ? Icons.alarm_on_rounded : Icons.alarm_rounded,
+                    color: overdue
+                        ? const Color(0xFFFF526F)
+                        : const Color(0xFF168BFF),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '${timer['personName']}',
+                      style: TextStyle(
+                        color: _primaryTextColor(sheetContext),
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(sheetContext),
+                    child: const Text('Cerrar'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${timer['phase']} · Lleva ${_timerElapsedLabel(timer)} '
+                '${_timerPhaseDescription(timer)}.',
+                style: TextStyle(
+                  color: overdue
+                      ? const Color(0xFFFF526F)
+                      : _secondaryTextColor(sheetContext),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                overdue
+                    ? _timerTimeLabel(timer)
+                    : 'Alerta configurada cada $interval minutos.',
+                style: TextStyle(color: _secondaryTextColor(sheetContext)),
+              ),
+              if (overdue || canCancel) ...[
+                const SizedBox(height: 20),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    if (overdue)
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          _actOnVisitTimer(timer, action: 'snooze');
+                        },
+                        icon: const Icon(Icons.replay_rounded),
+                        label: Text('Repetir $interval min'),
+                      ),
+                    if (canCancel)
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          _actOnVisitTimer(timer, action: 'cancel');
+                        },
+                        icon: const Icon(Icons.cancel_outlined),
+                        label: const Text('Cancelar temporizador'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFD8344F),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _actOnVisitTimer(
     Map<String, dynamic> timer, {
     required String action,
   }) async {
+    if (action == 'cancel' &&
+        !await _confirmAction(
+          context,
+          title: 'Cancelar temporizador',
+          message:
+              '¿Cancelar el temporizador de ${timer['personName']}? '
+              'Esta acción detendrá sus alertas de seguimiento.',
+          confirmLabel: 'Cancelar temporizador',
+        )) {
+      return;
+    }
     final id = (timer['id'] as num).toInt();
     try {
       final timers = await widget.authService.actOnDailyLogTimer(
@@ -6931,6 +7134,16 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         _timerError = null;
         _timerLastUpdatedAt = DateTime.now();
       });
+      _showMessage(
+        context,
+        action == 'cancel'
+            ? 'Se canceló el seguimiento de ${timer['personName']}.'
+            : 'Se repetirá la alerta de ${timer['personName']} en '
+                  '${timer['intervalMinutes']} minutos.',
+        title: action == 'cancel'
+            ? 'Temporizador cancelado'
+            : 'Temporizador repetido',
+      );
       _checkOverdueTimers();
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
@@ -6946,7 +7159,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         '${duration.inHours.toString().padLeft(2, '0')}:'
         '${(duration.inMinutes % 60).toString().padLeft(2, '0')}:'
         '${(duration.inSeconds % 60).toString().padLeft(2, '0')}';
-    if (remainingSeconds <= 0) return 'VENCIDO · $clock';
+    if (remainingSeconds <= 0) return 'Vencido hace $clock';
     return 'Vence ${dueAt.hour.toString().padLeft(2, '0')}:'
         '${dueAt.minute.toString().padLeft(2, '0')} · faltan $clock';
   }
@@ -6956,14 +7169,8 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         ?.toLocal();
     if (startedAt == null) return 'Tiempo transcurrido no disponible';
     final elapsed = DateTime.now().difference(startedAt);
-    final duration = Duration(
-      seconds: elapsed.isNegative ? 0 : elapsed.inSeconds,
-    );
-    final clock =
-        '${duration.inHours.toString().padLeft(2, '0')}:'
-        '${(duration.inMinutes % 60).toString().padLeft(2, '0')}:'
-        '${(duration.inSeconds % 60).toString().padLeft(2, '0')}';
-    return 'Lleva $clock';
+    final minutes = elapsed.isNegative ? 0 : elapsed.inMinutes;
+    return '$minutes min';
   }
 
   String _timerLastUpdatedLabel() {
@@ -6992,6 +7199,88 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     return _visitTimers.skip(start).take(_timersPerPage).toList();
   }
 
+  Widget _notificationStatusCard(BuildContext context) {
+    final isReady = _notificationStatus.startsWith('Las alertas de visitas');
+    final accent = isReady ? const Color(0xFF18A879) : const Color(0xFF168BFF);
+    final isLight = _isLightTheme(context);
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isLight
+              ? [const Color(0xFFF0F7FF), const Color(0xFFE8F1FC)]
+              : [const Color(0xFF13243B), const Color(0xFF0B1729)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isReady
+              ? accent.withValues(alpha: 0.3)
+              : _logBorderColor(context),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isReady
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_outlined,
+              color: accent,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isReady ? 'Notificaciones activas' : 'Notificaciones',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _notificationStatus,
+                  style: TextStyle(
+                    color: _secondaryTextColor(context),
+                    fontSize: 10,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: _configureNotifications,
+            style: TextButton.styleFrom(
+              foregroundColor: isLight
+                  ? const Color(0xFF1769AA)
+                  : const Color(0xFF9FCBFF),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            ),
+            child: const Text(
+              'Reintentar',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   double _timerProgress(Map<String, dynamic> timer) {
     final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')?.toLocal();
     final interval = (timer['intervalMinutes'] as num).toInt();
@@ -7006,67 +7295,107 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Row(
+        Row(
           children: [
             Icon(Icons.alarm_on_rounded, color: Color(0xFFFF7189), size: 20),
-            SizedBox(width: 8),
-            Text(
-              'ALERTA DE SEGUIMIENTO VENCIDA',
-              style: TextStyle(
-                color: Color(0xFFFF7189),
-                fontSize: 12,
-                fontWeight: FontWeight.w900,
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${_overdueVisitTimers.length == 1 ? 'VISITA' : 'VISITAS'} '
+                'CON TIEMPO EXCEDIDO',
+                style: const TextStyle(
+                  color: Color(0xFFFF7189),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
             ),
           ],
         ),
         const SizedBox(height: 8),
         for (final timer in _overdueVisitTimers) ...[
-          Text(
-            '${timer['personName']} · ${timer['phase']} · ${_timerTimeLabel(timer)}',
-            style: TextStyle(
-              color: _primaryTextColor(context),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0x16FF526F),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0x66FF526F)),
             ),
-          ),
-          const SizedBox(height: 6),
-          if (widget.isAdmin)
-            Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _actOnVisitTimer(timer, action: 'snooze'),
-                    icon: const Icon(Icons.replay_rounded, size: 16),
-                    label: Text(
-                      'Repetir ${(timer['intervalMinutes'] as num).toInt()} min',
-                    ),
-                    style: _logOutlinedButtonStyle(
-                      context,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 8,
-                      ),
-                    ),
+                Text(
+                  '${timer['personName']} lleva ${_timerElapsedLabel(timer)} '
+                  '${_timerPhaseDescription(timer)}.',
+                  style: TextStyle(
+                    color: _primaryTextColor(context),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _actOnVisitTimer(timer, action: 'cancel'),
-                    icon: const Icon(Icons.close_rounded, size: 16),
-                    label: const Text('Cancelar alerta'),
-                    style: _logOutlinedButtonStyle(
-                      context,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 8,
+                const SizedBox(height: 4),
+                Text(
+                  '${timer['phase']} · ${_timerTimeLabel(timer)}',
+                  style: const TextStyle(
+                    color: Color(0xFFFF7189),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => _showVisitTimerDetails(timer),
+                      icon: const Icon(Icons.visibility_outlined, size: 16),
+                      label: const Text('Ver seguimiento'),
+                      style: _logOutlinedButtonStyle(
+                        context,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                       ),
                     ),
-                  ),
+                    if (_canCancelVisitTimer(timer))
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            _actOnVisitTimer(timer, action: 'cancel'),
+                        icon: const Icon(Icons.cancel_outlined, size: 16),
+                        label: const Text('Cancelar temporizador'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFFF7189),
+                          side: const BorderSide(color: Color(0x99FF7189)),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                        ),
+                      ),
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          _actOnVisitTimer(timer, action: 'snooze'),
+                      icon: const Icon(Icons.replay_rounded, size: 16),
+                      label: Text(
+                        'Repetir ${(timer['intervalMinutes'] as num).toInt()} min',
+                      ),
+                      style: _logOutlinedButtonStyle(
+                        context,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
+          ),
         ],
       ],
     ),
@@ -7243,7 +7572,6 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   }
 
   bool _isPastEntry(Map<String, dynamic> entry) {
-    if (widget.isAdmin) return false;
     final date = entry['date']?.toString();
     if (date == null || date.length < 10) return true;
     return date.substring(0, 10).compareTo(_dateString(DateTime.now())) < 0;
@@ -7836,37 +8164,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
             ),
           ),
         ),
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: _logInsetColor(context),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: _logBorderColor(context)),
-          ),
-          child: Row(
-            children: [
-              const Icon(
-                Icons.notifications_outlined,
-                color: Color(0xFF68B7FF),
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _notificationStatus,
-                  style: TextStyle(
-                    color: _secondaryTextColor(context),
-                    fontSize: 10,
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: _configureNotifications,
-                child: const Text('Reintentar'),
-              ),
-            ],
-          ),
-        ),
+        _notificationStatusCard(context),
         if (_timerError != null) ...[
           const SizedBox(height: 8),
           Text(
@@ -7890,9 +8188,8 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         else ...[
           const SizedBox(height: 9),
           Text(
-            widget.isAdmin
-                ? 'Recepción puede consultarlos; solo administración puede repetir o cancelar una alerta.'
-                : 'Solo administración puede repetir o cancelar las alertas.',
+            'Repetir aparece al vencer la alerta. Cancelar está disponible '
+            'cuando la visita ya ingresó. Toca una tarjeta para ver el detalle.',
             style: TextStyle(color: _secondaryTextColor(context), fontSize: 10),
           ),
           const SizedBox(height: 8),
@@ -7912,134 +8209,235 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                   crossAxisSpacing: 8,
                   mainAxisSpacing: 8,
                   childAspectRatio: columns == 1
-                      ? 2.45
+                      ? 1.8
                       : columns == 2
-                      ? 1.55
-                      : 1.16,
+                      ? 1.35
+                      : 0.78,
                 ),
                 itemBuilder: (context, index) {
                   final timer = _visibleVisitTimers[index];
-                  final dueAt = DateTime.tryParse('${timer['dueAt'] ?? ''}')
-                      ?.toLocal();
-                  final overdue =
-                      dueAt != null && DateTime.now().isAfter(dueAt);
+                  final overdue = _isVisitTimerOverdue(timer);
+                  final inside = _canCancelVisitTimer(timer);
                   final color = overdue
-                      ? const Color(0xFFFF7189)
-                      : const Color(0xFF68B7FF);
+                      ? const Color(0xFFE53956)
+                      : const Color(0xFF168BFF);
                   final interval = (timer['intervalMinutes'] as num).toInt();
-                  return Container(
-                    padding: const EdgeInsets.all(11),
-                    decoration: BoxDecoration(
-                      color: overdue
-                          ? const Color(0x22FF526F)
-                          : _logInsetColor(context),
-                      borderRadius: BorderRadius.circular(13),
-                      border: Border.all(color: color.withValues(alpha: 0.45)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              overdue
-                                  ? Icons.alarm_on_rounded
-                                  : Icons.alarm_outlined,
-                              color: color,
-                              size: 17,
-                            ),
-                            const SizedBox(width: 7),
-                            Expanded(
-                              child: Text(
-                                '${timer['personName']}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: _primaryTextColor(context),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              '$interval min',
-                              style: TextStyle(
-                                color: color,
-                                fontWeight: FontWeight.w800,
-                                fontSize: 10,
-                              ),
+                  final isLight = _isLightTheme(context);
+                  final surface = isLight
+                      ? overdue
+                            ? const Color(0xFFFFF3F4)
+                            : Colors.white
+                      : overdue
+                      ? const Color(0xFF321B28)
+                      : const Color(0xFF0B1628);
+                  return Material(
+                    color: Colors.transparent,
+                    borderRadius: BorderRadius.circular(17),
+                    child: InkWell(
+                      onTap: () => _showVisitTimerDetails(timer),
+                      borderRadius: BorderRadius.circular(17),
+                      child: Ink(
+                        padding: const EdgeInsets.all(13),
+                        decoration: BoxDecoration(
+                          color: surface,
+                          borderRadius: BorderRadius.circular(17),
+                          border: Border.all(
+                            color: overdue
+                                ? color.withValues(alpha: 0.72)
+                                : isLight
+                                ? const Color(0xFFD8E4F2)
+                                : const Color(0xFF254361),
+                            width: overdue ? 1.5 : 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: overdue
+                                  ? color.withValues(alpha: 0.12)
+                                  : Colors.black.withValues(
+                                      alpha: isLight ? 0.04 : 0.12,
+                                    ),
+                              blurRadius: 13,
+                              offset: const Offset(0, 5),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '${timer['phase']} · ${_timerElapsedLabel(timer)}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: overdue
-                                ? color
-                                : _secondaryTextColor(context),
-                            fontSize: 10,
-                            fontWeight: overdue
-                                ? FontWeight.w800
-                                : FontWeight.normal,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(99),
-                          child: LinearProgressIndicator(
-                            value: _timerProgress(timer),
-                            minHeight: 5,
-                            backgroundColor: _logBorderColor(context),
-                            color: color,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          _timerTimeLabel(timer),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: _secondaryTextColor(context),
-                            fontSize: 9,
-                          ),
-                        ),
-                        if (widget.isAdmin && overdue) ...[
-                          const Spacer(),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: () =>
-                                      _actOnVisitTimer(timer, action: 'snooze'),
-                                  style: _logOutlinedButtonStyle(
-                                    context,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 5,
-                                      vertical: 6,
-                                    ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  width: 34,
+                                  height: 34,
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(11),
                                   ),
-                                  child: Text(
-                                    'Repetir $interval min',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                                  child: Icon(
+                                    overdue
+                                        ? Icons.alarm_on_rounded
+                                        : Icons.alarm_rounded,
+                                    color: color,
+                                    size: 19,
                                   ),
                                 ),
+                                const SizedBox(width: 9),
+                                Expanded(
+                                  child: Text(
+                                    '${timer['personName']}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: _primaryTextColor(context),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.11),
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                  child: Text(
+                                    overdue ? 'VENCIDO' : 'CADA $interval MIN',
+                                    style: TextStyle(
+                                      color: color,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 11),
+                            Text(
+                              inside
+                                  ? 'Dentro de las instalaciones'
+                                  : 'Esperando llegada',
+                              style: TextStyle(
+                                color: _secondaryTextColor(context),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
                               ),
-                              const SizedBox(width: 5),
-                              IconButton(
-                                tooltip: 'Cancelar alerta',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: () =>
-                                    _actOnVisitTimer(timer, action: 'cancel'),
-                                icon: const Icon(Icons.close_rounded, size: 18),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              'Lleva ${_timerElapsedLabel(timer)} '
+                              '${_timerPhaseDescription(timer)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: overdue
+                                    ? color
+                                    : _primaryTextColor(context),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 9),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(99),
+                              child: LinearProgressIndicator(
+                                value: _timerProgress(timer),
+                                minHeight: 7,
+                                backgroundColor: isLight
+                                    ? const Color(0xFFDCE6F2)
+                                    : const Color(0xFF1B3048),
+                                color: color,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              _timerTimeLabel(timer),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: overdue
+                                    ? color
+                                    : _secondaryTextColor(context),
+                                fontSize: 10,
+                                fontWeight: overdue
+                                    ? FontWeight.w700
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            if (overdue || inside) ...[
+                              const Spacer(),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 7,
+                                runSpacing: 7,
+                                children: [
+                                  if (overdue)
+                                    OutlinedButton.icon(
+                                      onPressed: () => _actOnVisitTimer(
+                                        timer,
+                                        action: 'snooze',
+                                      ),
+                                      icon: const Icon(
+                                        Icons.replay_rounded,
+                                        size: 15,
+                                      ),
+                                      label: Text(
+                                        'Repetir $interval min',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      style: _logOutlinedButtonStyle(
+                                        context,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 7,
+                                        ),
+                                      ),
+                                    ),
+                                  if (inside)
+                                    OutlinedButton.icon(
+                                      onPressed: () => _actOnVisitTimer(
+                                        timer,
+                                        action: 'cancel',
+                                      ),
+                                      icon: const Icon(
+                                        Icons.cancel_outlined,
+                                        size: 15,
+                                      ),
+                                      label: const Text(
+                                        'Cancelar temporizador',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: overdue
+                                            ? color
+                                            : _isLightTheme(context)
+                                            ? const Color(0xFFB4233B)
+                                            : const Color(0xFFFF8B9B),
+                                        side: BorderSide(
+                                          color: color.withValues(alpha: 0.6),
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 7,
+                                        ),
+                                        textStyle: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ],
-                          ),
-                        ],
-                      ],
+                          ],
+                        ),
+                      ),
                     ),
                   );
                 },
@@ -8136,7 +8534,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
                 children: [
-                  if (widget.isAdmin && _overdueVisitTimers.isNotEmpty) ...[
+                  if (_overdueVisitTimers.isNotEmpty) ...[
                     _overdueTimerBanner(context),
                     const SizedBox(height: 12),
                   ],

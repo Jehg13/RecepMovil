@@ -155,10 +155,11 @@ class TimerNotificationService {
         return;
       }
       await authService.registerMobileNotificationToken(token);
-      statusMessage = buildTimeOptions == null &&
+      statusMessage =
+          buildTimeOptions == null &&
               defaultTargetPlatform == TargetPlatform.android
-          ? 'Este dispositivo está registrado mediante la configuración Firebase de Android. Las alertas en segundo plano están activas.'
-          : 'Este dispositivo está registrado para recibir alertas en segundo plano.';
+          ? 'Las alertas de visitas en segundo plano están activas.'
+          : 'Las alertas de visitas están activas en segundo plano.';
       // ignore: deprecated_member_use
       messaging.onTokenRefresh.listen((token) async {
         try {

@@ -176,6 +176,62 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('la cita tardía avisa al anfitrión y permite reagendar', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final date = now.toIso8601String().substring(0, 10);
+    final previousMinute = now.subtract(const Duration(minutes: 5));
+    final time =
+        '${previousMinute.hour.toString().padLeft(2, '0')}:'
+        '${previousMinute.minute.toString().padLeft(2, '0')}';
+    final service = _service((request) async {
+      if (request.url.path == '/api/v1/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {..._appointment, 'date': date, 'time': time},
+              {..._appointment, 'id': 13, 'date': date, 'status': 'Cancelada'},
+            ],
+          }),
+          200,
+        );
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedAppointmentsPage(
+            authService: service,
+            isAdmin: false,
+            canManage: true,
+            onSendPass: (_) {},
+            user: _host,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Cita tardía'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Tardía'),
+      350,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Tardía'), findsOneWidget);
+    expect(find.text('Reagendar'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
   testWidgets('solo administración ve quién registró movimientos en móvil', (
     tester,
   ) async {
@@ -308,9 +364,102 @@ void main() {
     expect(find.textContaining('Registró:'), findsNothing);
     expect(find.text('Visitante esperando 1'), findsOneWidget);
     expect(find.text('Visitante esperando 10'), findsNothing);
-    expect(find.textContaining('Repetir 30 min'), findsNothing);
-    expect(find.text('Cancelar alerta'), findsNothing);
+    expect(find.textContaining('Repetir 30 min'), findsWidgets);
+    expect(find.text('Cancelar temporizador'), findsWidgets);
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('recepción puede repetir una alerta vencida desde su tarjeta', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(430, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final timer = {
+      'id': 42,
+      'appointmentId': null,
+      'visitorRecordId': 7,
+      'personName': 'Visitante esperando',
+      'phase': 'Llegada',
+      'intervalMinutes': 15,
+      'startedAt': now
+          .subtract(const Duration(minutes: 17))
+          .toUtc()
+          .toIso8601String(),
+      'dueAt': now
+          .subtract(const Duration(minutes: 2))
+          .toUtc()
+          .toIso8601String(),
+      'status': 'active',
+    };
+    final actions = <String>[];
+    var timers = <Map<String, dynamic>>[timer];
+    final service = _service((request) async {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/daily-log/timers') {
+        return http.Response(jsonEncode({'timers': timers}), 200);
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/daily-log/timers/42') {
+        final action = (jsonDecode(request.body) as Map)['action'] as String;
+        actions.add(action);
+        timers = [];
+        return http.Response(jsonEncode({'timers': timers}), 200);
+      }
+      if (request.url.path == '/api/v1/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/v1/appointments') {
+        return http.Response(jsonEncode({'appointments': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/v1/notifications/config') {
+        return http.Response(jsonEncode({'firebase': null}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: false,
+            user: _reception,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Visitante esperando'),
+      350,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.drag(
+      find.byType(RefreshIndicator).last,
+      const Offset(0, -550),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Visitante esperando').last);
+    expect(find.textContaining('desde su llegada'), findsWidgets);
+    expect(find.textContaining('Repetir 15 min'), findsWidgets);
+    expect(find.text('Cancelar temporizador'), findsNothing);
+
+    await tester.tap(find.text('Visitante esperando').first);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('desde su llegada'), findsWidgets);
+    expect(find.text('Repetir 15 min'), findsWidgets);
+    expect(find.text('Cancelar temporizador'), findsNothing);
+
+    await tester.tap(find.text('Repetir 15 min').last);
+    await tester.pumpAndSettle();
+    expect(actions, ['snooze']);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets('cambia entre historial completo, hoy y solo lectura anterior', (
@@ -1914,6 +2063,7 @@ void main() {
     expect(appointmentPartnerQuery?['scope'], 'appointment');
     expect(appointmentVisitorsQuery?['scope'], 'appointment');
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
   });
 }
 

@@ -7,6 +7,34 @@ import 'package:http/testing.dart';
 import 'package:visitas_recep_mobile/auth_service.dart';
 
 void main() {
+  test('notifica los inicios de sesión exitosos', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/api/v1/auth/login');
+        return http.Response(
+          jsonEncode({
+            'user': {
+              'login': 'persona',
+              'isAdmin': false,
+              'sectionAccess': ['recepcion'],
+            },
+          }),
+          200,
+          headers: {'set-cookie': 'visitas_session=token; Path=/; HttpOnly'},
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+    final loginEvent = expectLater(service.successfulLoginEvents, emits(null));
+
+    await service.login('persona', 'contraseña');
+
+    await loginEvent;
+  });
+
   test('reintenta lecturas seguras durante un despliegue', () async {
     var attempts = 0;
     final service = AuthService(

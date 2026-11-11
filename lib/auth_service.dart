@@ -541,7 +541,11 @@ class AuthService {
   final SessionCookieStorage _cookieStorage;
   final String _baseUrl;
   final bool _isWeb;
+  final StreamController<void> _successfulLoginEvents =
+      StreamController<void>.broadcast();
   String? _registeredMobileNotificationToken;
+
+  Stream<void> get successfulLoginEvents => _successfulLoginEvents.stream;
 
   Future<MobileAppUpdate?> checkForMobileAppUpdate({
     required String channel,
@@ -643,6 +647,7 @@ class AuthService {
       await _writeCookie(cookie);
     }
 
+    _successfulLoginEvents.add(null);
     return user;
   }
 

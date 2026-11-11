@@ -7,7 +7,6 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -49,8 +48,7 @@ class _MobileAppUpdateCoordinatorState
     extends State<_MobileAppUpdateCoordinator>
     with WidgetsBindingObserver {
   final Set<int> _notifiedBuilds = {};
-  final FlutterSecureStorage _updateNoticeStorage =
-      const FlutterSecureStorage();
+  StreamSubscription<void>? _loginSubscription;
   bool _checking = false;
   bool _initialCheckScheduled = false;
   bool _startupReady = false;
@@ -63,6 +61,23 @@ class _MobileAppUpdateCoordinatorState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _listenForSuccessfulLogins();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MobileAppUpdateCoordinator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.authService != widget.authService) {
+      _listenForSuccessfulLogins();
+    }
+  }
+
+  void _listenForSuccessfulLogins() {
+    unawaited(_loginSubscription?.cancel());
+    _loginSubscription = widget.authService.successfulLoginEvents.listen((_) {
+      _notifiedBuilds.clear();
+      _checkForUpdate();
+    });
   }
 
   @override
@@ -101,21 +116,6 @@ class _MobileAppUpdateCoordinatorState
         return;
       }
       _retryTimer?.cancel();
-      final noticeKey =
-          'reception_app_update_notice_v3_${channel}_${update.installedBuild}';
-      String? lastNotifiedBuild;
-      try {
-        lastNotifiedBuild = await _updateNoticeStorage.read(key: noticeKey);
-      } catch (error, stackTrace) {
-        debugPrint(
-          'No se pudo leer el aviso guardado de actualización: $error',
-        );
-        debugPrintStack(stackTrace: stackTrace);
-      }
-      if (lastNotifiedBuild == update.build.toString()) {
-        _notifiedBuilds.add(update.build);
-        return;
-      }
       if (!mounted) return;
       final overlayContext =
           _appUpdateNavigatorKey.currentState?.overlay?.context;
@@ -128,15 +128,6 @@ class _MobileAppUpdateCoordinatorState
       );
       if (shouldDownload == null) return;
       _notifiedBuilds.add(update.build);
-      try {
-        await _updateNoticeStorage.write(
-          key: noticeKey,
-          value: update.build.toString(),
-        );
-      } catch (error, stackTrace) {
-        debugPrint('No se pudo guardar el aviso de actualización: $error');
-        debugPrintStack(stackTrace: stackTrace);
-      }
       if (shouldDownload != true) return;
       final opened = await launchUrl(
         update.downloadUrl,
@@ -183,6 +174,7 @@ class _MobileAppUpdateCoordinatorState
   @override
   void dispose() {
     _retryTimer?.cancel();
+    unawaited(_loginSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -5702,8 +5694,7 @@ class _WalkInLandscapeKioskState extends State<_WalkInLandscapeKiosk> {
       await _draftStorage?.clearDraft();
     } on PlatformException {
       if (mounted) {
-        const message =
-            'No se pudo borrar el avance anterior del dispositivo.';
+        const message = 'No se pudo borrar el avance anterior del dispositivo.';
         setState(() => _errorMessage = message);
         ScaffoldMessenger.maybeOf(context)
           ?..hideCurrentSnackBar()
