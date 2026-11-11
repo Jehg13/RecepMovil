@@ -1350,6 +1350,25 @@ class AuthService {
     return _apiRecords(data, 'employees');
   }
 
+  Future<void> updateAppointmentEmployeeAttendance(
+    int appointmentId,
+    int externalStaffId,
+    String action,
+  ) async {
+    if (appointmentId <= 0 ||
+        externalStaffId <= 0 ||
+        !const {'absent', 'restore'}.contains(action)) {
+      throw const AuthApiException(
+        'La cita o el empleado seleccionado no es válido.',
+      );
+    }
+    await _requestApi(
+      'POST',
+      '/api/appointments/$appointmentId/employees/$externalStaffId/attendance',
+      body: {'action': action},
+    );
+  }
+
   Future<Map<String, dynamic>> getEquipmentOptions() async {
     final data = await _requestApi('GET', '/api/equipment/options');
     for (final key in const ['partners', 'staff', 'appointments']) {

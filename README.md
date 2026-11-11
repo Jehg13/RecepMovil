@@ -55,8 +55,8 @@ En Android, coloca el archivo `google-services.json` de la app dentro de
 Services para generar la configuración nativa que FCM necesita, también cuando
 la app se inicia en segundo plano. El endpoint autenticado de recepción
 `GET /api/notifications/config` proporciona los datos públicos de Firebase para
-registrar el token; al cerrar sesión, la app intenta retirar ese token sin
-retrasar el cierre si falla la solicitud.
+registrar el token automáticamente al iniciar sesión; al cerrar sesión, la app
+intenta retirar ese token sin retrasar el cierre si falla la solicitud.
 
 ```powershell
 flutter build apk --release

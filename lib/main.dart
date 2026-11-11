@@ -1360,8 +1360,8 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
   Future<AuthenticatedUser?> _restoreSession() async {
     final user = await widget.authService.restoreSession();
     if (user != null &&
-        !user.isAdmin &&
-        user.sectionAccess.contains('anfitriones')) {
+        (user.canAccessReception ||
+            user.sectionAccess.contains('anfitriones'))) {
       unawaited(
         TimerNotificationService.instance.configureAndRegister(
           widget.authService,
@@ -2995,6 +2995,12 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
         _passwordController.text,
       );
       if (!mounted) return;
+      if (user.canAccessReception ||
+          user.sectionAccess.contains('anfitriones')) {
+        unawaited(
+          TimerNotificationService.instance.configureAndRegister(service),
+        );
+      }
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
           builder: (_) => ReceptionHomePage(authService: service, user: user),

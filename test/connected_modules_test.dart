@@ -108,6 +108,278 @@ const _host = AuthenticatedUser(
 );
 
 void main() {
+  testWidgets('la cita muestra QR para cada empleado de la empresa', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final service = _service((request) async {
+      final Object response = switch (request.url.path) {
+        '/api/v1/external-staff' => {
+          'externalStaff': [
+            {
+              'id': 3,
+              'businessPartnerId': 8,
+              'fullName': 'Empleado con correo',
+              'phone': '5551230001',
+              'email': 'empleado@example.test',
+              'relationshipType': 'Contratista',
+              'companyName': 'Empresa desde API',
+            },
+            {
+              'id': 4,
+              'businessPartnerId': 8,
+              'fullName': 'Empleado sin correo',
+              'phone': '',
+              'email': '',
+              'relationshipType': 'Contratista',
+              'companyName': 'Empresa desde API',
+            },
+          ],
+        },
+        '/api/v1/business-partners' => {
+          'businessPartners': [_partner],
+        },
+        _ => <String, Object>{},
+      };
+      return http.Response(jsonEncode(response), 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedExternalStaffPage(
+            authService: service,
+            isAdmin: false,
+            canManage: true,
+            user: _reception,
+            appointment: _appointment,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Empleado con correo'), findsOneWidget);
+    expect(find.text('Empleado sin correo'), findsOneWidget);
+    expect(find.text('Ver QR'), findsNWidgets(2));
+    final sendButtons = tester
+        .widgetList<FilledButton>(
+          find.widgetWithText(FilledButton, 'Enviar QR'),
+        )
+        .toList();
+    expect(sendButtons, hasLength(2));
+    expect(
+      sendButtons.where((button) => button.onPressed == null),
+      hasLength(1),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('personal externo normal no muestra acciones QR', (tester) async {
+    tester.view.physicalSize = const Size(1280, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final service = _service((request) async {
+      final Object response = switch (request.url.path) {
+        '/api/v1/external-staff' => {
+          'externalStaff': [
+            {
+              'id': 3,
+              'businessPartnerId': 8,
+              'fullName': 'Empleado del directorio',
+              'phone': '5551230001',
+              'email': 'empleado@example.test',
+              'relationshipType': 'Contratista',
+              'companyName': 'Empresa desde API',
+            },
+          ],
+        },
+        '/api/v1/business-partners' => {
+          'businessPartners': [_partner],
+        },
+        _ => <String, Object>{},
+      };
+      return http.Response(jsonEncode(response), 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedExternalStaffPage(
+            authService: service,
+            isAdmin: false,
+            canManage: true,
+            user: _reception,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Ver empleados'));
+    await tester.pumpAndSettle();
+    expect(find.text('Empleado del directorio'), findsOneWidget);
+    expect(find.text('Ver QR'), findsNothing);
+    expect(find.text('Enviar QR'), findsNothing);
+    expect(find.text('Editar'), findsOneWidget);
+    expect(find.text('Eliminar'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('la bitácora abre el pase completo del empleado vinculado', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    final entry = {
+      'id': 91,
+      'date': today,
+      'time': '09:15',
+      'event': 'Llegada',
+      'person': 'Empleado individual',
+      'company': 'Empresa desde API',
+      'appointmentId': 12,
+      'externalStaffId': 3,
+    };
+    final service = _service((request) async {
+      final Object response = switch (request.url.path) {
+        '/api/v1/daily-log/timers' => {'timers': <Object>[]},
+        '/api/v1/daily-log' => {
+          ..._dailyLog,
+          'entries': [entry],
+        },
+        '/api/v1/appointments' => {
+          'appointments': [_appointment],
+        },
+        '/api/v1/external-staff' => {
+          'externalStaff': [
+            {
+              'id': 3,
+              'businessPartnerId': 8,
+              'fullName': 'Empleado individual',
+              'phone': '5551230001',
+              'email': 'empleado@example.test',
+              'relationshipType': 'Contratista',
+              'companyName': 'Empresa desde API',
+            },
+          ],
+        },
+        '/api/v1/notifications/config' => {'firebase': null},
+        _ => <String, Object>{},
+      };
+      return http.Response(jsonEncode(response), 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: false,
+            user: _reception,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Empleado individual'),
+      350,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.scrollUntilVisible(
+      find.byTooltip('Ver QR de visita').first,
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byTooltip('Ver QR de visita').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pase de visita'), findsOneWidget);
+    expect(find.text('Empleado individual'), findsWidgets);
+    expect(find.bySemanticsLabel('Logo CyMEZ'), findsOneWidget);
+    expect(find.text('CÓDIGO DE REFERENCIA'), findsOneWidget);
+    expect(find.text('AB12CD34'), findsWidgets);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is QrImageView &&
+            widget.semanticsLabel ==
+                'Código QR de Empleado individual · referencia AB12CD34',
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'administración puede actuar en temporizadores en cualquier fase',
+    (tester) async {
+      tester.view.physicalSize = const Size(430, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final now = DateTime.now();
+      final timer = {
+        'id': 42,
+        'appointmentId': null,
+        'visitorRecordId': 7,
+        'personName': 'Visitante esperando',
+        'phase': 'Llegada',
+        'intervalMinutes': 15,
+        'startedAt': now.toUtc().toIso8601String(),
+        'dueAt': now.add(const Duration(minutes: 15)).toUtc().toIso8601String(),
+        'status': 'active',
+      };
+      final service = _service((request) async {
+        final Object response = switch (request.url.path) {
+          '/api/v1/daily-log/timers' => {
+            'timers': [timer],
+          },
+          '/api/v1/daily-log' => _dailyLog,
+          '/api/v1/appointments' => {'appointments': <Object>[]},
+          '/api/v1/notifications/config' => {'firebase': null},
+          _ => <String, Object>{},
+        };
+        return http.Response(jsonEncode(response), 200);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ConnectedDailyLogbookPage(
+              authService: service,
+              isAdmin: true,
+              user: _admin,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Visitante esperando').first);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Repetir 15 min'), findsOneWidget);
+      expect(find.text('Cancelar temporizador'), findsOneWidget);
+      await tester.tap(find.text('Visitante esperando').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Repetir 15 min'), findsNWidgets(2));
+      expect(find.text('Cancelar temporizador'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('el anfitrión puede reagendar una cita que no se presentó', (
     tester,
   ) async {
@@ -900,6 +1172,107 @@ void main() {
     expect(find.text('Cita programada'), findsOneWidget);
     expect(find.text('Completar checklist de entrada'), findsNothing);
     expect(find.text('Completar checklist de salida'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 5));
+  });
+
+  testWidgets('permite marcar y corregir la inasistencia de un contratista', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    var markedAbsent = false;
+    Map<String, dynamic>? attendanceRequest;
+    final service = _service((request) async {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments') {
+        return http.Response(
+          jsonEncode({
+            'appointments': [
+              {
+                'id': 42,
+                'businessPartnerId': 8,
+                'date': today,
+                'time': '10:30',
+                'visitor': 'Cuadrilla de prueba',
+                'email': '',
+                'referenceCode': 'ABSENT42',
+                'company': 'Empresa contratista',
+                'partnerType': 'Contratista',
+                'host': 'Anfitrión de prueba',
+                'status': 'Pendiente',
+                'equipmentChecklistRequired': false,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/appointments/42/employees') {
+        return http.Response(
+          jsonEncode({
+            'employees': [
+              {
+                'id': 7,
+                'fullName': 'Empleado ausente',
+                'status': markedAbsent ? 'No asistió' : 'Pendiente',
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path ==
+              '/api/v1/appointments/42/employees/7/attendance') {
+        attendanceRequest = jsonDecode(request.body) as Map<String, dynamic>;
+        markedAbsent = attendanceRequest?['action'] == 'absent';
+        return http.Response(
+          jsonEncode({'message': 'Asistencia actualizada.'}),
+          200,
+        );
+      }
+      if (request.url.path == '/api/v1/daily-log') {
+        return http.Response(jsonEncode(_dailyLog), 200);
+      }
+      if (request.url.path == '/api/v1/external-staff') {
+        return http.Response(jsonEncode({'externalStaff': <Object>[]}), 200);
+      }
+      if (request.url.path == '/api/v1/general-visitors') {
+        return http.Response(jsonEncode({'generalVisitors': <Object>[]}), 200);
+      }
+      return http.Response('{}', 200);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ConnectedDailyLogbookPage(
+            authService: service,
+            isAdmin: true,
+            user: _admin,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cuadrilla de prueba'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('No asistió'), findsOneWidget);
+    await tester.tap(find.text('No asistió'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Sí, no asistió'));
+    await tester.pumpAndSettle();
+
+    expect(attendanceRequest, {'action': 'absent'});
+    expect(find.text('No asistió'), findsOneWidget);
+    expect(find.text('Quitar ausencia'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 5));
   });

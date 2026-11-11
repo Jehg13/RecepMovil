@@ -1848,23 +1848,6 @@ class _ConnectedExternalStaffPageState
     );
   }
 
-  bool _isAppointmentEmployee(Map<String, dynamic> staff) {
-    final appointment = widget.appointment;
-    if (appointment == null) return false;
-    final appointmentEmail = '${appointment['email'] ?? ''}'
-        .trim()
-        .toLowerCase();
-    final staffEmail = '${staff['email'] ?? ''}'.trim().toLowerCase();
-    if (appointmentEmail.isNotEmpty && staffEmail.isNotEmpty) {
-      return appointmentEmail == staffEmail;
-    }
-    final appointmentName = '${appointment['visitor'] ?? ''}'
-        .trim()
-        .toLowerCase();
-    final staffName = '${staff['fullName'] ?? ''}'.trim().toLowerCase();
-    return appointmentName.isNotEmpty && appointmentName == staffName;
-  }
-
   @override
   Widget build(BuildContext context) {
     final query = _query.toLowerCase();
@@ -2020,7 +2003,7 @@ class _ConnectedExternalStaffPageState
                                     canManage: widget.canManage,
                                     onEdit: () => _edit(staff),
                                     onDelete: () => _delete(staff),
-                                    showQr: _isAppointmentEmployee(staff),
+                                    showQr: widget.appointment != null,
                                     onShowQr: () => _showQr(staff),
                                     onSendQr: () => _sendQr(staff),
                                   ),
@@ -2636,7 +2619,7 @@ class _ExternalEmployeeCard extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (canManage && email.isNotEmpty) ...[
+                      if (canManage) ...[
                         const SizedBox(width: 8),
                         Expanded(
                           child: SizedBox(
@@ -2644,23 +2627,40 @@ class _ExternalEmployeeCard extends StatelessWidget {
                             child: DecoratedBox(
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFF087FFF),
-                                    Color(0xFF04BCEB),
-                                  ],
+                                gradient: LinearGradient(
+                                  colors: email.isNotEmpty
+                                      ? const [
+                                          Color(0xFF087FFF),
+                                          Color(0xFF04BCEB),
+                                        ]
+                                      : const [
+                                          Color(0xFF34445A),
+                                          Color(0xFF29364A),
+                                        ],
                                 ),
                               ),
-                              child: FilledButton.icon(
-                                onPressed: onSendQr,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: Colors.transparent,
-                                  foregroundColor: Colors.white,
-                                ),
-                                icon: const Icon(Icons.send_rounded, size: 16),
-                                label: const Text(
-                                  'Enviar QR',
-                                  style: TextStyle(fontWeight: FontWeight.w700),
+                              child: Tooltip(
+                                message: email.isNotEmpty
+                                    ? 'Enviar pase al correo registrado'
+                                    : 'Registra un correo para enviar el pase',
+                                child: FilledButton.icon(
+                                  onPressed: email.isNotEmpty ? onSendQr : null,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Colors.transparent,
+                                    foregroundColor: email.isNotEmpty
+                                        ? Colors.white
+                                        : const Color(0xFF9BAAC0),
+                                  ),
+                                  icon: const Icon(
+                                    Icons.send_rounded,
+                                    size: 16,
+                                  ),
+                                  label: const Text(
+                                    'Enviar QR',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -6871,9 +6871,9 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   Timer? _timerPoll;
   Timer? _timerTicker;
   bool _timerRequestInProgress = false;
+  bool _timerRefreshQueued = false;
   bool _isForeground = true;
   String? _timerError;
-  DateTime? _timerLastUpdatedAt;
   String _notificationStatus = 'Verificando notificaciones…';
 
   @override
@@ -6884,7 +6884,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     _load();
     _refreshTimers();
     _timerPoll = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 10),
       (_) => _refreshTimers(),
     );
     _timerTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -6895,7 +6895,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     _configureNotifications();
     _realtime = _RealtimeRefreshCoordinator(
       widget.authService,
-      () => _load(silent: true),
+      _refreshRealtimeData,
     )..start();
   }
 
@@ -6921,7 +6921,16 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     }
   }
 
-  void _onNotificationOpened() => _load(silent: true);
+  void _onNotificationOpened() {
+    _load(silent: true);
+    _refreshTimers();
+  }
+
+  void _refreshRealtimeData() {
+    if (!mounted || !_isForeground) return;
+    _load(silent: true);
+    _refreshTimers();
+  }
 
   Future<void> _configureNotifications() async {
     if (widget.user?.canAccessReception != true) {
@@ -6935,27 +6944,34 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   }
 
   Future<void> _refreshTimers() async {
-    if (_timerRequestInProgress) return;
+    if (_timerRequestInProgress) {
+      _timerRefreshQueued = true;
+      return;
+    }
     _timerRequestInProgress = true;
     try {
-      final timers = await widget.authService.getDailyLogTimers();
-      if (!mounted) return;
-      setState(() {
-        _visitTimers
-          ..clear()
-          ..addAll(timers);
-        final totalPages = _timerPageCount;
-        if (_timerPage > totalPages) _timerPage = totalPages;
-        _timerError = null;
-        _timerLastUpdatedAt = DateTime.now();
-        final activeIds = timers
-            .map((timer) => (timer['id'] as num).toInt())
-            .toSet();
-        _lastTimerAlertAt.removeWhere((id, _) => !activeIds.contains(id));
-      });
-      _checkOverdueTimers();
-    } on AuthApiException catch (error) {
-      if (mounted) setState(() => _timerError = error.message);
+      do {
+        _timerRefreshQueued = false;
+        try {
+          final timers = await widget.authService.getDailyLogTimers();
+          if (!mounted) return;
+          setState(() {
+            _visitTimers
+              ..clear()
+              ..addAll(timers);
+            final totalPages = _timerPageCount;
+            if (_timerPage > totalPages) _timerPage = totalPages;
+            _timerError = null;
+            final activeIds = timers
+                .map((timer) => (timer['id'] as num).toInt())
+                .toSet();
+            _lastTimerAlertAt.removeWhere((id, _) => !activeIds.contains(id));
+          });
+          _checkOverdueTimers();
+        } on AuthApiException catch (error) {
+          if (mounted) setState(() => _timerError = error.message);
+        }
+      } while (_timerRefreshQueued && mounted);
     } finally {
       _timerRequestInProgress = false;
     }
@@ -7067,13 +7083,13 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                     : 'Alerta configurada cada $interval minutos.',
                 style: TextStyle(color: _secondaryTextColor(sheetContext)),
               ),
-              if (overdue || canCancel) ...[
+              if (widget.isAdmin || overdue || canCancel) ...[
                 const SizedBox(height: 20),
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
                   children: [
-                    if (overdue)
+                    if (widget.isAdmin || overdue)
                       FilledButton.icon(
                         onPressed: () {
                           Navigator.pop(sheetContext);
@@ -7082,7 +7098,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                         icon: const Icon(Icons.replay_rounded),
                         label: Text('Repetir $interval min'),
                       ),
-                    if (canCancel)
+                    if (widget.isAdmin || canCancel)
                       OutlinedButton.icon(
                         onPressed: () {
                           Navigator.pop(sheetContext);
@@ -7132,7 +7148,6 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
           ..addAll(timers);
         _lastTimerAlertAt.remove(id);
         _timerError = null;
-        _timerLastUpdatedAt = DateTime.now();
       });
       _showMessage(
         context,
@@ -7171,18 +7186,6 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
     final elapsed = DateTime.now().difference(startedAt);
     final minutes = elapsed.isNegative ? 0 : elapsed.inMinutes;
     return '$minutes min';
-  }
-
-  String _timerLastUpdatedLabel() {
-    final updatedAt = _timerLastUpdatedAt;
-    if (updatedAt == null) return 'Aún no se han confirmado temporizadores';
-    final time =
-        '${updatedAt.hour.toString().padLeft(2, '0')}:'
-        '${updatedAt.minute.toString().padLeft(2, '0')}:'
-        '${updatedAt.second.toString().padLeft(2, '0')}';
-    return _timerError == null
-        ? 'Temporizadores verificados a las $time · actualiza cada 30 s'
-        : 'Mostrando datos de las $time; no se pudo actualizar';
   }
 
   List<Map<String, dynamic>> get _overdueVisitTimers =>
@@ -7361,7 +7364,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                         ),
                       ),
                     ),
-                    if (_canCancelVisitTimer(timer))
+                    if (widget.isAdmin || _canCancelVisitTimer(timer))
                       OutlinedButton.icon(
                         onPressed: () =>
                             _actOnVisitTimer(timer, action: 'cancel'),
@@ -7603,6 +7606,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         _recentPage = 1;
       });
       await _load();
+      await _refreshTimers();
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
     }
@@ -7647,6 +7651,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         _recentPage = 1;
       });
       await _load();
+      await _refreshTimers();
       return true;
     } on AuthApiException catch (error) {
       if (mounted) _showMessage(context, error.message, error: true);
@@ -8050,37 +8055,36 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
       );
       return;
     }
-    final qrData = jsonEncode({
-      'type': 'visitas-appointment',
-      'id': appointment['id'],
-      if (entry['externalStaffId'] is num)
-        'externalStaffId': (entry['externalStaffId'] as num).toInt(),
-      'referenceCode': appointment['referenceCode'],
-    });
+    Map<String, dynamic>? employee;
+    final externalStaffId = entry['externalStaffId'];
+    if (externalStaffId is num) {
+      try {
+        final staff = await widget.authService.getExternalStaff();
+        if (!mounted) return;
+        employee = staff
+            .where((item) => item['id'] == externalStaffId)
+            .firstOrNull;
+        if (employee == null ||
+            '${employee['businessPartnerId']}' !=
+                '${appointment['businessPartnerId']}') {
+          _showMessage(
+            context,
+            'No se encontró el empleado asociado a esta cita.',
+            error: true,
+          );
+          return;
+        }
+      } on AuthApiException catch (error) {
+        if (!mounted) return;
+        _showMessage(context, error.message, error: true);
+        return;
+      }
+    }
+    if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: _panelColor(context),
-        title: Text(
-          'Pase de ${entry['person'] ?? 'visita'}',
-          style: TextStyle(color: _primaryTextColor(context)),
-        ),
-        content: Container(
-          padding: const EdgeInsets.all(8),
-          color: Colors.white,
-          child: QrImageView(
-            data: qrData,
-            size: 220,
-            semanticsLabel: 'Código QR de la cita',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cerrar'),
-          ),
-        ],
-      ),
+      builder: (context) =>
+          _AppointmentPassDialog(appointment: appointment, employee: employee),
     );
   }
 
@@ -8152,18 +8156,6 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
           ],
         ),
         const SizedBox(height: 4),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Text(
-            _timerLastUpdatedLabel(),
-            style: TextStyle(
-              color: _timerError == null
-                  ? _secondaryTextColor(context)
-                  : const Color(0xFFFF8394),
-              fontSize: 10,
-            ),
-          ),
-        ),
         _notificationStatusCard(context),
         if (_timerError != null) ...[
           const SizedBox(height: 8),
@@ -8188,8 +8180,11 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
         else ...[
           const SizedBox(height: 9),
           Text(
-            'Repetir aparece al vencer la alerta. Cancelar está disponible '
-            'cuando la visita ya ingresó. Toca una tarjeta para ver el detalle.',
+            widget.isAdmin
+                ? 'Administración puede repetir o cancelar en cualquier fase. '
+                      'Toca una tarjeta para ver el detalle.'
+                : 'Repetir aparece al vencer la alerta. Cancelar está disponible '
+                      'cuando la visita ya ingresó. Toca una tarjeta para ver el detalle.',
             style: TextStyle(color: _secondaryTextColor(context), fontSize: 10),
           ),
           const SizedBox(height: 8),
@@ -8208,11 +8203,17 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                   crossAxisCount: columns,
                   crossAxisSpacing: 8,
                   mainAxisSpacing: 8,
-                  childAspectRatio: columns == 1
-                      ? 1.8
+                  mainAxisExtent: widget.isAdmin
+                      ? columns == 1
+                            ? 330
+                            : columns == 2
+                            ? 350
+                            : 360
+                      : columns == 1
+                      ? 250
                       : columns == 2
-                      ? 1.35
-                      : 0.78,
+                      ? 270
+                      : 290,
                 ),
                 itemBuilder: (context, index) {
                   final timer = _visibleVisitTimers[index];
@@ -8368,14 +8369,14 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                                     : FontWeight.normal,
                               ),
                             ),
-                            if (overdue || inside) ...[
+                            if (widget.isAdmin || overdue || inside) ...[
                               const Spacer(),
                               const SizedBox(height: 8),
                               Wrap(
                                 spacing: 7,
                                 runSpacing: 7,
                                 children: [
-                                  if (overdue)
+                                  if (widget.isAdmin || overdue)
                                     OutlinedButton.icon(
                                       onPressed: () => _actOnVisitTimer(
                                         timer,
@@ -8398,7 +8399,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                                         ),
                                       ),
                                     ),
-                                  if (inside)
+                                  if (widget.isAdmin || inside)
                                     OutlinedButton.icon(
                                       onPressed: () => _actOnVisitTimer(
                                         timer,
@@ -10625,8 +10626,119 @@ class _AppointmentReceptionDialogState
     }
   }
 
+  String get _employeeAttendanceSummary {
+    final arrived = _employees
+        .where(
+          (employee) => const {
+            'En proceso',
+            'Dentro',
+            'Retirado',
+          }.contains(employee['status']),
+        )
+        .length;
+    final absent = _employees
+        .where((employee) => employee['status'] == 'No asistió')
+        .length;
+    final pending = _employees
+        .where((employee) => employee['status'] == 'Pendiente')
+        .length;
+    return 'Llegaron $arrived de ${_employees.length} · $absent no asistieron · $pending pendientes';
+  }
+
+  bool _canManageEmployeeAttendance(String status) {
+    final date = '${widget.appointment['date'] ?? ''}';
+    final now = DateTime.now();
+    final today =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final appointmentStatus = '${widget.appointment['status'] ?? ''}';
+    return widget.appointment['partnerType'] == 'Contratista' &&
+        date == today &&
+        !const {'Cancelada', 'Retirado'}.contains(appointmentStatus) &&
+        const {'Pendiente', 'No asistió'}.contains(status);
+  }
+
+  Future<void> _updateEmployeeAttendance(
+    Map<String, dynamic> employee,
+    String action,
+  ) async {
+    if (_movementSaving ||
+        !_canManageEmployeeAttendance('${employee['status'] ?? ''}')) {
+      return;
+    }
+    final employeeName = '${employee['fullName'] ?? 'El empleado'}';
+    final isAbsent = action == 'absent';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          isAbsent ? 'Confirmar inasistencia' : 'Corregir asistencia',
+        ),
+        content: Text(
+          isAbsent
+              ? '¿Confirmas que $employeeName no asistió a esta cita?'
+              : '¿Quitar la marca de inasistencia de $employeeName?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(isAbsent ? 'Sí, no asistió' : 'Quitar marca'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final appointmentId = widget.appointment['id'];
+    final employeeId = employee['id'];
+    if (appointmentId is! num || employeeId is! num) {
+      _showMessage(
+        context,
+        'La cita o el empleado seleccionado no es válido.',
+        error: true,
+      );
+      return;
+    }
+    setState(() {
+      _movementSaving = true;
+      _error = null;
+    });
+    try {
+      await widget.authService.updateAppointmentEmployeeAttendance(
+        appointmentId.toInt(),
+        employeeId.toInt(),
+        action,
+      );
+      await _loadEmployees(appointmentId.toInt());
+      if (!mounted) return;
+      _showMessage(
+        context,
+        isAbsent
+            ? '$employeeName quedó marcado como no asistió.'
+            : 'Se corrigió la asistencia de $employeeName.',
+      );
+    } on AuthApiException catch (error) {
+      if (!mounted) return;
+      _showMessage(context, error.message, error: true);
+    } catch (error, stackTrace) {
+      debugPrint('No se pudo actualizar la asistencia del empleado: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (!mounted) return;
+      _showMessage(
+        context,
+        'No se pudo actualizar la asistencia del empleado.',
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _movementSaving = false);
+    }
+  }
+
   String? _eventForStatus(String status) => switch (status) {
-    'Pendiente' => 'Llegada',
+    'Pendiente' || 'No asistió' => 'Llegada',
     'En proceso' => 'Ingreso',
     'Dentro' => 'Retiro',
     _ => null,
@@ -10743,6 +10855,65 @@ class _AppointmentReceptionDialogState
     int? externalStaffId,
     Map<String, dynamic>? employee,
   }) {
+    if (employee != null &&
+        widget.appointment['partnerType'] == 'Contratista' &&
+        const {'Pendiente', 'No asistió'}.contains(status)) {
+      final attendanceAction = status == 'No asistió' ? 'restore' : 'absent';
+      return Row(
+        children: [
+          Expanded(
+            child: FilledButton(
+              onPressed: _movementSaving
+                  ? null
+                  : () => _performMovement(
+                      event: 'Llegada',
+                      person: person,
+                      externalStaffId: externalStaffId,
+                      employee: employee,
+                    ),
+              style: _logPrimaryButtonStyle(
+                context,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+              ),
+              child: const Text(
+                'Registrar llegada',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
+          const SizedBox(width: 7),
+          Expanded(
+            child: OutlinedButton(
+              onPressed:
+                  _movementSaving || !_canManageEmployeeAttendance(status)
+                  ? null
+                  : () => _updateEmployeeAttendance(employee, attendanceAction),
+              style:
+                  _logOutlinedButtonStyle(
+                    context,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 9,
+                    ),
+                  ).copyWith(
+                    foregroundColor: WidgetStatePropertyAll(
+                      status == 'No asistió'
+                          ? _primaryTextColor(context)
+                          : const Color(0xFFFFB18D),
+                    ),
+                  ),
+              child: Text(
+                status == 'No asistió' ? 'Quitar ausencia' : 'No asistió',
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     if (status == 'En proceso' &&
         widget.appointment['businessPartnerId'] is num) {
       final canEnter = _canStartEntry();
@@ -11191,7 +11362,19 @@ class _AppointmentReceptionDialogState
                           fontSize: 11,
                         ),
                       )
-                    else
+                    else ...[
+                      if (_employees.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 9),
+                          child: Text(
+                            _employeeAttendanceSummary,
+                            style: TextStyle(
+                              color: _secondaryTextColor(context),
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
                       for (final employee in _visibleEmployees) ...[
                         Container(
                           margin: const EdgeInsets.only(bottom: 7),
@@ -11241,8 +11424,17 @@ class _AppointmentReceptionDialogState
                                         Text(
                                           '${employee['status'] ?? 'Pendiente'}',
                                           style: TextStyle(
-                                            color: _secondaryTextColor(context),
+                                            color:
+                                                employee['status'] ==
+                                                    'No asistió'
+                                                ? const Color(0xFFFFA47E)
+                                                : _secondaryTextColor(context),
                                             fontSize: 10,
+                                            fontWeight:
+                                                employee['status'] ==
+                                                    'No asistió'
+                                                ? FontWeight.w800
+                                                : FontWeight.normal,
                                           ),
                                         ),
                                       ],
@@ -11267,6 +11459,7 @@ class _AppointmentReceptionDialogState
                           ),
                         ),
                       ],
+                    ],
                     if (appointment['equipmentChecklistRequired'] == true &&
                         !_canEnter())
                       Container(
