@@ -10776,13 +10776,13 @@ class _AppointmentReceptionDialogState
   Future<void> _performMovement({
     required String event,
     required String person,
+    required String status,
     int? externalStaffId,
     Map<String, dynamic>? employee,
   }) async {
     if (_movementSaving || _checklistSaving) return;
 
-    final employeeStatus =
-        '${employee?['status'] ?? widget.appointment['status'] ?? ''}';
+    final employeeStatus = '${employee?['status'] ?? status}';
     if (event == 'Ingreso' &&
         widget.appointment['equipmentChecklistRequired'] == true &&
         !_entryChecklistComplete) {
@@ -10832,7 +10832,7 @@ class _AppointmentReceptionDialogState
     };
     if (employee != null) {
       employee['status'] = nextStatus;
-    } else {
+    } else if (externalStaffId == null) {
       widget.appointment['status'] = nextStatus;
     }
     setState(() => _movementSaving = false);
@@ -10868,6 +10868,7 @@ class _AppointmentReceptionDialogState
                   : () => _performMovement(
                       event: 'Llegada',
                       person: person,
+                      status: status,
                       externalStaffId: externalStaffId,
                       employee: employee,
                     ),
@@ -10927,6 +10928,7 @@ class _AppointmentReceptionDialogState
                   : () => _performMovement(
                       event: 'Ingreso',
                       person: person,
+                      status: status,
                       externalStaffId: externalStaffId,
                       employee: employee,
                     ),
@@ -10951,6 +10953,7 @@ class _AppointmentReceptionDialogState
                   : () => _performMovement(
                       event: 'Retiro',
                       person: person,
+                      status: status,
                       externalStaffId: externalStaffId,
                       employee: employee,
                     ),
@@ -10995,6 +10998,7 @@ class _AppointmentReceptionDialogState
           : () => _performMovement(
               event: event,
               person: person,
+              status: status,
               externalStaffId: externalStaffId,
               employee: employee,
             ),
@@ -12036,7 +12040,8 @@ class _DailyLogEntryDetailDialogState
       _savingMovement = false;
       if (saved) {
         widget.entry['event'] = event;
-        if (widget.appointment != null) {
+        if (widget.appointment != null &&
+            widget.entry['externalStaffId'] == null) {
           widget.appointment!['status'] = switch (event) {
             'Ingreso' => 'Dentro',
             'Retiro' => 'Retirado',
