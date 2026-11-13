@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +15,7 @@ import 'src/web_realtime_client_stub.dart'
 
 const _sessionCookieName = 'visitas_session';
 const _sessionCookieStorageKey = 'reception_session_cookie';
+const _tabletDeviceStorageKey = 'reception_tablet_device';
 const _mobileOnboardingStorageKey = 'reception_mobile_onboarding_seen';
 const _walkInDraftStorageKey = 'reception_walk_in_draft';
 const _requestTimeout = Duration(seconds: 15);
@@ -67,6 +69,66 @@ class SecureVisitorKioskDraftStorage implements VisitorKioskDraftStorage {
   Future<void> clearDraft() => storage.delete(key: _walkInDraftStorageKey);
 }
 
+class TabletDeviceLink {
+  const TabletDeviceLink({
+    required this.token,
+    required this.companyId,
+    required this.companyName,
+    required this.deviceId,
+    required this.deviceName,
+  });
+
+  final String token;
+  final int companyId;
+  final String companyName;
+  final int deviceId;
+  final String deviceName;
+
+  factory TabletDeviceLink.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value['token'] is! String ||
+        (value['token'] as String).isEmpty ||
+        value['companyId'] is! int ||
+        (value['companyId'] as int) <= 0 ||
+        value['companyName'] is! String ||
+        value['deviceId'] is! int ||
+        (value['deviceId'] as int) <= 0) {
+      throw const AuthApiException(
+        'La vinculación guardada de esta tablet no es válida.',
+      );
+    }
+    return TabletDeviceLink(
+      token: value['token'] as String,
+      companyId: value['companyId'] as int,
+      companyName: value['companyName'] as String,
+      deviceId: value['deviceId'] as int,
+      deviceName:
+          value['deviceName'] is String &&
+              (value['deviceName'] as String).trim().isNotEmpty
+          ? (value['deviceName'] as String).trim()
+          : 'Tablet de visitas sin cita',
+    );
+  }
+}
+
+abstract interface class TabletDeviceStorage {
+  Future<String?> read();
+  Future<void> write(String value);
+}
+
+class SecureTabletDeviceStorage implements TabletDeviceStorage {
+  SecureTabletDeviceStorage({this.storage = const FlutterSecureStorage()});
+
+  final FlutterSecureStorage storage;
+
+  @override
+  Future<String?> read() => storage.read(key: _tabletDeviceStorageKey);
+
+  @override
+  Future<void> write(String value) =>
+      storage.write(key: _tabletDeviceStorageKey, value: value);
+}
+
 class AuthenticatedUser {
   const AuthenticatedUser({
     required this.login,
@@ -75,6 +137,10 @@ class AuthenticatedUser {
     required this.role,
     required this.isAdmin,
     required this.sectionAccess,
+    this.isCompanyAdmin = false,
+    this.companyId,
+    this.companyRole,
+    this.mustChangePassword = false,
   });
 
   final String login;
@@ -83,17 +149,28 @@ class AuthenticatedUser {
   final String? role;
   final bool isAdmin;
   final List<String> sectionAccess;
+  final bool isCompanyAdmin;
+  final int? companyId;
+  final String? companyRole;
+  final bool mustChangePassword;
 
   bool get canAccessReception => isAdmin || sectionAccess.contains('recepcion');
 
   bool get canAccessApp =>
-      canAccessReception || sectionAccess.contains('anfitriones');
+      canAccessReception ||
+      isCompanyAdmin ||
+      sectionAccess.contains('anfitriones');
 
   factory AuthenticatedUser.fromJson(Object? value) {
     if (value is! Map<String, dynamic> ||
         value['login'] is! String ||
         value['isAdmin'] is! bool ||
         value['sectionAccess'] is! List ||
+        (value['isCompanyAdmin'] != null && value['isCompanyAdmin'] is! bool) ||
+        (value['companyId'] != null && value['companyId'] is! num) ||
+        (value['companyRole'] != null && value['companyRole'] is! String) ||
+        (value['mustChangePassword'] != null &&
+            value['mustChangePassword'] is! bool) ||
         (value['name'] != null && value['name'] is! String) ||
         (value['email'] != null && value['email'] is! String) ||
         (value['role'] != null && value['role'] is! String)) {
@@ -112,6 +189,10 @@ class AuthenticatedUser {
       role: value['role'] as String?,
       isAdmin: value['isAdmin'] as bool,
       sectionAccess: List<String>.unmodifiable(sectionAccess.cast<String>()),
+      isCompanyAdmin: value['isCompanyAdmin'] as bool? ?? false,
+      companyId: (value['companyId'] as num?)?.toInt(),
+      companyRole: value['companyRole'] as String?,
+      mustChangePassword: value['mustChangePassword'] as bool? ?? false,
     );
   }
 }
@@ -199,16 +280,23 @@ class AccessAccount {
 }
 
 class Department {
-  const Department({required this.id, required this.name, this.hostCount = 0});
+  const Department({
+    required this.id,
+    required this.name,
+    this.hostCount = 0,
+    this.companyId,
+  });
 
   final int id;
   final String name;
   final int hostCount;
+  final int? companyId;
 
   factory Department.fromJson(Object? value) {
     if (value is! Map<String, dynamic> ||
         value['id'] is! num ||
         value['name'] is! String ||
+        (value['companyId'] != null && value['companyId'] is! num) ||
         (value['hostCount'] != null &&
             (value['hostCount'] is! num || (value['hostCount'] as num) < 0))) {
       throw const AuthApiException(
@@ -219,6 +307,7 @@ class Department {
       id: (value['id'] as num).toInt(),
       name: value['name'] as String,
       hostCount: (value['hostCount'] as num?)?.toInt() ?? 0,
+      companyId: (value['companyId'] as num?)?.toInt(),
     );
   }
 }
@@ -517,10 +606,13 @@ class AuthService {
   AuthService({
     http.Client? client,
     SessionCookieStorage? cookieStorage,
+    TabletDeviceStorage? tabletDeviceStorage,
     String? baseUrl,
     bool? isWeb,
   }) : _client = client ?? _createHttpClient(isWeb ?? kIsWeb),
        _cookieStorage = cookieStorage ?? SecureSessionCookieStorage(),
+       _tabletDeviceStorage =
+           tabletDeviceStorage ?? SecureTabletDeviceStorage(),
        _baseUrl = (baseUrl ?? _configuredBaseUrl).replaceFirst(
          RegExp(r'/+$'),
          '',
@@ -539,6 +631,7 @@ class AuthService {
 
   final http.Client _client;
   final SessionCookieStorage _cookieStorage;
+  final TabletDeviceStorage _tabletDeviceStorage;
   final String _baseUrl;
   final bool _isWeb;
   final StreamController<void> _successfulLoginEvents =
@@ -713,6 +806,237 @@ class AuthService {
     if (!_isWeb) await _clearCookie();
   }
 
+  Future<TabletDeviceLink?> getTabletDeviceLink() async {
+    final value = await _tabletDeviceStorage.read();
+    if (value == null) return null;
+    final decoded = jsonDecode(value);
+    if (decoded is Map<String, dynamic> && decoded['pendingToken'] is String) {
+      return null;
+    }
+    return TabletDeviceLink.fromJson(decoded);
+  }
+
+  Future<TabletDeviceLink> pairTablet(
+    String code, {
+    required String deviceName,
+  }) async {
+    final normalizedCode = code.trim().toUpperCase();
+    if (!RegExp(r'^[A-HJ-NP-Z2-9]{5}-?[A-HJ-NP-Z2-9]{5}$')
+        .hasMatch(normalizedCode)) {
+      throw const AuthApiException('Escribe un código de vinculación válido.');
+    }
+    final normalizedDeviceName = deviceName.trim();
+    if (normalizedDeviceName.isEmpty || normalizedDeviceName.length > 120) {
+      throw const AuthApiException(
+        'Escribe un nombre de tablet de hasta 120 caracteres.',
+      );
+    }
+    final storedValue = await _tabletDeviceStorage.read();
+    String deviceToken;
+    if (storedValue != null) {
+      final decoded = jsonDecode(storedValue);
+      if (decoded is Map<String, dynamic> &&
+          decoded['pendingToken'] is String) {
+        deviceToken = decoded['pendingToken'] as String;
+      } else {
+        return TabletDeviceLink.fromJson(decoded);
+      }
+    } else {
+      final random = math.Random.secure();
+      deviceToken = base64Url
+          .encode(List<int>.generate(32, (_) => random.nextInt(256)))
+          .replaceAll('=', '');
+      await _tabletDeviceStorage.write(
+        jsonEncode({'pendingToken': deviceToken}),
+      );
+    }
+    final response = await _send(
+      () => _client.post(
+        _uri('/api/tablet-pairing-codes/redeem'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'code': normalizedCode,
+          'deviceToken': deviceToken,
+          'deviceName': normalizedDeviceName,
+        }),
+      ),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw _responseError(response);
+    }
+    final data = _decodeObject(response.body);
+    final company = data['company'];
+    if (data['token'] != deviceToken ||
+        data['deviceId'] is! int ||
+        company is! Map<String, dynamic> ||
+        company['id'] is! int ||
+        company['name'] is! String) {
+      throw const AuthApiException(
+        'La respuesta de vinculación de la tablet no es válida.',
+      );
+    }
+    final link = TabletDeviceLink(
+      token: data['token'] as String,
+      companyId: company['id'] as int,
+      companyName: company['name'] as String,
+      deviceId: data['deviceId'] as int,
+      deviceName:
+          data['deviceName'] is String &&
+              (data['deviceName'] as String).trim().isNotEmpty
+          ? (data['deviceName'] as String).trim()
+          : normalizedDeviceName,
+    );
+    await _tabletDeviceStorage.write(
+      jsonEncode({
+        'token': link.token,
+        'companyId': link.companyId,
+        'companyName': link.companyName,
+        'deviceId': link.deviceId,
+        'deviceName': link.deviceName,
+      }),
+    );
+    return link;
+  }
+
+  Future<Map<String, String>> _tabletDeviceHeaders() async {
+    final link = await getTabletDeviceLink();
+    return link == null ? const {} : {'Authorization': 'Bearer ${link.token}'};
+  }
+
+  Future<AuthenticatedUser> changePassword({
+    required String password,
+    required String confirmation,
+  }) async {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...await _sessionHeaders(),
+    };
+    final response = await _send(
+      () => _client.post(
+        _uri('/api/auth/change-password'),
+        headers: headers,
+        body: jsonEncode({'password': password, 'confirmation': confirmation}),
+      ),
+    );
+    if (response.statusCode != 200) throw _responseError(response);
+    final data = _decodeObject(response.body);
+    final user = AuthenticatedUser.fromJson(data['user']);
+    final cookie = _extractSessionCookie(response.headers['set-cookie']);
+    if (!_isWeb && cookie == null) {
+      throw const AuthApiException(
+        'No se pudo renovar la sesión después de cambiar la contraseña.',
+      );
+    }
+    if (cookie != null) await _writeCookie(cookie);
+    return user;
+  }
+
+  Future<List<Map<String, dynamic>>> getCompanies() async =>
+      _apiRecords(await _requestApi('GET', '/api/companies'), 'companies');
+
+  Future<List<Map<String, dynamic>>> saveCompany(
+    String name, {
+    int? id,
+  }) async => _apiRecords(
+    await _requestApi(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/companies' : '/api/companies/$id',
+      body: {'name': name.trim()},
+      successCodes: id == null ? const {200, 201} : const {200},
+    ),
+    'companies',
+  );
+
+  Future<List<Map<String, dynamic>>> deleteCompany(int id) async => _apiRecords(
+    await _requestApi('DELETE', '/api/companies/$id'),
+    'companies',
+  );
+
+  Future<List<Map<String, dynamic>>> getCompanyAdministrators() async =>
+      _apiRecords(
+        await _requestApi('GET', '/api/administrators'),
+        'administrators',
+      );
+
+  Future<Map<String, dynamic>> saveCompanyAdministrator(
+    Map<String, Object?> administrator, {
+    String? login,
+  }) => _requestApi(
+    login == null ? 'POST' : 'PATCH',
+    login == null
+        ? '/api/administrators'
+        : '/api/administrators/${Uri.encodeComponent(login)}',
+    body: administrator,
+    successCodes: login == null ? const {200, 201} : const {200},
+  );
+
+  Future<void> deleteCompanyAdministrator(String login) async {
+    await _requestApi(
+      'DELETE',
+      '/api/administrators/${Uri.encodeComponent(login)}',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getCompanyUsers([int? companyId]) async =>
+      _apiRecords(
+        await _requestApi(
+          'GET',
+          companyId == null
+              ? '/api/company-users'
+              : '/api/company-users?companyId=$companyId',
+        ),
+        'users',
+      );
+
+  Future<Map<String, dynamic>> saveCompanyUser(
+    int companyId,
+    Map<String, Object?> account, {
+    String? login,
+  }) => _requestApi(
+    login == null ? 'POST' : 'PATCH',
+    '/api/company-users${login == null ? '' : '/${Uri.encodeComponent(login)}'}?companyId=$companyId',
+    body: account,
+    successCodes: login == null ? const {200, 201} : const {200},
+  );
+
+  Future<void> deleteCompanyUser(int companyId, String login) async {
+    await _requestApi(
+      'DELETE',
+      '/api/company-users/${Uri.encodeComponent(login)}?companyId=$companyId',
+    );
+  }
+
+  Future<Map<String, dynamic>> getTabletPairingCodes() =>
+      _requestApi('GET', '/api/tablet-pairing-codes');
+
+  Future<Map<String, dynamic>> createTabletPairingCode(int companyId) =>
+      _requestApi(
+        'POST',
+        '/api/tablet-pairing-codes',
+        body: {'companyId': companyId},
+        successCodes: const {200, 201},
+      );
+
+  Future<void> revokeTabletPairingCode(int id) async {
+    await _requestApi('POST', '/api/tablet-pairing-codes/$id/revoke');
+  }
+
+  Future<void> updateTabletDeviceName(int pairingCodeId, String name) async {
+    await _requestApi(
+      'PATCH',
+      '/api/tablet-pairing-codes/$pairingCodeId',
+      body: {'deviceName': name.trim()},
+    );
+  }
+
+  Future<void> deleteTabletPairingCode(int id) async {
+    await _requestApi('DELETE', '/api/tablet-pairing-codes/$id');
+  }
+
   Future<DashboardData> getDashboardData(DateTime date) async {
     String formatDate(DateTime value) =>
         '${value.year.toString().padLeft(4, '0')}-'
@@ -843,7 +1167,11 @@ class AuthService {
         login.length > 255 ||
         sections.length > 1 ||
         sections.any(
-          (section) => !const {'recepcion', 'administrador'}.contains(section),
+          (section) => !const {
+            'recepcion',
+            'anfitriones',
+            'administrador',
+          }.contains(section),
         )) {
       throw const AuthApiException(
         'Los permisos seleccionados no son válidos.',
@@ -887,8 +1215,8 @@ class AuthService {
     return _parseDepartments(response.body);
   }
 
-  Future<List<Department>> createDepartment(String name) =>
-      _saveDepartment(name);
+  Future<List<Department>> createDepartment(String name, {int? companyId}) =>
+      _saveDepartment(name, companyId: companyId);
 
   Future<List<Department>> updateDepartment(int id, String name) {
     if (id <= 0) {
@@ -899,7 +1227,11 @@ class AuthService {
     return _saveDepartment(name, id: id);
   }
 
-  Future<List<Department>> _saveDepartment(String name, {int? id}) async {
+  Future<List<Department>> _saveDepartment(
+    String name, {
+    int? id,
+    int? companyId,
+  }) async {
     final normalizedName = name.trim();
     if (normalizedName.isEmpty || normalizedName.length > 120) {
       throw const AuthApiException(
@@ -916,7 +1248,10 @@ class AuthService {
           ? _client.post(
               _uri('/api/departments'),
               headers: headers,
-              body: jsonEncode({'name': normalizedName}),
+              body: jsonEncode({
+                'name': normalizedName,
+                'companyId': ?companyId,
+              }),
             )
           : _client.patch(
               _uri('/api/departments/$id'),
@@ -1307,11 +1642,12 @@ class AuthService {
     required String idempotencyKey,
     required Map<String, Object?> registration,
   }) async {
+    final tabletHeaders = await _tabletDeviceHeaders();
     final data = await _requestApi(
       'POST',
       '/api/visitor-kiosk/registrations',
       body: registration,
-      extraHeaders: {'Idempotency-Key': idempotencyKey},
+      extraHeaders: {'Idempotency-Key': idempotencyKey, ...tabletHeaders},
       successCodes: const {200, 201},
     );
     if (data['folio'] is! String || data['visitorName'] is! String) {
@@ -1325,10 +1661,11 @@ class AuthService {
   Future<Map<String, dynamic>> getVisitorKioskStatus(
     String idempotencyKey,
   ) async {
+    final tabletHeaders = await _tabletDeviceHeaders();
     final data = await _requestApi(
       'GET',
       '/api/visitor-kiosk/status',
-      extraHeaders: {'Idempotency-Key': idempotencyKey},
+      extraHeaders: {'Idempotency-Key': idempotencyKey, ...tabletHeaders},
     );
     if (data['authorizationStatus'] is! String ||
         data['entryChecklistComplete'] is! bool ||
@@ -1627,7 +1964,7 @@ class AuthService {
   Stream<RealtimeEvent> watchRealtimeUpdates() =>
       _watchRealtimeEventStream(_uri('/api/events'), authenticated: true);
 
-  Stream<RealtimeEvent> watchVisitorKioskUpdates(String idempotencyKey) {
+  Stream<RealtimeEvent> watchVisitorKioskUpdates(String idempotencyKey) async* {
     if (!RegExp(
       r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
       caseSensitive: false,
@@ -1636,12 +1973,18 @@ class AuthService {
     }
     final uri = _uri('/api/visitor-kiosk/events')
         .replace(queryParameters: {'key': idempotencyKey});
-    return _watchRealtimeEventStream(uri);
+    await for (final event in _watchRealtimeEventStream(
+      uri,
+      extraHeaders: await _tabletDeviceHeaders(),
+    )) {
+      yield event;
+    }
   }
 
   Stream<RealtimeEvent> _watchRealtimeEventStream(
     Uri uri, {
     bool authenticated = false,
+    Map<String, String> extraHeaders = const {},
   }) async* {
     if (_isWeb) {
       await for (final event in watchWebRealtimeEvents(uri)) {
@@ -1658,6 +2001,7 @@ class AuthService {
       'Accept': 'text/event-stream',
       'Cache-Control': 'no-cache',
       if (authenticated) ...await _sessionHeaders(),
+      ...extraHeaders,
     };
     final request = http.Request('GET', uri)..headers.addAll(headers);
     final response = await _client.send(request).timeout(_requestTimeout);

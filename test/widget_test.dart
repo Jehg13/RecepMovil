@@ -49,6 +49,18 @@ class _MemoryVisitorKioskDraftStorage implements VisitorKioskDraftStorage {
   }
 }
 
+class _MemoryTabletDeviceStorage implements TabletDeviceStorage {
+  String? value;
+
+  @override
+  Future<String?> read() async => value;
+
+  @override
+  Future<void> write(String value) async {
+    this.value = value;
+  }
+}
+
 void _usePhoneViewport(WidgetTester tester) {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = const Size(390, 844);
@@ -102,7 +114,10 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
 
     await tester.pumpWidget(
-      ReceptionApp(visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage()),
+      ReceptionApp(
+        visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+        tabletDeviceStorage: _MemoryTabletDeviceStorage(),
+      ),
     );
 
     expect(
@@ -143,7 +158,10 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
 
     await tester.pumpWidget(
-      ReceptionApp(visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage()),
+      ReceptionApp(
+        visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+        tabletDeviceStorage: _MemoryTabletDeviceStorage(),
+      ),
     );
 
     expect(
@@ -159,10 +177,7 @@ void main() {
           widget.fit == BoxFit.cover,
     );
     expect(tabletSplash, findsOneWidget);
-    expect(
-      tester.getRect(tabletSplash),
-      Offset.zero & const Size(1024, 768),
-    );
+    expect(tester.getRect(tabletSplash), Offset.zero & const Size(1024, 768));
     expect(
       find.byKey(const ValueKey('startup-splash-loading-bar')),
       findsOneWidget,
@@ -172,11 +187,8 @@ void main() {
 
     await tester.pump(const Duration(milliseconds: 2400));
     await tester.pump();
-    expect(
-      find.byKey(const ValueKey('tablet-visitor-landing')),
-      findsOneWidget,
-    );
-    expect(find.text('Visitas sin cita'), findsOneWidget);
+    expect(find.text('Vincula esta tablet'), findsOneWidget);
+    expect(find.text('Vincular tablet'), findsOneWidget);
   });
 
   testWidgets('Se adapta a una pantalla pequeña', (WidgetTester tester) async {
@@ -196,7 +208,9 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.byType(SingleChildScrollView), findsNothing);
-      expect(find.byType(Image), findsWidgets);
+      if (size.shortestSide < 600 || size.height > size.width) {
+        expect(find.byType(Image), findsWidgets);
+      }
     }
   });
 
@@ -217,6 +231,7 @@ void main() {
           key: ValueKey(size),
           showSplash: false,
           visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+          tabletDeviceStorage: _MemoryTabletDeviceStorage(),
         ),
       );
       await tester.pumpAndSettle();
@@ -226,17 +241,71 @@ void main() {
         expect(find.text('Gira tu tablet'), findsOneWidget);
         expect(find.text('Volver al inicio de sesión'), findsNothing);
       } else if (size.shortestSide >= 600) {
-        expect(
-          find.byKey(const ValueKey('tablet-visitor-landing')),
-          findsOneWidget,
-        );
-        expect(find.text('Visitas sin cita'), findsOneWidget);
+        expect(find.text('Vincula esta tablet'), findsOneWidget);
+        expect(find.text('Vincular tablet'), findsOneWidget);
         expect(find.text('Iniciar sesión'), findsNothing);
       } else {
         expect(find.text('Comenzar'), findsOneWidget);
+        expect(find.byType(Image), findsWidgets);
       }
-      expect(find.byType(Image), findsWidgets);
     }
+  });
+
+  testWidgets('La vinculación solicita nombre e informa el uso del código', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    await tester.pumpWidget(
+      ReceptionApp(
+        showSplash: false,
+        tabletDeviceStorage: _MemoryTabletDeviceStorage(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Vincula esta tablet'), findsOneWidget);
+    expect(find.text('Nombre para identificar esta tablet'), findsOneWidget);
+    expect(find.text('Código de vinculación'), findsOneWidget);
+    expect(find.textContaining('El código es de un solo uso'), findsOneWidget);
+    expect(
+      find.textContaining('contacta a soporte para revisar la vinculación'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('La tablet vinculada muestra su nombre y empresa', (
+    WidgetTester tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final tabletStorage = _MemoryTabletDeviceStorage()
+      ..value = jsonEncode({
+        'token': 'tablet-token',
+        'companyId': 12,
+        'companyName': 'Cymez Norte',
+        'deviceId': 7,
+        'deviceName': 'Recepción principal',
+      });
+
+    await tester.pumpWidget(
+      ReceptionApp(showSplash: false, tabletDeviceStorage: tabletStorage),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('tablet-device-identity')),
+      findsOneWidget,
+    );
+    expect(find.text('Recepción principal'), findsOneWidget);
+    expect(find.text('Cymez Norte'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -512,6 +581,7 @@ void main() {
         return http.Response('{}', 404);
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -583,9 +653,7 @@ void main() {
     expect(storage.draft?['step'], 5);
     expect(tester.takeException(), isNull);
 
-    await tester.tap(
-      find.byKey(const ValueKey('tablet-walk-in-home-button')),
-    );
+    await tester.tap(find.byKey(const ValueKey('tablet-walk-in-home-button')));
     await tester.pump();
 
     expect(
@@ -649,6 +717,7 @@ void main() {
         return http.Response('{}', 404);
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -716,6 +785,7 @@ void main() {
         return http.Response('{}', 404);
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -1217,7 +1287,6 @@ void main() {
         onboardingStorage: storage,
       ),
     );
-    await tester.tap(find.text('Comenzar'));
     await tester.pumpAndSettle();
     expect(find.text('Bienvenido de nuevo'), findsOneWidget);
     expect(find.text('Entrada de visitantes'), findsNothing);
@@ -1785,7 +1854,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('La bienvenida de tablet se adapta y abre el registro', (
+  testWidgets('La tablet sin vincular bloquea el acceso al kiosco', (
     WidgetTester tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -1804,46 +1873,24 @@ void main() {
           key: ValueKey(size),
           showSplash: false,
           visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
+          tabletDeviceStorage: _MemoryTabletDeviceStorage(),
         ),
       );
       await tester.pumpAndSettle();
 
+      expect(find.text('Vincula esta tablet'), findsOneWidget, reason: '$size');
+      expect(find.text('Vincular tablet'), findsOneWidget, reason: '$size');
       expect(
         find.byKey(const ValueKey('tablet-visitor-landing')),
-        findsOneWidget,
-        reason: '$size',
-      );
-      expect(find.text('Visitas sin cita'), findsOneWidget, reason: '$size');
-      expect(
-        find.text('Registra tu visita aquí'),
-        findsOneWidget,
-        reason: '$size',
+        findsNothing,
       );
       expect(find.text('Iniciar sesión'), findsNothing, reason: '$size');
       expect(
-        find.byKey(const ValueKey('tablet-visitor-landing-background')),
-        findsOneWidget,
-        reason: '$size',
+        find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
+        findsNothing,
       );
       expect(tester.takeException(), isNull, reason: '$size');
     }
-
-    tester.view.physicalSize = const Size(1024, 768);
-    await tester.pumpWidget(
-      ReceptionApp(
-        showSplash: false,
-        visitorKioskDraftStorage: _MemoryVisitorKioskDraftStorage(),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('tablet-visitor-landing-cta')));
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('tablet-kiosk-welcome-panel')),
-      findsOneWidget,
-    );
-    expect(find.text('Comenzar registro'), findsOneWidget);
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('El login tablet se adapta a distintas resoluciones', (
@@ -1905,9 +1952,15 @@ void main() {
       const Size(375, 667),
       const Size(445, 726),
     ]) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
       tester.view.physicalSize = size;
       await tester.pumpWidget(
-        ReceptionApp(key: ValueKey(size), showSplash: false),
+        ReceptionApp(
+          key: ValueKey(size),
+          showSplash: false,
+          onboardingStorage: _MemoryOnboardingStorage(),
+        ),
       );
       expect(tester.takeException(), isNull, reason: 'Welcome: $size');
       await tester.tap(find.text('Comenzar'));
@@ -1934,9 +1987,15 @@ void main() {
       const Size(375, 667),
       const Size(445, 726),
     ]) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
       tester.view.physicalSize = size;
       await tester.pumpWidget(
-        ReceptionApp(key: ValueKey(size), showSplash: false),
+        ReceptionApp(
+          key: ValueKey(size),
+          showSplash: false,
+          onboardingStorage: _MemoryOnboardingStorage(),
+        ),
       );
       await tester.tap(find.text('Comenzar'));
       await tester.pumpAndSettle();
@@ -2182,7 +2241,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Departamento'), findsOneWidget);
     expect(find.text('Anfitriones'), findsOneWidget);
-    expect(find.text('Agenda de citas'), findsOneWidget);
     await tester.drag(
       find.descendant(
         of: find.byType(Drawer),
@@ -2191,6 +2249,7 @@ void main() {
       const Offset(0, -300),
     );
     await tester.pumpAndSettle();
+    expect(find.text('Agenda de citas'), findsOneWidget);
     expect(find.text('Bitácora diaria'), findsOneWidget);
     await tester.tapAt(const Offset(350, 300));
     await tester.pumpAndSettle();
@@ -2210,6 +2269,26 @@ void main() {
       client: MockClient((request) async {
         final dashboardResponse = _homeDashboardResponse(request);
         if (dashboardResponse != null) return dashboardResponse;
+        if (request.url.path == '/api/v1/companies') {
+          expect(request.headers['cookie'], 'visitas_session=opaque-token');
+          return http.Response(
+            jsonEncode({
+              'companies': [
+                {'id': 1, 'name': 'Cymez', 'departmentCount': 2},
+              ],
+            }),
+            200,
+          );
+        }
+        if (request.url.path == '/api/v1/daily-log/timers') {
+          return http.Response(jsonEncode({'timers': []}), 200);
+        }
+        if (request.url.path == '/api/v1/notifications/config') {
+          return http.Response(jsonEncode({'firebase': null}), 200);
+        }
+        if (request.url.path == '/api/v1/events') {
+          return http.Response('', 200);
+        }
         expect(request.url.path, '/api/v1/departments');
         expect(request.headers['cookie'], 'visitas_session=opaque-token');
         return http.Response(
@@ -2250,15 +2329,8 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Departamentos'), findsOneWidget);
-    expect(find.text('Registrar departamento'), findsOneWidget);
-    expect(
-      tester.widget<Text>(find.text('Departamentos')).maxLines,
-      1,
-      reason: 'Department title stays on one line',
-    );
-    final departmentButton = tester.getRect(
-      find.text('Registrar departamento'),
-    );
+    expect(find.text('Agregar'), findsOneWidget);
+    final departmentButton = tester.getRect(find.text('Agregar'));
     expect(departmentButton.right, lessThanOrEqualTo(375));
 
     await tester.tap(find.byIcon(Icons.menu_rounded).first);
@@ -2272,10 +2344,9 @@ void main() {
       250,
       scrollable: drawerScrollable,
     );
-    await tester.drag(drawerScrollable, const Offset(0, -140));
+    await tester.ensureVisible(find.text('Bitácora diaria').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Bitácora diaria'));
-    await tester.tap(find.text('Bitácora diaria'));
+    await tester.tap(find.text('Bitácora diaria').last);
     await tester.pumpAndSettle();
 
     expect(find.text('Bitácora diaria'), findsOneWidget);
@@ -2310,7 +2381,17 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: ReceptionHomePage(authService: _homeDashboardService()),
+        home: ReceptionHomePage(
+          authService: _homeDashboardService(),
+          user: const AuthenticatedUser(
+            login: 'recepcion',
+            name: 'Recepción',
+            email: null,
+            role: 'Recepción',
+            isAdmin: false,
+            sectionAccess: ['recepcion'],
+          ),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -2325,10 +2406,9 @@ void main() {
       250,
       scrollable: drawerScrollable,
     );
-    await tester.drag(drawerScrollable, const Offset(0, -180));
+    await tester.ensureVisible(find.text('Bitácora diaria').last);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Bitácora diaria'));
-    await tester.tap(find.text('Bitácora diaria'));
+    await tester.tap(find.text('Bitácora diaria').last);
     await tester.pumpAndSettle();
 
     final contentScrollable = find

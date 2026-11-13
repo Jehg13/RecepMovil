@@ -7,6 +7,115 @@ import 'package:http/testing.dart';
 import 'package:visitas_recep_mobile/auth_service.dart';
 
 void main() {
+  test('lee la identidad y los permisos multiempresa', () {
+    final user = AuthenticatedUser.fromJson({
+      'login': 'empresa-admin',
+      'name': 'Administración',
+      'email': 'admin@example.test',
+      'role': 'Administradora',
+      'isAdmin': false,
+      'isCompanyAdmin': true,
+      'companyId': 12,
+      'companyRole': 'administrador_empresa',
+      'mustChangePassword': true,
+      'sectionAccess': <String>[],
+    });
+
+    expect(user.isCompanyAdmin, isTrue);
+    expect(user.companyId, 12);
+    expect(user.companyRole, 'administrador_empresa');
+    expect(user.mustChangePassword, isTrue);
+    expect(user.canAccessApp, isTrue);
+  });
+
+  test('vincula una tablet y adjunta su credencial a las visitas', () async {
+    final tabletStorage = _MemoryTabletDeviceStorage();
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.url.path == '/api/v1/tablet-pairing-codes/redeem') {
+          expect(request.headers.containsKey('cookie'), isFalse);
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expect(body['code'], 'ABCDE-FGHJK');
+          expect(body['deviceName'], 'Recepción principal');
+          final tabletToken = body['deviceToken'] as String;
+          expect(tabletToken, matches(RegExp(r'^[A-Za-z0-9_-]{43}$')));
+          return http.Response(
+            jsonEncode({
+              'token': tabletToken,
+              'deviceId': 7,
+              'deviceName': 'Recepción principal',
+              'company': {'id': 12, 'name': 'Cymez Norte'},
+            }),
+            201,
+          );
+        }
+        expect(request.url.path, '/api/v1/visitor-kiosk/registrations');
+        final storedDevice =
+            jsonDecode(tabletStorage.value!) as Map<String, dynamic>;
+        expect(
+          request.headers['authorization'],
+          'Bearer ${storedDevice['token']}',
+        );
+        return http.Response(
+          jsonEncode({'folio': '12345678', 'visitorName': 'Ana Pérez'}),
+          201,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: tabletStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final link = await service.pairTablet(
+      'abcde-fghjk',
+      deviceName: 'Recepción principal',
+    );
+    await service.createVisitorKioskRegistration(
+      idempotencyKey: '123e4567-e89b-42d3-a456-426614174000',
+      registration: const {'visitorName': 'Ana Pérez'},
+    );
+
+    expect(link.companyId, 12);
+    expect(link.deviceName, 'Recepción principal');
+    expect((await service.getTabletDeviceLink())?.deviceId, 7);
+  });
+
+  test('actualiza el nombre de una tablet vinculada', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'PATCH');
+        expect(request.url.path, '/api/v1/tablet-pairing-codes/7');
+        expect(jsonDecode(request.body), {'deviceName': 'Recepción principal'});
+        return http.Response(
+          jsonEncode({'message': 'El nombre de la tablet se actualizó.'}),
+          200,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    await service.updateTabletDeviceName(7, ' Recepción principal ');
+  });
+
+  test('carga usuarios de todas las empresas sin aplicar un filtro', () async {
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/company-users');
+        expect(request.url.queryParameters, isEmpty);
+        return http.Response(jsonEncode({'users': []}), 200);
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    expect(await service.getCompanyUsers(), isEmpty);
+  });
+
   test('notifica los inicios de sesión exitosos', () async {
     final service = AuthService(
       client: MockClient((request) async {
@@ -25,6 +134,7 @@ void main() {
         );
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -46,6 +156,7 @@ void main() {
         return http.Response(jsonEncode({'firebase': null}), 200);
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -237,6 +348,7 @@ void main() {
           );
         }),
         cookieStorage: _MemorySessionCookieStorage(),
+        tabletDeviceStorage: _MemoryTabletDeviceStorage(),
         baseUrl: 'https://example.test',
         isWeb: false,
       );
@@ -459,6 +571,7 @@ void main() {
         return http.Response(': connected\n\ndata: update\n\n', 200);
       }),
       cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: _MemoryTabletDeviceStorage(),
       baseUrl: 'https://example.test',
       isWeb: false,
     );
@@ -1153,5 +1266,17 @@ class _MemorySessionCookieStorage implements SessionCookieStorage {
   @override
   Future<void> clear() async {
     value = null;
+  }
+}
+
+class _MemoryTabletDeviceStorage implements TabletDeviceStorage {
+  String? value;
+
+  @override
+  Future<String?> read() async => value;
+
+  @override
+  Future<void> write(String value) async {
+    this.value = value;
   }
 }

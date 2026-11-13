@@ -113,6 +113,16 @@ String _dateString(DateTime date) =>
     '${date.month.toString().padLeft(2, '0')}-'
     '${date.day.toString().padLeft(2, '0')}';
 
+bool _usesAppointmentReference(
+  Map<String, dynamic> appointment,
+  AuthenticatedUser? user,
+) {
+  if (user?.companyRole?.isNotEmpty == true) return true;
+  final tenantCompanyName = appointment['tenantCompanyName'];
+  return tenantCompanyName is! String ||
+      tenantCompanyName.trim().toLowerCase() != 'cymez';
+}
+
 String _displayDate(Object? value) {
   if (value is! String || value.isEmpty) return 'Sin fecha';
   final date = DateTime.tryParse(value);
@@ -1795,12 +1805,14 @@ class _ConnectedExternalStaffPageState
     }
     final email = '${staff['email'] ?? ''}'.trim();
     if (email.isEmpty) return;
+    final usesReference = _usesAppointmentReference(appointment!, widget.user);
     if (!await _confirmAction(
       context,
-      title: 'Enviar pase QR',
+      title: usesReference ? 'Enviar referencia' : 'Enviar pase QR',
       message:
-          'Se enviará el pase de ${staff['fullName']} a $email. ¿Continuar?',
-      confirmLabel: 'Enviar QR',
+          'Se enviará ${usesReference ? 'la referencia' : 'el pase'} de '
+          '${staff['fullName']} a $email. ¿Continuar?',
+      confirmLabel: usesReference ? 'Enviar referencia' : 'Enviar QR',
     )) {
       return;
     }
@@ -1818,8 +1830,10 @@ class _ConnectedExternalStaffPageState
       if (mounted) {
         _showMessage(
           context,
-          'El pase de ${staff['fullName']} se envió a $email.',
-          title: 'QR enviado',
+          usesReference
+              ? 'La referencia de ${staff['fullName']} se envió a $email.'
+              : 'El pase de ${staff['fullName']} se envió a $email.',
+          title: usesReference ? 'Referencia enviada' : 'QR enviado',
         );
       }
     } on AuthApiException catch (error) {
@@ -2003,7 +2017,18 @@ class _ConnectedExternalStaffPageState
                                     canManage: widget.canManage,
                                     onEdit: () => _edit(staff),
                                     onDelete: () => _delete(staff),
-                                    showQr: widget.appointment != null,
+                                    showQr:
+                                        widget.appointment != null &&
+                                        !_usesAppointmentReference(
+                                          widget.appointment!,
+                                          widget.user,
+                                        ),
+                                    showReference:
+                                        widget.appointment != null &&
+                                        _usesAppointmentReference(
+                                          widget.appointment!,
+                                          widget.user,
+                                        ),
                                     onShowQr: () => _showQr(staff),
                                     onSendQr: () => _sendQr(staff),
                                   ),
@@ -2464,6 +2489,7 @@ class _ExternalEmployeeCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.showQr,
+    required this.showReference,
     required this.onShowQr,
     required this.onSendQr,
   });
@@ -2474,6 +2500,7 @@ class _ExternalEmployeeCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final bool showQr;
+  final bool showReference;
   final VoidCallback onShowQr;
   final VoidCallback onSendQr;
 
@@ -2596,31 +2623,37 @@ class _ExternalEmployeeCard extends StatelessWidget {
             const SizedBox(height: 12),
             Column(
               children: [
-                if (showQr)
+                if (showQr || (showReference && canManage))
                   Row(
                     children: [
-                      Expanded(
-                        child: SizedBox(
-                          height: 42,
-                          child: OutlinedButton.icon(
-                            onPressed: onShowQr,
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF83C7FF),
-                              side: const BorderSide(color: Color(0x554AA8FF)),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                      if (showQr)
+                        Expanded(
+                          child: SizedBox(
+                            height: 42,
+                            child: OutlinedButton.icon(
+                              onPressed: onShowQr,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF83C7FF),
+                                side: const BorderSide(
+                                  color: Color(0x554AA8FF),
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
                               ),
-                            ),
-                            icon: const Icon(Icons.qr_code_2_rounded, size: 18),
-                            label: const Text(
-                              'Ver QR',
-                              style: TextStyle(fontWeight: FontWeight.w700),
+                              icon: const Icon(
+                                Icons.qr_code_2_rounded,
+                                size: 18,
+                              ),
+                              label: const Text(
+                                'Ver QR',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      if (canManage) ...[
-                        const SizedBox(width: 8),
+                      if (canManage && (showQr || showReference)) ...[
+                        if (showQr) const SizedBox(width: 8),
                         Expanded(
                           child: SizedBox(
                             height: 42,
@@ -2641,7 +2674,9 @@ class _ExternalEmployeeCard extends StatelessWidget {
                               ),
                               child: Tooltip(
                                 message: email.isNotEmpty
-                                    ? 'Enviar pase al correo registrado'
+                                    ? showReference
+                                          ? 'Enviar referencia al correo registrado'
+                                          : 'Enviar pase al correo registrado'
                                     : 'Registra un correo para enviar el pase',
                                 child: FilledButton.icon(
                                   onPressed: email.isNotEmpty ? onSendQr : null,
@@ -2655,9 +2690,11 @@ class _ExternalEmployeeCard extends StatelessWidget {
                                     Icons.send_rounded,
                                     size: 16,
                                   ),
-                                  label: const Text(
-                                    'Enviar QR',
-                                    style: TextStyle(
+                                  label: Text(
+                                    showReference
+                                        ? 'Enviar referencia'
+                                        : 'Enviar QR',
+                                    style: const TextStyle(
                                       fontWeight: FontWeight.w700,
                                     ),
                                   ),
@@ -2669,7 +2706,8 @@ class _ExternalEmployeeCard extends StatelessWidget {
                       ],
                     ],
                   ),
-                if (canManage && showQr) const SizedBox(height: 8),
+                if (canManage && (showQr || showReference))
+                  const SizedBox(height: 8),
                 if (canManage)
                   Row(
                     children: [
@@ -3667,6 +3705,10 @@ class _ConnectedAppointmentsPageState extends State<ConnectedAppointmentsPage> {
                     for (final item in appointments) ...[
                       _AppointmentRecordCard(
                         item: item,
+                        usesReference: _usesAppointmentReference(
+                          item,
+                          widget.user,
+                        ),
                         displayStatus:
                             _attendanceStatus(item) ??
                             '${item['status'] ?? 'Pendiente'}',
@@ -5518,14 +5560,21 @@ class _AppointmentFormState extends State<_AppointmentForm> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 5),
-                      Text(
-                        'El pase QR se generará al guardar la cita.',
-                        style: TextStyle(
-                          color: _secondaryTextColor(context),
-                          fontSize: 10,
+                      if (widget.user?.companyRole?.isNotEmpty != true &&
+                          (widget.record == null ||
+                              !_usesAppointmentReference(
+                                widget.record!,
+                                widget.user,
+                              ))) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          'El pase QR se generará al guardar la cita.',
+                          style: TextStyle(
+                            color: _secondaryTextColor(context),
+                            fontSize: 10,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -6002,6 +6051,7 @@ class _AppointmentRecordCard extends StatelessWidget {
   const _AppointmentRecordCard({
     required this.item,
     required this.displayStatus,
+    required this.usesReference,
     required this.canReschedule,
     required this.canManage,
     required this.isAdmin,
@@ -6014,6 +6064,7 @@ class _AppointmentRecordCard extends StatelessWidget {
   });
   final Map<String, dynamic> item;
   final String displayStatus;
+  final bool usesReference;
   final bool canReschedule;
   final bool canManage;
   final bool isAdmin;
@@ -6156,15 +6207,16 @@ class _AppointmentRecordCard extends StatelessWidget {
             spacing: 7,
             runSpacing: 7,
             children: [
-              _AppointmentActionButton(
-                label: 'Ver QR',
-                icon: Icons.qr_code_2_rounded,
-                onPressed: onShowCode,
-                primary: true,
-              ),
+              if (!usesReference)
+                _AppointmentActionButton(
+                  label: 'Ver QR',
+                  icon: Icons.qr_code_2_rounded,
+                  onPressed: onShowCode,
+                  primary: true,
+                ),
               if (canManage && !canceled && !withdrawn) ...[
                 _AppointmentActionButton(
-                  label: 'Enviar pase',
+                  label: usesReference ? 'Enviar referencia' : 'Enviar pase',
                   icon: Icons.send_rounded,
                   onPressed: onSendQr,
                 ),
@@ -7992,7 +8044,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
   }
 
   Future<void> _openEntry(Map<String, dynamic> entry) async {
-    final readOnly = _isPastEntry(entry);
+    final readOnly = widget.user?.isCompanyAdmin == true || _isPastEntry(entry);
     final visitorRecordId = entry['visitorRecordId'];
     if (visitorRecordId is num) {
       try {
@@ -8055,6 +8107,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
       );
       return;
     }
+    if (_usesAppointmentReference(appointment, widget.user)) return;
     Map<String, dynamic>? employee;
     final externalStaffId = entry['externalStaffId'];
     if (externalStaffId is num) {
@@ -8086,6 +8139,15 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
       builder: (context) =>
           _AppointmentPassDialog(appointment: appointment, employee: employee),
     );
+  }
+
+  bool _canShowEntryQr(Map<String, dynamic> entry) {
+    final appointmentId = entry['appointmentId'];
+    final appointment = appointmentId is num
+        ? _appointments.where((item) => item['id'] == appointmentId).firstOrNull
+        : null;
+    return appointment != null &&
+        !_usesAppointmentReference(appointment, widget.user);
   }
 
   Future<void> _delete(Map<String, dynamic> entry) async {
@@ -8539,177 +8601,182 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                     _overdueTimerBanner(context),
                     const SizedBox(height: 12),
                   ],
-                  _logbookPanel(
-                    context: context,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 34,
-                              height: 34,
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    Color(0xFF087FFF),
-                                    Color(0xFF00B8F4),
+                  if (widget.user?.isCompanyAdmin != true) ...[
+                    _logbookPanel(
+                      context: context,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF087FFF),
+                                      Color(0xFF00B8F4),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(
+                                  Icons.flash_on_rounded,
+                                  color: Colors.white,
+                                  size: 19,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Registro rápido',
+                                  style: TextStyle(
+                                    color: _primaryTextColor(context),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              if (widget.user?.companyRole?.isNotEmpty != true)
+                                IconButton(
+                                  tooltip: 'Escanear código QR',
+                                  onPressed: _scanQr,
+                                  icon: const Icon(
+                                    Icons.qr_code_scanner_rounded,
+                                    color: Color(0xFF8ACBFF),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final buttons = [
+                                OutlinedButton.icon(
+                                  onPressed: _enterCode,
+                                  icon: const Icon(Icons.pin_rounded, size: 17),
+                                  label: const Text('Introducir código'),
+                                  style: _logOutlinedButtonStyle(
+                                    context,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 9,
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                                FilledButton.icon(
+                                  onPressed: _register,
+                                  icon: const Icon(Icons.add_rounded, size: 17),
+                                  label: const Text('Nuevo registro'),
+                                  style: _logPrimaryButtonStyle(
+                                    context,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 9,
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                              ];
+                              if (constraints.maxWidth < 390) {
+                                return Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    buttons[0],
+                                    const SizedBox(height: 8),
+                                    buttons[1],
                                   ],
-                                ),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Icon(
-                                Icons.flash_on_rounded,
-                                color: Colors.white,
-                                size: 19,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Registro rápido',
-                                style: TextStyle(
-                                  color: _primaryTextColor(context),
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: 'Escanear código QR',
-                              onPressed: _scanQr,
-                              icon: const Icon(
-                                Icons.qr_code_scanner_rounded,
-                                color: Color(0xFF8ACBFF),
-                              ),
-                            ),
-                          ],
-                        ),
-                        LayoutBuilder(
-                          builder: (context, constraints) {
-                            final buttons = [
-                              OutlinedButton.icon(
-                                onPressed: _enterCode,
-                                icon: const Icon(Icons.pin_rounded, size: 17),
-                                label: const Text('Introducir código'),
-                                style: _logOutlinedButtonStyle(
-                                  context,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 9,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                              FilledButton.icon(
-                                onPressed: _register,
-                                icon: const Icon(Icons.add_rounded, size: 17),
-                                label: const Text('Nuevo registro'),
-                                style: _logPrimaryButtonStyle(
-                                  context,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 9,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ];
-                            if (constraints.maxWidth < 390) {
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                );
+                              }
+                              return Row(
                                 children: [
-                                  buttons[0],
-                                  const SizedBox(height: 8),
-                                  buttons[1],
+                                  Expanded(child: buttons[0]),
+                                  const SizedBox(width: 8),
+                                  Expanded(child: buttons[1]),
                                 ],
                               );
-                            }
-                            return Row(
-                              children: [
-                                Expanded(child: buttons[0]),
-                                const SizedBox(width: 8),
-                                Expanded(child: buttons[1]),
-                              ],
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 10),
-                        TextField(
-                          onChanged: (value) => setState(() {
-                            _appointmentQuery = value;
-                            _appointmentPage = 1;
-                          }),
-                          style: TextStyle(
-                            color: _primaryTextColor(context),
-                            fontSize: 13,
+                            },
                           ),
-                          decoration: InputDecoration(
-                            hintText: 'Buscar cita de hoy por nombre o empresa',
-                            hintStyle: TextStyle(
+                          const SizedBox(height: 10),
+                          TextField(
+                            onChanged: (value) => setState(() {
+                              _appointmentQuery = value;
+                              _appointmentPage = 1;
+                            }),
+                            style: TextStyle(
+                              color: _primaryTextColor(context),
+                              fontSize: 13,
+                            ),
+                            decoration: InputDecoration(
+                              hintText:
+                                  'Buscar cita de hoy por nombre o empresa',
+                              hintStyle: TextStyle(
+                                color: _secondaryTextColor(context),
+                                fontSize: 11,
+                              ),
+                              prefixIcon: const Icon(
+                                Icons.search_rounded,
+                                color: Color(0xFF68B7FF),
+                              ),
+                              filled: true,
+                              fillColor: _isLightTheme(context)
+                                  ? const Color(0xFFF3F6FB)
+                                  : const Color(0xFF091426),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(13),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${_todaysAppointments.length} citas activas para hoy',
+                            style: TextStyle(
                               color: _secondaryTextColor(context),
                               fontSize: 11,
                             ),
-                            prefixIcon: const Icon(
-                              Icons.search_rounded,
-                              color: Color(0xFF68B7FF),
-                            ),
-                            filled: true,
-                            fillColor: _isLightTheme(context)
-                                ? const Color(0xFFF3F6FB)
-                                : const Color(0xFF091426),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(13),
-                              borderSide: BorderSide.none,
-                            ),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          '${_todaysAppointments.length} citas activas para hoy',
-                          style: TextStyle(
-                            color: _secondaryTextColor(context),
-                            fontSize: 11,
-                          ),
-                        ),
-                        if (_filteredQuickAppointments.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: Text(
-                              'No hay citas que coincidan. Para visitas sin cita usa Nuevo registro.',
-                              style: TextStyle(
-                                color: _secondaryTextColor(context),
-                                fontSize: 12,
+                          if (_filteredQuickAppointments.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: Text(
+                                'No hay citas que coincidan. Para visitas sin cita usa Nuevo registro.',
+                                style: TextStyle(
+                                  color: _secondaryTextColor(context),
+                                  fontSize: 12,
+                                ),
                               ),
-                            ),
-                          )
-                        else ...[
-                          const SizedBox(height: 8),
-                          for (final appointment
-                              in _filteredQuickAppointments) ...[
-                            _QuickAppointmentTile(
-                              appointment: appointment,
-                              onTap: () => _openAppointment(appointment),
-                            ),
-                            const SizedBox(height: 7),
+                            )
+                          else ...[
+                            const SizedBox(height: 8),
+                            for (final appointment
+                                in _filteredQuickAppointments) ...[
+                              _QuickAppointmentTile(
+                                appointment: appointment,
+                                onTap: () => _openAppointment(appointment),
+                              ),
+                              const SizedBox(height: 7),
+                            ],
+                            if (_filteredAppointmentPages > 1)
+                              _DailyLogPagination(
+                                label: 'Citas',
+                                total: _todaysAppointments.length,
+                                page: _appointmentPage,
+                                pages: _filteredAppointmentPages,
+                                onPrevious: _appointmentPage > 1
+                                    ? () => setState(() => _appointmentPage--)
+                                    : null,
+                                onNext:
+                                    _appointmentPage < _filteredAppointmentPages
+                                    ? () => setState(() => _appointmentPage++)
+                                    : null,
+                              ),
                           ],
-                          if (_filteredAppointmentPages > 1)
-                            _DailyLogPagination(
-                              label: 'Citas',
-                              total: _todaysAppointments.length,
-                              page: _appointmentPage,
-                              pages: _filteredAppointmentPages,
-                              onPrevious: _appointmentPage > 1
-                                  ? () => setState(() => _appointmentPage--)
-                                  : null,
-                              onNext:
-                                  _appointmentPage < _filteredAppointmentPages
-                                  ? () => setState(() => _appointmentPage++)
-                                  : null,
-                            ),
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 12),
+                  ],
                   _logbookPanel(
                     context: context,
                     child: Column(
@@ -9109,6 +9176,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                         entry: entry,
                         onTap: () => _openEntry(entry),
                         onQr: () => _openEntryQr(entry),
+                        showQr: _canShowEntryQr(entry),
                         showRegisteredBy: widget.isAdmin,
                         onDelete: widget.isAdmin && !_isPastEntry(entry)
                             ? () => _delete(entry)
@@ -9152,6 +9220,7 @@ class _ConnectedDailyLogbookPageState extends State<ConnectedDailyLogbookPage>
                         entry: entry,
                         onTap: () => _openEntry(entry),
                         onQr: () => _openEntryQr(entry),
+                        showQr: _canShowEntryQr(entry),
                         showRegisteredBy: widget.isAdmin,
                         onDelete: null,
                       ),
@@ -9470,6 +9539,7 @@ class _DailyLogMovementCard extends StatelessWidget {
     required this.entry,
     required this.onTap,
     required this.onQr,
+    required this.showQr,
     required this.onDelete,
     this.showRegisteredBy = false,
   });
@@ -9477,6 +9547,7 @@ class _DailyLogMovementCard extends StatelessWidget {
   final Map<String, dynamic> entry;
   final VoidCallback onTap;
   final VoidCallback onQr;
+  final bool showQr;
   final VoidCallback? onDelete;
   final bool showRegisteredBy;
 
@@ -9639,7 +9710,7 @@ class _DailyLogMovementCard extends StatelessWidget {
                         ),
                       ),
                     ),
-                    if (appointmentId is num)
+                    if (showQr && appointmentId is num)
                       IconButton(
                         tooltip: 'Ver QR de visita',
                         visualDensity: VisualDensity.compact,
@@ -9668,7 +9739,7 @@ class _DailyLogMovementCard extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    if (appointmentId is num)
+                    if (showQr && appointmentId is num)
                       IconButton(
                         tooltip: 'Ver QR de visita',
                         visualDensity: VisualDensity.compact,
@@ -12130,6 +12201,7 @@ class _DailyLogEntryDetailDialogState
               entry: widget.entry,
               onTap: () {},
               onQr: () {},
+              showQr: false,
               onDelete: null,
               showRegisteredBy: widget.showRegisteredBy,
             ),

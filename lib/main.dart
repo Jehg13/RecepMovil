@@ -1,6 +1,7 @@
 // ignore_for_file: unused_element, unused_element_parameter
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kDebugMode, kIsWeb, TargetPlatform;
@@ -19,6 +20,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'auth_service.dart';
 import 'app_feedback.dart';
 import 'connected_modules.dart';
+import 'company_management.dart';
 import 'reception_header.dart';
 import 'src/timer_notifications.dart';
 
@@ -104,7 +106,7 @@ class _MobileAppUpdateCoordinatorState
     _checking = true;
     try {
       final size = MediaQuery.sizeOf(context);
-      final channel = size.shortestSide >= 600 || size.width > size.height
+      final channel = size.shortestSide >= 600
           ? 'tablet'
           : 'phone';
       final update = await widget.authService.checkForMobileAppUpdate(
@@ -721,6 +723,7 @@ class ReceptionApp extends StatelessWidget {
     this.authService,
     this.onboardingStorage,
     this.visitorKioskDraftStorage,
+    this.tabletDeviceStorage,
     this.mobileSplashImage,
     this.tabletSplashImage,
   });
@@ -729,6 +732,7 @@ class ReceptionApp extends StatelessWidget {
   final AuthService? authService;
   final MobileOnboardingStorage? onboardingStorage;
   final VisitorKioskDraftStorage? visitorKioskDraftStorage;
+  final TabletDeviceStorage? tabletDeviceStorage;
   final ui.Image? mobileSplashImage;
   final ui.Image? tabletSplashImage;
 
@@ -783,6 +787,7 @@ class ReceptionApp extends StatelessWidget {
               authService: authService,
               onboardingStorage: onboardingStorage,
               visitorKioskDraftStorage: visitorKioskDraftStorage,
+              tabletDeviceStorage: tabletDeviceStorage,
               mobileSplashImage: mobileSplashImage,
               tabletSplashImage: tabletSplashImage,
             )
@@ -792,6 +797,7 @@ class ReceptionApp extends StatelessWidget {
                 authService: authService,
                 onboardingStorage: onboardingStorage,
                 visitorKioskDraftStorage: visitorKioskDraftStorage,
+                tabletDeviceStorage: tabletDeviceStorage,
               ),
             ),
     );
@@ -803,11 +809,13 @@ class _ResponsiveReceptionEntry extends StatelessWidget {
     this.authService,
     this.onboardingStorage,
     this.visitorKioskDraftStorage,
+    this.tabletDeviceStorage,
   });
 
   final AuthService? authService;
   final MobileOnboardingStorage? onboardingStorage;
   final VisitorKioskDraftStorage? visitorKioskDraftStorage;
+  final TabletDeviceStorage? tabletDeviceStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -817,6 +825,7 @@ class _ResponsiveReceptionEntry extends StatelessWidget {
           return _TabletVisitorLandingPage(
             authService: authService ?? AuthService.shared,
             draftStorage: visitorKioskDraftStorage,
+            tabletDeviceStorage: tabletDeviceStorage,
           );
         }
         return authService == null
@@ -834,10 +843,12 @@ class _TabletVisitorLandingPage extends StatefulWidget {
   const _TabletVisitorLandingPage({
     required this.authService,
     this.draftStorage,
+    this.tabletDeviceStorage,
   });
 
   final AuthService authService;
   final VisitorKioskDraftStorage? draftStorage;
+  final TabletDeviceStorage? tabletDeviceStorage;
 
   @override
   State<_TabletVisitorLandingPage> createState() =>
@@ -846,6 +857,24 @@ class _TabletVisitorLandingPage extends StatefulWidget {
 
 class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
   bool _landscapeRequested = false;
+  late Future<TabletDeviceLink?> _tabletLink;
+  final TextEditingController _tabletNameController = TextEditingController();
+  final TextEditingController _pairingCodeController = TextEditingController();
+  bool _isPairing = false;
+  String? _pairingError;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabletLink = _getTabletDeviceLink();
+  }
+
+  Future<TabletDeviceLink?> _getTabletDeviceLink() async {
+    final storage = widget.tabletDeviceStorage;
+    if (storage == null) return widget.authService.getTabletDeviceLink();
+    final value = await storage.read();
+    return value == null ? null : TabletDeviceLink.fromJson(jsonDecode(value));
+  }
 
   @override
   void didChangeDependencies() {
@@ -860,6 +889,16 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
   }
 
   Future<void> _openWalkInRegistration() async {
+    final link = await _getTabletDeviceLink();
+    if (!mounted) return;
+    if (link == null) {
+      if (mounted) {
+        setState(() {
+          _tabletLink = _getTabletDeviceLink();
+        });
+      }
+      return;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => WalkInVisitorPage(
@@ -877,6 +916,209 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
     }
   }
 
+  Future<void> _pairTablet() async {
+    if (_isPairing) return;
+    final deviceName = _tabletNameController.text.trim();
+    if (deviceName.isEmpty) {
+      setState(
+        () => _pairingError = 'Escribe un nombre para identificar esta tablet.',
+      );
+      return;
+    }
+    setState(() {
+      _isPairing = true;
+      _pairingError = null;
+    });
+    try {
+      final link = await widget.authService.pairTablet(
+        _pairingCodeController.text,
+        deviceName: deviceName,
+      );
+      await widget.tabletDeviceStorage?.write(
+        jsonEncode({
+          'token': link.token,
+          'companyId': link.companyId,
+          'companyName': link.companyName,
+          'deviceId': link.deviceId,
+          'deviceName': link.deviceName,
+        }),
+      );
+      if (mounted) {
+        setState(() {
+          _tabletLink = _getTabletDeviceLink();
+        });
+      }
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _pairingError = error.message);
+    } finally {
+      if (mounted) setState(() => _isPairing = false);
+    }
+  }
+
+  Widget _buildPairingScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF020817),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: constraints.maxHeight - 40,
+              ),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 620),
+                  child: Card(
+                    color: const Color(0xFF101A30),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(26),
+                      side: const BorderSide(color: Color(0x550087FF)),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(28),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Icon(
+                            Icons.tablet_android_rounded,
+                            color: _blue,
+                            size: 52,
+                          ),
+                          const SizedBox(height: 18),
+                          const Text(
+                            'Vincula esta tablet',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 26,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Solicita un código al administrador global e ingrésalo para asignar esta tablet a una empresa. No podrás registrar visitas hasta completar la vinculación.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: _mutedWhite, height: 1.4),
+                          ),
+                          const SizedBox(height: 18),
+                          TextField(
+                            controller: _tabletNameController,
+                            enabled: !_isPairing,
+                            textCapitalization: TextCapitalization.words,
+                            maxLength: 120,
+                            decoration: InputDecoration(
+                              labelText: 'Nombre para identificar esta tablet',
+                              hintText: 'Ej. Recepción principal',
+                              filled: true,
+                              fillColor: const Color(0xFF080F20),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          TextField(
+                            controller: _pairingCodeController,
+                            enabled: !_isPairing,
+                            textCapitalization: TextCapitalization.characters,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              letterSpacing: 4,
+                              fontWeight: FontWeight.w800,
+                            ),
+                            decoration: InputDecoration(
+                              hintText: 'ABCDE-FGHIJ',
+                              hintStyle: const TextStyle(
+                                color: Color(0xFF7886A3),
+                                letterSpacing: 2,
+                              ),
+                              filled: true,
+                              fillColor: const Color(0xFF080F20),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                              labelText: 'Código de vinculación',
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0x22FFB547),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: const Color(0x66FFB547),
+                              ),
+                            ),
+                            child: const Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  Icons.info_outline_rounded,
+                                  color: Color(0xFFFFC46B),
+                                  size: 20,
+                                ),
+                                SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'El código es de un solo uso y vence en 10 minutos. Si se borran los datos de la app, se desinstala, ocurre un error o la tablet se transfiere o retira, contacta a soporte para revisar la vinculación. No intentes reutilizar el código.',
+                                    style: TextStyle(
+                                      color: _mutedWhite,
+                                      height: 1.35,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (_pairingError != null) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              _pairingError!,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Color(0xFFFF7185)),
+                            ),
+                          ],
+                          const SizedBox(height: 20),
+                          FilledButton(
+                            onPressed: _isPairing ? null : _pairTablet,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: _blue,
+                              padding: const EdgeInsets.symmetric(vertical: 17),
+                            ),
+                            child: _isPairing
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                    ),
+                                  )
+                                : const Text(
+                                    'Vincular tablet',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -886,6 +1128,43 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
         body: _WalkInRotatePrompt(tablet: true, allowExit: false),
       );
     }
+    return FutureBuilder<TabletDeviceLink?>(
+      future: _tabletLink,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF020817),
+            body: Center(child: CircularProgressIndicator(color: _blue)),
+          );
+        }
+        if (snapshot.hasError) {
+          return Scaffold(
+            backgroundColor: const Color(0xFF020817),
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'No se pudo leer la vinculación guardada.',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  TextButton(
+                    onPressed: () =>
+                        setState(() => _tabletLink = _getTabletDeviceLink()),
+                    child: const Text('Reintentar'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        if (snapshot.data == null) return _buildPairingScreen();
+        return _buildLandingContent(snapshot.data!);
+      },
+    );
+  }
+
+  Widget _buildLandingContent(TabletDeviceLink link) {
     return Scaffold(
       key: const ValueKey('tablet-visitor-landing'),
       backgroundColor: const Color(0xFF020817),
@@ -927,6 +1206,50 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
                       left: width * .08,
                       child: const _TabletVisitorLandingFooter(),
                     ),
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: Container(
+                        key: const ValueKey('tablet-device-identity'),
+                        constraints: BoxConstraints(
+                          maxWidth: math.min(width * .36, 320.0),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xDD07101F),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0x6687C8FF)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              link.deviceName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Text(
+                              link.companyName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xFFC9D7EB),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 );
               },
@@ -935,6 +1258,13 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _tabletNameController.dispose();
+    _pairingCodeController.dispose();
+    super.dispose();
   }
 }
 
@@ -1152,6 +1482,7 @@ class _ReceptionStartupPage extends StatefulWidget {
     this.authService,
     this.onboardingStorage,
     this.visitorKioskDraftStorage,
+    this.tabletDeviceStorage,
     this.mobileSplashImage,
     this.tabletSplashImage,
   });
@@ -1159,6 +1490,7 @@ class _ReceptionStartupPage extends StatefulWidget {
   final AuthService? authService;
   final MobileOnboardingStorage? onboardingStorage;
   final VisitorKioskDraftStorage? visitorKioskDraftStorage;
+  final TabletDeviceStorage? tabletDeviceStorage;
   final ui.Image? mobileSplashImage;
   final ui.Image? tabletSplashImage;
 
@@ -1227,6 +1559,7 @@ class _ReceptionStartupPageState extends State<_ReceptionStartupPage>
               authService: widget.authService,
               onboardingStorage: widget.onboardingStorage,
               visitorKioskDraftStorage: widget.visitorKioskDraftStorage,
+              tabletDeviceStorage: widget.tabletDeviceStorage,
             ),
           );
         }
@@ -1361,6 +1694,7 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
     final user = await widget.authService.restoreSession();
     if (user != null &&
         (user.canAccessReception ||
+            user.isCompanyAdmin ||
             user.sectionAccess.contains('anfitriones'))) {
       unawaited(
         TimerNotificationService.instance.configureAndRegister(
@@ -1453,9 +1787,153 @@ class _ReceptionSessionGateState extends State<_ReceptionSessionGate> {
             onboardingStorage: widget.onboardingStorage,
           );
         }
+        if (user.mustChangePassword) {
+          return _TemporaryPasswordChangePage(
+            authService: widget.authService,
+            user: user,
+          );
+        }
         return ReceptionHomePage(authService: widget.authService, user: user);
       },
     );
+  }
+}
+
+class _TemporaryPasswordChangePage extends StatefulWidget {
+  const _TemporaryPasswordChangePage({
+    required this.authService,
+    required this.user,
+  });
+
+  final AuthService authService;
+  final AuthenticatedUser user;
+
+  @override
+  State<_TemporaryPasswordChangePage> createState() =>
+      _TemporaryPasswordChangePageState();
+}
+
+class _TemporaryPasswordChangePageState
+    extends State<_TemporaryPasswordChangePage> {
+  final _passwordController = TextEditingController();
+  final _confirmationController = TextEditingController();
+  bool _saving = false;
+  String? _error;
+
+  Future<void> _submit() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final user = await widget.authService.changePassword(
+        password: _passwordController.text,
+        confirmation: _confirmationController.text,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              ReceptionHomePage(authService: widget.authService, user: user),
+        ),
+      );
+    } on AuthApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF07101F),
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Card(
+                  color: const Color(0xFF101A30),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Icon(
+                          Icons.lock_reset_rounded,
+                          color: _blue,
+                          size: 44,
+                        ),
+                        const SizedBox(height: 14),
+                        const Text(
+                          'Crea una contraseña nueva',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Por seguridad, debes cambiar la contraseña temporal antes de continuar.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: _mutedWhite, height: 1.4),
+                        ),
+                        const SizedBox(height: 20),
+                        TextField(
+                          controller: _passwordController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Nueva contraseña',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _confirmationController,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Confirmar contraseña',
+                          ),
+                        ),
+                        if (_error != null) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            _error!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Color(0xFFFF7185)),
+                          ),
+                        ],
+                        const SizedBox(height: 18),
+                        FilledButton(
+                          onPressed: _saving ? null : _submit,
+                          child: _saving
+                              ? const CircularProgressIndicator()
+                              : const Text('Actualizar contraseña'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    _confirmationController.dispose();
+    super.dispose();
   }
 }
 
@@ -2995,15 +3473,19 @@ class _ReceptionLoginPageState extends State<ReceptionLoginPage> {
         _passwordController.text,
       );
       if (!mounted) return;
-      if (user.canAccessReception ||
-          user.sectionAccess.contains('anfitriones')) {
+      if (!user.mustChangePassword &&
+          (user.canAccessReception ||
+              user.isCompanyAdmin ||
+              user.sectionAccess.contains('anfitriones'))) {
         unawaited(
           TimerNotificationService.instance.configureAndRegister(service),
         );
       }
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
-          builder: (_) => ReceptionHomePage(authService: service, user: user),
+          builder: (_) => user.mustChangePassword
+              ? _TemporaryPasswordChangePage(authService: service, user: user)
+              : ReceptionHomePage(authService: service, user: user),
         ),
       );
     } on AuthApiException catch (error) {
@@ -9280,6 +9762,8 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
     final user = widget.user;
     _activeSection = user?.isAdmin == true
         ? 'home'
+        : user?.isCompanyAdmin == true
+        ? 'departments'
         : user?.sectionAccess.contains('recepcion') == true ||
               user?.sectionAccess.contains('anfitriones') == true
         ? 'appointments'
@@ -9289,6 +9773,17 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
   bool _canAccessSection(String section) {
     final user = widget.user;
     if (user?.isAdmin == true) return true;
+    if (user?.isCompanyAdmin == true) {
+      return const {
+        'departments',
+        'company_users',
+        'external_companies',
+        'external_staff',
+        'equipment',
+        'appointments',
+        'logbook',
+      }.contains(section);
+    }
     if (user?.sectionAccess.contains('recepcion') == true) {
       return section == 'appointments' || section == 'logbook';
     }
@@ -9305,6 +9800,7 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
     final user = widget.user;
     return user != null &&
         (user.isAdmin ||
+            user.isCompanyAdmin ||
             (user.sectionAccess.contains('anfitriones') &&
                 !user.sectionAccess.contains('recepcion')));
   }
@@ -9349,11 +9845,16 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
     setState(() => _activeSection = section);
   }
 
-  void _openDepartments() => _openSection('departments');
+  void _openDepartments() =>
+      _openSection(widget.user?.isAdmin == true ? 'companies' : 'departments');
+
+  void _openCompanyAdmins() => _openSection('company_admins');
+
+  void _openCompanyUsers() => _openSection('company_users');
+
+  void _openTablets() => _openSection('tablets');
 
   void _openHome() => _openSection('home');
-
-  void _openHosts() => _openSection('hosts');
 
   void _openAccesses() => _openSection('accesses');
 
@@ -9416,7 +9917,9 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
               onLogout: _logout,
               onHome: _openHome,
               onDepartments: _openDepartments,
-              onHosts: _openHosts,
+              onCompanyAdmins: _openCompanyAdmins,
+              onCompanyUsers: _openCompanyUsers,
+              onTablets: _openTablets,
               onAccesses: _openAccesses,
               onExternalCompanies: _openExternalCompanies,
               onExternalStaff: _openExternalStaff,
@@ -9434,15 +9937,17 @@ class _ReceptionDashboardPageState extends State<_ReceptionDashboardPage> {
                       onOpenLogbook: _openLogbook,
                     )
                   : switch (_activeSection) {
-                      'departments' => _DepartmentsPage(
-                        authService: widget.authService,
-                        isAdmin: widget.user?.isAdmin ?? false,
-                        user: widget.user,
-                      ),
-                      'hosts' => _HostsPage(
-                        authService: widget.authService,
-                        isAdmin: widget.user?.isAdmin ?? false,
-                        user: widget.user,
+                      'companies' ||
+                      'departments' ||
+                      'company_admins' ||
+                      'company_users' ||
+                      'tablets' => _withAuthService(
+                        (authService, user) => CompanyManagementPage(
+                          section: _activeSection,
+                          authService: authService,
+                          user: user,
+                          dashboardHeader: _DashboardHeader(user: user),
+                        ),
                       ),
                       'accesses' => _AccessesPage(
                         authService: widget.authService,
@@ -12434,6 +12939,8 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
       ? 'administrador'
       : widget.account.sectionAccess.contains('recepcion')
       ? 'recepcion'
+      : widget.account.sectionAccess.contains('anfitriones')
+      ? 'anfitriones'
       : 'none';
 
   @override
@@ -12443,7 +12950,10 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
       insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       backgroundColor: Colors.transparent,
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 480),
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.88,
+        ),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: _dashboardSurfaceColor(context),
@@ -12578,37 +13088,48 @@ class _AccessEditDialogState extends State<_AccessEditDialog> {
               ),
             ),
             const SizedBox(height: 10),
-            RadioGroup<String>(
-              groupValue: _selectedAccess,
-              onChanged: (selected) {
-                if (selected != null) {
-                  setState(() => _selectedAccess = selected);
-                }
-              },
-              child: Column(
-                children: [
-                  _accessOption(
-                    'administrador',
-                    'Administrador',
-                    'Acceso completo a la administración.',
-                    Icons.admin_panel_settings_rounded,
-                    const Color(0xFF168BFF),
+            Flexible(
+              child: SingleChildScrollView(
+                child: RadioGroup<String>(
+                  groupValue: _selectedAccess,
+                  onChanged: (selected) {
+                    if (selected != null) {
+                      setState(() => _selectedAccess = selected);
+                    }
+                  },
+                  child: Column(
+                    children: [
+                      _accessOption(
+                        'administrador',
+                        'Administrador',
+                        'Acceso completo a la administración.',
+                        Icons.admin_panel_settings_rounded,
+                        const Color(0xFF168BFF),
+                      ),
+                      _accessOption(
+                        'recepcion',
+                        'Recepción',
+                        'Agenda de citas y bitácora diaria.',
+                        Icons.door_front_door_rounded,
+                        const Color(0xFF18A6A1),
+                      ),
+                      _accessOption(
+                        'anfitriones',
+                        'Anfitrión',
+                        'Acceso a la operación como anfitrión.',
+                        Icons.meeting_room_rounded,
+                        const Color(0xFFB978E8),
+                      ),
+                      _accessOption(
+                        'none',
+                        'Sin acceso',
+                        'La cuenta no podrá entrar al sistema.',
+                        Icons.block_rounded,
+                        const Color(0xFFE05A70),
+                      ),
+                    ],
                   ),
-                  _accessOption(
-                    'recepcion',
-                    'Recepción',
-                    'Agenda de citas y bitácora diaria.',
-                    Icons.door_front_door_rounded,
-                    const Color(0xFF18A6A1),
-                  ),
-                  _accessOption(
-                    'none',
-                    'Sin acceso',
-                    'La cuenta no podrá entrar al sistema.',
-                    Icons.block_rounded,
-                    const Color(0xFFE05A70),
-                  ),
-                ],
+                ),
               ),
             ),
             const SizedBox(height: 14),
@@ -20064,7 +20585,9 @@ class _ReceptionDrawer extends StatelessWidget {
     this.onLogout,
     this.onHome,
     this.onDepartments,
-    this.onHosts,
+    this.onCompanyAdmins,
+    this.onCompanyUsers,
+    this.onTablets,
     this.onAccesses,
     this.onExternalCompanies,
     this.onExternalStaff,
@@ -20079,7 +20602,9 @@ class _ReceptionDrawer extends StatelessWidget {
   final VoidCallback? onLogout;
   final VoidCallback? onHome;
   final VoidCallback? onDepartments;
-  final VoidCallback? onHosts;
+  final VoidCallback? onCompanyAdmins;
+  final VoidCallback? onCompanyUsers;
+  final VoidCallback? onTablets;
   final VoidCallback? onAccesses;
   final VoidCallback? onExternalCompanies;
   final VoidCallback? onExternalStaff;
@@ -20092,6 +20617,7 @@ class _ReceptionDrawer extends StatelessWidget {
     final isLight = _isLightDashboard(context);
     final currentSection = activeSection ?? 'home';
     final isAdmin = user?.isAdmin == true;
+    final isCompanyAdmin = user?.isCompanyAdmin == true;
     final hasReceptionAccess =
         user?.sectionAccess.contains('recepcion') == true;
     final isHost =
@@ -20104,6 +20630,8 @@ class _ReceptionDrawer extends StatelessWidget {
         : user?.login ?? 'Cuenta';
     final displayRole = isAdmin
         ? 'Administrador'
+        : isCompanyAdmin
+        ? 'Administrador de empresa'
         : user?.role?.trim().isNotEmpty == true
         ? user!.role!.trim()
         : hasReceptionAccess
@@ -20307,16 +20835,30 @@ class _ReceptionDrawer extends StatelessWidget {
                           ),
                           const _DrawerLabel('Organización'),
                           _DrawerItem(
-                            icon: Icons.apartment_rounded,
-                            label: 'Departamento',
-                            active: currentSection == 'departments',
+                            icon: Icons.business_rounded,
+                            label: 'Empresas',
+                            active:
+                                currentSection == 'companies' ||
+                                currentSection == 'departments',
                             onTap: onDepartments,
                           ),
                           _DrawerItem(
-                            icon: Icons.meeting_room_rounded,
-                            label: 'Anfitriones',
-                            active: currentSection == 'hosts',
-                            onTap: onHosts,
+                            icon: Icons.admin_panel_settings_rounded,
+                            label: 'Administradores de empresa',
+                            active: currentSection == 'company_admins',
+                            onTap: onCompanyAdmins,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.people_alt_rounded,
+                            label: 'Usuarios de empresa',
+                            active: currentSection == 'company_users',
+                            onTap: onCompanyUsers,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.tablet_android_rounded,
+                            label: 'Tablets',
+                            active: currentSection == 'tablets',
+                            onTap: onTablets,
                           ),
                           _DrawerItem(
                             icon: Icons.vpn_key_rounded,
@@ -20325,7 +20867,22 @@ class _ReceptionDrawer extends StatelessWidget {
                             onTap: onAccesses,
                           ),
                         ],
-                        if (isAdmin || isHost) ...[
+                        if (isCompanyAdmin) ...[
+                          const _DrawerLabel('Mi empresa'),
+                          _DrawerItem(
+                            icon: Icons.apartment_rounded,
+                            label: 'Departamentos',
+                            active: currentSection == 'departments',
+                            onTap: onDepartments,
+                          ),
+                          _DrawerItem(
+                            icon: Icons.people_alt_rounded,
+                            label: 'Usuarios de empresa',
+                            active: currentSection == 'company_users',
+                            onTap: onCompanyUsers,
+                          ),
+                        ],
+                        if (isAdmin || isCompanyAdmin || isHost) ...[
                           const _DrawerLabel('Externos'),
                           _DrawerItem(
                             icon: Icons.business_rounded,
@@ -20346,7 +20903,10 @@ class _ReceptionDrawer extends StatelessWidget {
                             onTap: onEquipment,
                           ),
                         ],
-                        if (isAdmin || hasReceptionAccess || isHost) ...[
+                        if (isAdmin ||
+                            isCompanyAdmin ||
+                            hasReceptionAccess ||
+                            isHost) ...[
                           const _DrawerLabel('Operación'),
                           _DrawerItem(
                             icon: Icons.calendar_month_rounded,
@@ -20355,7 +20915,7 @@ class _ReceptionDrawer extends StatelessWidget {
                             onTap: onAppointments,
                           ),
                         ],
-                        if (isAdmin || hasReceptionAccess)
+                        if (isAdmin || isCompanyAdmin || hasReceptionAccess)
                           _DrawerItem(
                             icon: Icons.assignment_rounded,
                             label: 'Bitácora diaria',
