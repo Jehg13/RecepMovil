@@ -106,9 +106,7 @@ class _MobileAppUpdateCoordinatorState
     _checking = true;
     try {
       final size = MediaQuery.sizeOf(context);
-      final channel = size.shortestSide >= 600
-          ? 'tablet'
-          : 'phone';
+      final channel = size.shortestSide >= 600 ? 'tablet' : 'phone';
       final update = await widget.authService.checkForMobileAppUpdate(
         channel: channel,
       );
@@ -855,7 +853,8 @@ class _TabletVisitorLandingPage extends StatefulWidget {
       _TabletVisitorLandingPageState();
 }
 
-class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
+class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage>
+    with WidgetsBindingObserver {
   bool _landscapeRequested = false;
   late Future<TabletDeviceLink?> _tabletLink;
   final TextEditingController _tabletNameController = TextEditingController();
@@ -866,14 +865,48 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabletLink = _getTabletDeviceLink();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      setState(() => _tabletLink = _getTabletDeviceLink());
+    }
   }
 
   Future<TabletDeviceLink?> _getTabletDeviceLink() async {
     final storage = widget.tabletDeviceStorage;
-    if (storage == null) return widget.authService.getTabletDeviceLink();
-    final value = await storage.read();
-    return value == null ? null : TabletDeviceLink.fromJson(jsonDecode(value));
+    TabletDeviceLink? link;
+    if (storage == null) {
+      link = await widget.authService.getTabletDeviceLink();
+    } else {
+      final value = await storage.read();
+      link = value == null
+          ? null
+          : TabletDeviceLink.fromJson(jsonDecode(value));
+    }
+    if (link == null) return null;
+
+    try {
+      final refreshedLink = await widget.authService.refreshTabletDeviceLink(
+        link,
+      );
+      await storage?.write(
+        jsonEncode({
+          'token': refreshedLink.token,
+          'companyId': refreshedLink.companyId,
+          'companyName': refreshedLink.companyName,
+          'deviceId': refreshedLink.deviceId,
+          'deviceName': refreshedLink.deviceName,
+        }),
+      );
+      return refreshedLink;
+    } on AuthApiException catch (error) {
+      debugPrint('No se pudo actualizar el nombre de la tablet: $error');
+      return link;
+    }
   }
 
   @override
@@ -909,6 +942,7 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
       ),
     );
     if (mounted) {
+      setState(() => _tabletLink = _getTabletDeviceLink());
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
@@ -958,161 +992,378 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
   Widget _buildPairingScreen() {
     return Scaffold(
       backgroundColor: const Color(0xFF020817),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) => SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                minHeight: constraints.maxHeight - 40,
-              ),
-              child: Center(
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF07152A), Color(0xFF020817), Color(0xFF061B34)],
+          ),
+        ),
+        child: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxHeight < 740;
+              final fieldBorder = OutlineInputBorder(
+                borderRadius: BorderRadius.circular(15),
+                borderSide: const BorderSide(color: Color(0xFF344866)),
+              );
+              return SingleChildScrollView(
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 16 : 28,
+                  vertical: compact ? 16 : 24,
+                ),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 620),
-                  child: Card(
-                    color: const Color(0xFF101A30),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(26),
-                      side: const BorderSide(color: Color(0x550087FF)),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(28),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Icon(
-                            Icons.tablet_android_rounded,
-                            color: _blue,
-                            size: 52,
+                  constraints: BoxConstraints(
+                    minHeight: (constraints.maxHeight - (compact ? 32.0 : 48.0))
+                        .clamp(0, double.infinity)
+                        .toDouble(),
+                  ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 700),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFF142541), Color(0xFF0B1528)],
                           ),
-                          const SizedBox(height: 18),
-                          const Text(
-                            'Vincula esta tablet',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 26,
-                              fontWeight: FontWeight.w800,
+                          borderRadius: BorderRadius.circular(28),
+                          border: Border.all(color: const Color(0x6687C8FF)),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x55000000),
+                              blurRadius: 38,
+                              offset: Offset(0, 20),
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          const Text(
-                            'Solicita un código al administrador global e ingrésalo para asignar esta tablet a una empresa. No podrás registrar visitas hasta completar la vinculación.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: _mutedWhite, height: 1.4),
-                          ),
-                          const SizedBox(height: 18),
-                          TextField(
-                            controller: _tabletNameController,
-                            enabled: !_isPairing,
-                            textCapitalization: TextCapitalization.words,
-                            maxLength: 120,
-                            decoration: InputDecoration(
-                              labelText: 'Nombre para identificar esta tablet',
-                              hintText: 'Ej. Recepción principal',
-                              filled: true,
-                              fillColor: const Color(0xFF080F20),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(15),
-                              ),
+                            BoxShadow(
+                              color: Color(0x22087FFF),
+                              blurRadius: 44,
+                              spreadRadius: -10,
                             ),
-                          ),
-                          const SizedBox(height: 24),
-                          TextField(
-                            controller: _pairingCodeController,
-                            enabled: !_isPairing,
-                            textCapitalization: TextCapitalization.characters,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              letterSpacing: 4,
-                              fontWeight: FontWeight.w800,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: 'ABCDE-FGHIJ',
-                              hintStyle: const TextStyle(
-                                color: Color(0xFF7886A3),
-                                letterSpacing: 2,
-                              ),
-                              filled: true,
-                              fillColor: const Color(0xFF080F20),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                              labelText: 'Código de vinculación',
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                          Container(
-                            padding: const EdgeInsets.all(14),
-                            decoration: BoxDecoration(
-                              color: const Color(0x22FFB547),
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: const Color(0x66FFB547),
-                              ),
-                            ),
-                            child: const Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  Icons.info_outline_rounded,
-                                  color: Color(0xFFFFC46B),
-                                  size: 20,
-                                ),
-                                SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    'El código es de un solo uso y vence en 10 minutos. Si se borran los datos de la app, se desinstala, ocurre un error o la tablet se transfiere o retira, contacta a soporte para revisar la vinculación. No intentes reutilizar el código.',
-                                    style: TextStyle(
-                                      color: _mutedWhite,
-                                      height: 1.35,
-                                      fontSize: 13,
+                          ],
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.all(compact ? 22 : 32),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    width: 58,
+                                    height: 58,
+                                    decoration: BoxDecoration(
+                                      gradient: const LinearGradient(
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                        colors: [
+                                          Color(0xFF168EFF),
+                                          Color(0xFF0756C4),
+                                        ],
+                                      ),
+                                      borderRadius: BorderRadius.circular(18),
+                                      border: Border.all(
+                                        color: const Color(0x7787C8FF),
+                                      ),
+                                      boxShadow: const [
+                                        BoxShadow(
+                                          color: Color(0x44087FFF),
+                                          blurRadius: 22,
+                                          offset: Offset(0, 8),
+                                        ),
+                                      ],
                                     ),
+                                    child: const Icon(
+                                      Icons.tablet_android_rounded,
+                                      color: Colors.white,
+                                      size: 29,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0x1F168EFF),
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
+                                            border: Border.all(
+                                              color: const Color(0x553F9EFF),
+                                            ),
+                                          ),
+                                          child: const Text(
+                                            'CONFIGURACIÓN INICIAL',
+                                            style: TextStyle(
+                                              color: Color(0xFF9CD4FF),
+                                              fontSize: 10,
+                                              letterSpacing: 1.1,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                          'Vincula esta tablet',
+                                          style: TextStyle(
+                                            color: _white,
+                                            fontSize: 25,
+                                            height: 1.1,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        const Text(
+                                          'Identifícala con un nombre y conéctala a la empresa que recibirá visitas sin cita.',
+                                          style: TextStyle(
+                                            color: _mutedWhite,
+                                            height: 1.4,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              SizedBox(height: compact ? 20 : 26),
+                              const Text(
+                                'Nombre de la tablet',
+                                style: TextStyle(
+                                  color: _white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _tabletNameController,
+                                enabled: !_isPairing,
+                                textCapitalization: TextCapitalization.words,
+                                maxLength: 120,
+                                style: const TextStyle(color: _white),
+                                decoration: InputDecoration(
+                                  hintText: 'Ej. Recepción principal',
+                                  hintStyle: const TextStyle(
+                                    color: Color(0xFF8092AE),
+                                  ),
+                                  prefixIcon: const Icon(
+                                    Icons.badge_outlined,
+                                    color: Color(0xFF78BFFF),
+                                  ),
+                                  filled: true,
+                                  fillColor: const Color(0xFF091426),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 15,
+                                  ),
+                                  counterStyle: const TextStyle(
+                                    color: Color(0xFF8192AA),
+                                  ),
+                                  enabledBorder: fieldBorder,
+                                  focusedBorder: fieldBorder.copyWith(
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF55ADFF),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  disabledBorder: fieldBorder.copyWith(
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF263750),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'Código de vinculación',
+                                style: TextStyle(
+                                  color: _white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _pairingCodeController,
+                                enabled: !_isPairing,
+                                textCapitalization:
+                                    TextCapitalization.characters,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 23,
+                                  letterSpacing: 4,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'ABCDE-FGHIJ',
+                                  hintStyle: const TextStyle(
+                                    color: Color(0xFF7886A3),
+                                    letterSpacing: 2,
+                                  ),
+                                  prefixIcon: const Icon(
+                                    Icons.key_rounded,
+                                    color: Color(0xFF78BFFF),
+                                  ),
+                                  filled: true,
+                                  fillColor: const Color(0xFF091426),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 17,
+                                  ),
+                                  enabledBorder: fieldBorder,
+                                  focusedBorder: fieldBorder.copyWith(
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF55ADFF),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  disabledBorder: fieldBorder.copyWith(
+                                    borderSide: const BorderSide(
+                                      color: Color(0xFF263750),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: const Color(0x1A168EFF),
+                                  borderRadius: BorderRadius.circular(15),
+                                  border: Border.all(
+                                    color: const Color(0x55449EFF),
+                                  ),
+                                ),
+                                child: const Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Icon(
+                                      Icons.info_outline_rounded,
+                                      color: Color(0xFF8ACBFF),
+                                      size: 20,
+                                    ),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        'El código se usa una sola vez y vence en 10 minutos. Si se borran los datos, se desinstala la app, ocurre un error o la tablet se transfiere, contacta a soporte; no intentes reutilizarlo.',
+                                        style: TextStyle(
+                                          color: _mutedWhite,
+                                          height: 1.4,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (_pairingError != null) ...[
+                                const SizedBox(height: 12),
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0x22FF526B),
+                                    borderRadius: BorderRadius.circular(13),
+                                    border: Border.all(
+                                      color: const Color(0x66FF7185),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Icon(
+                                        Icons.error_outline_rounded,
+                                        color: Color(0xFFFF91A0),
+                                        size: 19,
+                                      ),
+                                      const SizedBox(width: 9),
+                                      Expanded(
+                                        child: Text(
+                                          _pairingError!,
+                                          style: const TextStyle(
+                                            color: Color(0xFFFFC0C8),
+                                            height: 1.35,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
-                            ),
-                          ),
-                          if (_pairingError != null) ...[
-                            const SizedBox(height: 12),
-                            Text(
-                              _pairingError!,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Color(0xFFFF7185)),
-                            ),
-                          ],
-                          const SizedBox(height: 20),
-                          FilledButton(
-                            onPressed: _isPairing ? null : _pairTablet,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: _blue,
-                              padding: const EdgeInsets.symmetric(vertical: 17),
-                            ),
-                            child: _isPairing
-                                ? const SizedBox(
-                                    width: 22,
-                                    height: 22,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2.5,
+                              SizedBox(height: compact ? 16 : 20),
+                              SizedBox(
+                                height: 54,
+                                child: FilledButton(
+                                  onPressed: _isPairing ? null : _pairTablet,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: _blue,
+                                    foregroundColor: Colors.white,
+                                    disabledBackgroundColor: const Color(
+                                      0xFF31577E,
                                     ),
-                                  )
-                                : const Text(
-                                    'Vincular tablet',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w800,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
                                     ),
+                                    elevation: 3,
+                                    shadowColor: const Color(0x66087FFF),
                                   ),
+                                  child: _isPairing
+                                      ? const SizedBox(
+                                          width: 22,
+                                          height: 22,
+                                          child: CircularProgressIndicator(
+                                            color: Colors.white,
+                                            strokeWidth: 2.5,
+                                          ),
+                                        )
+                                      : const Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.link_rounded, size: 20),
+                                            SizedBox(width: 9),
+                                            Text(
+                                              'Vincular tablet',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w800,
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'Solicita el código al administrador global de tu sistema.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Color(0xFF9EACC3),
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
         ),
       ),
@@ -1262,6 +1513,7 @@ class _TabletVisitorLandingPageState extends State<_TabletVisitorLandingPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tabletNameController.dispose();
     _pairingCodeController.dispose();
     super.dispose();

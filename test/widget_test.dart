@@ -268,11 +268,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Vincula esta tablet'), findsOneWidget);
-    expect(find.text('Nombre para identificar esta tablet'), findsOneWidget);
+    expect(find.text('Nombre de la tablet'), findsOneWidget);
     expect(find.text('Código de vinculación'), findsOneWidget);
-    expect(find.textContaining('El código es de un solo uso'), findsOneWidget);
     expect(
-      find.textContaining('contacta a soporte para revisar la vinculación'),
+      find.textContaining('El código se usa una sola vez'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('contacta a soporte; no intentes reutilizarlo'),
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);
@@ -293,9 +296,35 @@ void main() {
         'deviceId': 7,
         'deviceName': 'Recepción principal',
       });
+    final service = AuthService(
+      client: MockClient((request) async {
+        if (request.url.path.startsWith('/api/v1/app-releases/latest')) {
+          return http.Response(jsonEncode({'updateAvailable': false}), 200);
+        }
+        expect(request.url.path, '/api/v1/tablet-pairing/device');
+        expect(request.headers['authorization'], 'Bearer tablet-token');
+        return http.Response(
+          jsonEncode({
+            'deviceId': 7,
+            'companyId': 12,
+            'companyName': 'Cymez Norte',
+            'deviceName': 'Recepción principal actualizada',
+          }),
+          200,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: tabletStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
 
     await tester.pumpWidget(
-      ReceptionApp(showSplash: false, tabletDeviceStorage: tabletStorage),
+      ReceptionApp(
+        showSplash: false,
+        authService: service,
+        tabletDeviceStorage: tabletStorage,
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -303,7 +332,7 @@ void main() {
       find.byKey(const ValueKey('tablet-device-identity')),
       findsOneWidget,
     );
-    expect(find.text('Recepción principal'), findsOneWidget);
+    expect(find.text('Recepción principal actualizada'), findsOneWidget);
     expect(find.text('Cymez Norte'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

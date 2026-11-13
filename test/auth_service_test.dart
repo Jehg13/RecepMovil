@@ -100,6 +100,46 @@ void main() {
     await service.updateTabletDeviceName(7, ' Recepción principal ');
   });
 
+  test('actualiza la identidad guardada de una tablet vinculada', () async {
+    final tabletStorage = _MemoryTabletDeviceStorage()
+      ..value = jsonEncode({
+        'token': 'tablet-token',
+        'companyId': 12,
+        'companyName': 'Cymez Norte',
+        'deviceId': 7,
+        'deviceName': 'Nombre anterior',
+      });
+    final service = AuthService(
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/tablet-pairing/device');
+        expect(request.headers['authorization'], 'Bearer tablet-token');
+        return http.Response(
+          jsonEncode({
+            'deviceId': 7,
+            'companyId': 12,
+            'companyName': 'Cymez Norte',
+            'deviceName': 'Recepción principal',
+          }),
+          200,
+        );
+      }),
+      cookieStorage: _MemorySessionCookieStorage(),
+      tabletDeviceStorage: tabletStorage,
+      baseUrl: 'https://example.test',
+      isWeb: false,
+    );
+
+    final link = await service.getTabletDeviceLink();
+    final refreshed = await service.refreshTabletDeviceLink(link!);
+
+    expect(refreshed.deviceName, 'Recepción principal');
+    expect(
+      TabletDeviceLink.fromJson(jsonDecode(tabletStorage.value!)).deviceName,
+      'Recepción principal',
+    );
+  });
+
   test('carga usuarios de todas las empresas sin aplicar un filtro', () async {
     final service = AuthService(
       client: MockClient((request) async {

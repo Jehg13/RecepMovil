@@ -816,6 +816,51 @@ class AuthService {
     return TabletDeviceLink.fromJson(decoded);
   }
 
+  Future<TabletDeviceLink> refreshTabletDeviceLink(
+    TabletDeviceLink link,
+  ) async {
+    final response = await _send(
+      () => _client.get(
+        _uri('/api/tablet-pairing/device'),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ${link.token}',
+        },
+      ),
+      retrySafe: true,
+    );
+    if (response.statusCode != 200) throw _responseError(response);
+
+    final data = _decodeObject(response.body);
+    if (data['deviceId'] != link.deviceId ||
+        data['companyId'] is! int ||
+        data['companyName'] is! String ||
+        data['deviceName'] is! String ||
+        (data['deviceName'] as String).trim().isEmpty) {
+      throw const AuthApiException(
+        'La respuesta de vinculación de la tablet no es válida.',
+      );
+    }
+
+    final refreshedLink = TabletDeviceLink(
+      token: link.token,
+      companyId: data['companyId'] as int,
+      companyName: data['companyName'] as String,
+      deviceId: link.deviceId,
+      deviceName: (data['deviceName'] as String).trim(),
+    );
+    await _tabletDeviceStorage.write(
+      jsonEncode({
+        'token': refreshedLink.token,
+        'companyId': refreshedLink.companyId,
+        'companyName': refreshedLink.companyName,
+        'deviceId': refreshedLink.deviceId,
+        'deviceName': refreshedLink.deviceName,
+      }),
+    );
+    return refreshedLink;
+  }
+
   Future<TabletDeviceLink> pairTablet(
     String code, {
     required String deviceName,
